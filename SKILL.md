@@ -1,12 +1,12 @@
 ---
 name: drawio-skill
-version: 1.19.0-corporate.1
+version: 1.19.0-corporate.2
 description: Use when the user requests diagrams, flowcharts, architecture diagrams, ER diagrams, UML / sequence / class diagrams, network topology, cloud architecture from Terraform or Kubernetes manifests, ML/DL model figures (Transformer/CNN/LSTM), mind maps, or any visualization. Also use proactively when explaining systems with 3+ components, complex data flows, or relationships that benefit from visual representation. Best suited when the diagram needs custom styling, rich shape vocabulary, swimlanes, or exportable images (PNG/SVG/PDF/JPG). Generates .drawio XML and exports locally via the native draw.io desktop CLI.
 license: MIT
 homepage: https://github.com/Agents365-ai/drawio-skill
 compatibility: Requires draw.io desktop app CLI on PATH or configured via DRAWIO_BIN / ~/.drawio-skill/config.json / %USERPROFILE%\.drawio-skill\config.json (macOS/Linux/Windows). Self-check step requires a vision-enabled model (e.g., Claude Sonnet/Opus); gracefully skipped if unavailable. Optional auto-layout (scripts/autolayout.py) needs Graphviz (dot).
 platforms: [macos, linux, windows]
-metadata: {"openclaw":{"requires":{"anyBins":["draw.io","drawio"]},"emoji":"📐","os":["darwin","linux","win32"],"install":[{"id":"brew-drawio","kind":"brew","formula":"drawio","bins":["drawio"],"label":"Install draw.io via Homebrew","os":["darwin"]},{"id":"brew-graphviz","kind":"brew","formula":"graphviz","bins":["dot"],"label":"Install Graphviz for optional autolayout.py","os":["darwin"],"optional":true}]},"hermes":{"tags":["drawio","diagram","flowchart","architecture","visualization","uml"],"category":"design","requires_tools":["drawio","draw.io"],"related_skills":["mermaid","excalidraw","plantuml"]},"author":"Agents365-ai","version":"1.19.0-corporate.1"}
+metadata: {"openclaw":{"requires":{"anyBins":["draw.io","drawio"]},"emoji":"📐","os":["darwin","linux","win32"],"install":[{"id":"brew-drawio","kind":"brew","formula":"drawio","bins":["drawio"],"label":"Install draw.io via Homebrew","os":["darwin"]},{"id":"brew-graphviz","kind":"brew","formula":"graphviz","bins":["dot"],"label":"Install Graphviz for optional autolayout.py","os":["darwin"],"optional":true}]},"hermes":{"tags":["drawio","diagram","flowchart","architecture","visualization","uml"],"category":"design","requires_tools":["drawio","draw.io"],"related_skills":["mermaid","excalidraw","plantuml"]},"author":"Agents365-ai","version":"1.19.0-corporate.2"}
 ---
 
 # Draw.io Diagrams
@@ -76,7 +76,7 @@ drawio --version
 
 Install draw.io desktop if missing:
 - macOS: `brew install --cask drawio` or download from https://github.com/jgraph/drawio-desktop/releases
-- Windows: download installer from https://github.com/jgraph/drawio-desktop/releases
+- Windows corporate environment: install draw.io Desktop through the company's internal application marketplace. Do not download an external installer unless the user explicitly confirms that corporate policy allows it.
 - Linux: download `.deb`/`.rpm` from https://github.com/jgraph/drawio-desktop/releases — **do not use snap** (AppArmor sandbox denies secrets/keyring on servers, causes crash)
 
 ## Optional CLI configuration
@@ -321,7 +321,7 @@ elif [ -f "/Applications/draw.io.app/Contents/MacOS/draw.io" ]; then
 elif grep -qi microsoft /proc/version 2>/dev/null && [ -f "/mnt/c/Program Files/draw.io/draw.io.exe" ]; then
   DRAWIO="/mnt/c/Program Files/draw.io/draw.io.exe"
 else
-  echo "drawio not found — install from https://github.com/jgraph/drawio-desktop/releases (Homebrew: brew install --cask drawio)"
+  echo "drawio not found — on Windows corporate laptops install draw.io Desktop from the internal app marketplace; on macOS use Homebrew: brew install --cask drawio"
 fi
 ```
 

@@ -10,6 +10,6 @@ This repository mirrors the original skill folder from Agents365-ai/drawio-skill
 ## Corporate changes
 
 - Added `DRAWIO_BIN` and `~/.drawio-skill/config.json` guidance for non-standard draw.io executable paths.
-- Added Windows per-user install path guidance.
+- Added Windows internal marketplace and per-user install path guidance.
 - Added Russian README for corporate deployment.
-- Packaged version: 1.19.0-corporate.1
+- Packaged version: 1.19.0-corporate.2

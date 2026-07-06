@@ -55,11 +55,14 @@ https://github.com/jgraph/drawio-desktop/releases
 
 ### Windows
 
-Установите draw.io Desktop из официального релиза:
+В корпоративной среде устанавливайте draw.io Desktop через внутренний маркетплейс приложений компании. Не скачивайте внешний installer, если корпоративные правила требуют установку через маркетплейс.
 
-```text
-https://github.com/jgraph/drawio-desktop/releases
-```
+Обычно порядок такой:
+
+1. Открыть внутренний маркетплейс приложений.
+2. Найти `draw.io`, `diagrams.net` или `drawio`.
+3. Установить draw.io Desktop.
+4. Проверить, где оказался `draw.io.exe`.
 
 Проверка стандартной установки:
 
@@ -210,4 +213,4 @@ https://github.com/Agents365-ai/drawio-skill
 4cb39bbeab09f1caa6959d3f60ef56e3cb685f08
 ```
 
-Отличие этой сборки: добавлены корпоративные инструкции для Windows/macOS, явная настройка пути к `drawio` через `DRAWIO_BIN` и `~/.drawio-skill/config.json`, а также этот README на русском.
+Отличие этой сборки: добавлены корпоративные инструкции для Windows/macOS, Windows-установка через внутренний маркетплейс, явная настройка пути к `drawio` через `DRAWIO_BIN` и config-файл, а также этот README на русском.
