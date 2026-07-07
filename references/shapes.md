@@ -48,32 +48,25 @@ upstream draw.io shape data — see `data/SHAPE-INDEX-NOTICE.md` for attribution
 ## AI / LLM brand logos
 
 draw.io's bundled libraries have **no** modern AI/LLM brand logos, so an "LLM app
-architecture" otherwise renders as generic boxes. `scripts/aiicons.py` resolves a
-brand name (OpenAI, Claude, Gemini, Mistral, Llama, HuggingFace, Ollama,
-LangChain, …321 brands) to a draw.io `image` style backed by the
-[lobe-icons](https://github.com/lobehub/lobe-icons) set (MIT).
+architecture" otherwise renders as generic boxes. In this corporate build,
+external CDN-backed brand logos are disabled. `scripts/aiicons.py` can list and
+recognize known AI/LLM brand names, but it does **not** return `image=https://...`
+styles and does **not** fetch SVG files.
 
 ```bash
-python3 <this-skill-dir>/scripts/aiicons.py "claude" --json        # CDN reference
-python3 <this-skill-dir>/scripts/aiicons.py "openai" --embed        # self-contained
-python3 <this-skill-dir>/scripts/aiicons.py --list                  # all brands
+python3 <this-skill-dir>/scripts/aiicons.py --list
+python3 <this-skill-dir>/scripts/aiicons.py "claude" --json
 ```
 
-- Picks the `-color` variant when it exists, else the mono logo (e.g. OpenAI is
-  mono-only). Returns a square `image` style; use the reported `--size` (default
-  48) for both width and height.
-- **Default references the icon by CDN URL** — the SVG lives on unpkg, not in
-  this repo, so **draw.io needs network access when the diagram is rendered or
-  opened**; an offline export draws a blank box. Pass `--embed` to fetch the SVG
-  once and inline it as a data URI (portable, renders offline, larger XML).
-- Logos are trademarks of their respective owners, referenced for identification
-  only — the same basis on which draw.io ships AWS/Azure icons.
-- **Data stores** common in RAG/LLM apps that lobe lacks (Qdrant, Redis,
-  Postgres, Mongo, Elasticsearch, Milvus, Supabase, Neo4j, ClickHouse, Kafka,
-  Snowflake, Databricks, …) resolve via the [simple-icons](https://simpleicons.org)
-  CDN (CC0) as an automatic fallback — same command, same output shape. A brand
-  in neither set has no logo; use a cylinder (`shape=cylinder3;`, see below) or
-  `scripts/shapesearch.py "<name> database"`.
+- If a user asks for OpenAI, Claude, Gemini, Mistral, LangChain, Redis,
+  Postgres, Qdrant, or similar brand logos, use local generic draw.io shapes
+  instead: rounded service boxes, cylinders for databases, cloud shapes, or
+  official local shapes from `scripts/shapesearch.py`.
+- Do not emit `shape=image;...;image=https://...` styles in corporate diagrams.
+- Do not fetch logos from unpkg, simple-icons, or any other external CDN.
+- If approved local SVG assets are added later, wire them through a local assets
+  manifest and inline them as data URIs; until then, prefer text labels plus
+  local shapes.
 
 ## Cheatsheet — hand-writable styles
 
