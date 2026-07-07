@@ -1,0 +1,18 @@
+{
+  "title": "Hotfix flow",
+  "workflow": "git-flow",
+  "timeMode": "date",
+  "branches": [
+    {"id": "main", "label": "main", "kind": "main"},
+    {"id": "develop", "label": "develop", "kind": "develop"},
+    {"id": "hotfix_2_4_1", "label": "hotfix/2.4.1", "kind": "hotfix"}
+  ],
+  "events": [
+    {"id": "c1", "type": "commit", "branch": "main", "label": "v2.4.0", "at": "2026-07-01"},
+    {"id": "b1", "type": "branch", "from": "main", "to": "hotfix_2_4_1", "at": "2026-07-02"},
+    {"id": "c2", "type": "commit", "branch": "hotfix_2_4_1", "label": "fix prod", "at": "2026-07-03"},
+    {"id": "m1", "type": "merge", "from": "hotfix_2_4_1", "to": "main", "label": "hotfix", "at": "2026-07-04"},
+    {"id": "m2", "type": "merge", "from": "hotfix_2_4_1", "to": "develop", "label": "back-merge", "at": "2026-07-04"},
+    {"id": "t1", "type": "tag", "branch": "main", "label": "v2.4.1", "at": "2026-07-04"}
+  ]
+}

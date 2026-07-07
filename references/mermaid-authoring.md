@@ -14,11 +14,15 @@ drawio -x -f xml -o diagram.drawio diagram.mmd
 
 | Author as | Best for | Why |
 |---|---|---|
-| **Mermaid → CLI convert** | flowchart, state, gantt, timeline, journey, pie, quadrant, sankey, gitGraph, **mindmap**, kanban, requirement, block, xychart, radar, wardley, C4 sketches | structure-only input, free layout, 28 types |
+| **Mermaid → CLI convert** | flowchart, state, gantt, timeline, journey, pie, quadrant, sankey, simple gitGraph, **mindmap**, kanban, requirement, block, xychart, radar, wardley, C4 sketches | structure-only input, free layout, 28 types |
 | **XML (this skill's core path)** | anything needing **official vendor icons** (shapesearch/aiicons), **style presets**, swimlanes, precise positions, edge waypoint control, multi-page/drill-down | Mermaid can't express draw.io styles/shapes |
 | **Bundled generators** | code/IaC/SQL imports, sequence (seqlayout), C4 with drill-down (c4.py) | deterministic, data-driven |
 
 Routing note: this converts Mermaid **into a `.drawio` deliverable**. If the user wants Mermaid text that lives in git / renders in Markdown, route to the **mermaid** skill instead (see "When to use / when NOT to use").
+
+For git-flow / branching-strategy timelines where X must represent time/order
+and Y must represent stable branch lanes, use `references/git-flow.md` and
+`scripts/gitflow.py` instead of Mermaid `gitGraph`.
 
 ## Mermaid quirks that matter for draw.io's parser
 

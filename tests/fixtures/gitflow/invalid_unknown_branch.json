@@ -1,0 +1,12 @@
+{
+  "title": "Invalid unknown branch",
+  "workflow": "git-flow",
+  "timeMode": "date",
+  "branches": [
+    {"id": "main", "label": "main", "kind": "main"},
+    {"id": "develop", "label": "develop", "kind": "develop"}
+  ],
+  "events": [
+    {"id": "c1", "type": "commit", "branch": "missing", "label": "bad", "at": "2026-07-01"}
+  ]
+}

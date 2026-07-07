@@ -1,0 +1,26 @@
+{
+  "title": "OpenSpec team git-flow",
+  "workflow": "custom",
+  "timeMode": "order",
+  "branches": [
+    {"id": "master", "label": "master\nпром", "kind": "main"},
+    {"id": "release", "label": "release/{release_number}\nцелевая релизная ветка", "kind": "release"},
+    {"id": "spec", "label": "spec/{jira_key}\nchange.md", "kind": "feature"},
+    {"id": "feature", "label": "feature/{jira_key}\nреализация", "kind": "feature"}
+  ],
+  "events": [
+    {"id": "c0", "type": "commit", "branch": "master", "label": "пром-состояние\nмикросервиса", "order": 1},
+    {"id": "b0", "type": "branch", "from": "master", "to": "release", "label": "релизная ветка", "order": 2},
+    {"id": "b1", "type": "branch", "from": "release", "to": "spec", "label": "аналитик создает\nspec/{jira_key}", "order": 3},
+    {"id": "c1", "type": "commit", "branch": "spec", "label": "только change.md", "order": 4},
+    {"id": "m1", "type": "merge", "from": "spec", "to": "release", "label": "PR spec -> release\nreview + merge", "order": 5},
+    {"id": "c2", "type": "commit", "branch": "release", "label": "change.md:\nне реализовано", "order": 6},
+    {"id": "b2", "type": "branch", "from": "release", "to": "feature", "label": "разработчик создает\nfeature/{jira_key}", "order": 7},
+    {"id": "c3", "type": "commit", "branch": "feature", "label": "design.md\ntasks.md", "order": 8},
+    {"id": "c4", "type": "commit", "branch": "feature", "label": "код и тесты", "order": 9},
+    {"id": "c5", "type": "commit", "branch": "feature", "label": "semantic merge:\nchange.md -> master-spec.md", "order": 10},
+    {"id": "m2", "type": "merge", "from": "feature", "to": "release", "label": "PR feature -> release\nreview + смысловая проверка", "order": 11},
+    {"id": "c6", "type": "commit", "branch": "release", "label": "QA: архивация\nOpenSpec change", "order": 12},
+    {"id": "m3", "type": "merge", "from": "release", "to": "master", "label": "release checks\nпродвижение в master", "order": 13}
+  ]
+}

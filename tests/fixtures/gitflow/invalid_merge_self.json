@@ -1,0 +1,12 @@
+{
+  "title": "Invalid self merge",
+  "workflow": "git-flow",
+  "timeMode": "order",
+  "branches": [
+    {"id": "main", "label": "main", "kind": "main"},
+    {"id": "develop", "label": "develop", "kind": "develop"}
+  ],
+  "events": [
+    {"id": "m1", "type": "merge", "from": "develop", "to": "develop", "label": "bad", "order": 1}
+  ]
+}

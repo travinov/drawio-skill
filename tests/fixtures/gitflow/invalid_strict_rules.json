@@ -1,0 +1,15 @@
+{
+  "title": "Invalid strict rules",
+  "workflow": "git-flow",
+  "timeMode": "date",
+  "branches": [
+    {"id": "main", "label": "main", "kind": "main"},
+    {"id": "develop", "label": "develop", "kind": "develop"},
+    {"id": "feature_bad", "label": "feature/bad", "kind": "feature"},
+    {"id": "hotfix_bad", "label": "hotfix/bad", "kind": "hotfix"}
+  ],
+  "events": [
+    {"id": "b1", "type": "branch", "from": "main", "to": "feature_bad", "at": "2026-07-01"},
+    {"id": "b2", "type": "branch", "from": "develop", "to": "hotfix_bad", "at": "2026-07-02"}
+  ]
+}

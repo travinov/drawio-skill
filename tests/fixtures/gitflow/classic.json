@@ -1,0 +1,22 @@
+{
+  "title": "Classic release flow",
+  "workflow": "git-flow",
+  "timeMode": "date",
+  "branches": [
+    {"id": "main", "label": "main", "kind": "main"},
+    {"id": "develop", "label": "develop", "kind": "develop"},
+    {"id": "feature_auth", "label": "feature/auth", "kind": "feature"},
+    {"id": "release_2_4", "label": "release/2.4", "kind": "release"}
+  ],
+  "events": [
+    {"id": "c1", "type": "commit", "branch": "main", "label": "v2.3", "at": "2026-07-01"},
+    {"id": "b1", "type": "branch", "from": "main", "to": "develop", "at": "2026-07-02"},
+    {"id": "b2", "type": "branch", "from": "develop", "to": "feature_auth", "at": "2026-07-03"},
+    {"id": "c2", "type": "commit", "branch": "feature_auth", "label": "Auth API", "at": "2026-07-04"},
+    {"id": "m1", "type": "merge", "from": "feature_auth", "to": "develop", "label": "merge feature", "at": "2026-07-05"},
+    {"id": "b3", "type": "branch", "from": "develop", "to": "release_2_4", "at": "2026-07-06"},
+    {"id": "m2", "type": "merge", "from": "release_2_4", "to": "main", "label": "release 2.4", "at": "2026-07-07"},
+    {"id": "m3", "type": "merge", "from": "release_2_4", "to": "develop", "label": "back-merge", "at": "2026-07-07"},
+    {"id": "t1", "type": "tag", "branch": "main", "label": "v2.4.0", "at": "2026-07-07"}
+  ]
+}
