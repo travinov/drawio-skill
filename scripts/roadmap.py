@@ -15,11 +15,15 @@ from roadmap_validate import calculate_milestone_deltas, load_yaml, validate_mod
 
 
 NS = "https://www.drawio.com"
-LANE_H = 180
+BASE_LANE_H = 250
 HEADER_H = 54
 LEFT_W = 180
 COL_W = 170
 TOP = 80
+TASK_H = 44
+TASK_GAP = 12
+OUTCOME_H = 40
+OUTCOME_GAP = 10
 
 STATUS_COLORS = {
     "planned": ("#dae8fc", "#6c8ebf"),
@@ -144,6 +148,86 @@ def lane_parent(lane_id):
     return f"lane_{lane_id}"
 
 
+def label_width(text, min_w=120, max_w=210):
+    # Approximate draw.io text width without rendering. This only sizes labels,
+    # not layout-critical geometry.
+    return max(min_w, min(max_w, 8 * len(str(text)) + 24))
+
+
+def clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def task_span(task, months, start, end):
+    start_x = x_for_date(task.get("start") or task.get("end") or start.isoformat(), months)
+    end_x = x_for_date(task.get("end") or task.get("start") or task.get("date") or end.isoformat(), months)
+    if end_x < start_x:
+        start_x, end_x = end_x, start_x
+    return start_x, end_x
+
+
+def assign_task_levels(tasks, lane_index, months, start, end):
+    levels_by_task = {}
+    lane_levels = {lane_id: [] for lane_id in lane_index}
+    for task in tasks:
+        lane_id = item_lane(task, lane_index)
+        start_x, end_x = task_span(task, months, start, end)
+        width = max(140, end_x - start_x, label_width(task["title"], 140, 260))
+        span = (start_x - 20, start_x - 20 + width)
+        levels = lane_levels[lane_id]
+        chosen = None
+        for idx, occupied in enumerate(levels):
+            if all(span[1] + 8 <= other[0] or span[0] >= other[1] + 8 for other in occupied):
+                chosen = idx
+                break
+        if chosen is None:
+            chosen = len(levels)
+            levels.append([])
+        levels[chosen].append(span)
+        levels_by_task[task["id"]] = (chosen, span[0], span[1] - span[0])
+    return levels_by_task, {lane_id: max(1, len(levels)) for lane_id, levels in lane_levels.items()}
+
+
+def lane_layout(lanes, lane_task_counts, model):
+    outcome_counts = {lane["id"]: set() for lane in lanes}
+    label_counts = {lane["id"]: 0 for lane in lanes}
+    lane_ids = {lane["id"] for lane in lanes}
+    default_lane = lanes[0]["id"]
+    for task in model.get("tasks", []) or []:
+        lane_id = task.get("lane") if task.get("lane") in lane_ids else default_lane
+        for oid in task.get("outcomes", []) or []:
+            outcome_counts.setdefault(lane_id, set()).add(oid)
+    for milestone in model.get("milestones", []) or []:
+        lane_id = milestone.get("lane") if milestone.get("lane") in lane_ids else default_lane
+        label_counts[lane_id] = label_counts.get(lane_id, 0) + 1
+    current_ids = {m["id"] for m in model.get("milestones", []) or []}
+    for milestone in model.get("baseline", {}).get("milestones", []) or []:
+        lane_id = milestone.get("lane") if milestone.get("lane") in lane_ids else default_lane
+        # Baseline labels are separate only when the old marker must be visible.
+        if milestone.get("id") not in current_ids or milestone.get("date") != next(
+            (m.get("date") for m in model.get("milestones", []) or [] if m.get("id") == milestone.get("id")),
+            None,
+        ):
+            label_counts[lane_id] = label_counts.get(lane_id, 0) + 1
+
+    heights = {}
+    y_offsets = {}
+    y = TOP + HEADER_H
+    for lane in lanes:
+        lid = lane["id"]
+        task_band = 28 + lane_task_counts.get(lid, 1) * (TASK_H + TASK_GAP)
+        outcome_band = len(outcome_counts.get(lid, set())) * (OUTCOME_H + OUTCOME_GAP)
+        label_band = max(1, label_counts.get(lid, 0)) * 36
+        heights[lid] = max(BASE_LANE_H, task_band + 95 + label_band + outcome_band)
+        y_offsets[lid] = y
+        y += heights[lid]
+    return y_offsets, heights, y
+
+
+def milestone_y(lane_id, lane_task_counts):
+    return 28 + lane_task_counts.get(lane_id, 1) * (TASK_H + TASK_GAP) + 46
+
+
 def build_drawio(model):
     errors, warnings, deltas = validate_model(model)
     if errors:
@@ -152,8 +236,10 @@ def build_drawio(model):
     lanes, lane_index = lane_lookup(model)
     start, end = collect_dates(model)
     months = timeline_months(start, end)
+    task_levels, lane_task_counts = assign_task_levels(model.get("tasks", []) or [], lane_index, months, start, end)
+    lane_y, lane_heights, lane_bottom = lane_layout(lanes, lane_task_counts, model)
     width = LEFT_W + len(months) * COL_W + 120
-    height = TOP + HEADER_H + len(lanes) * LANE_H + 80
+    height = lane_bottom + 80
 
     mxfile = ET.Element("mxfile", {"host": "app.diagrams.net", "type": "device"})
     diagram = ET.SubElement(mxfile, "diagram", {"id": "roadmap", "name": "Roadmap"})
@@ -180,23 +266,18 @@ def build_drawio(model):
         root.append(header)
 
     for lane in lanes:
-        idx = lane_index[lane["id"]]
         lane_cell = cell("1", f"lane_{lane['id']}", lane["title"],
                          style(swimlane=1, horizontal=0, startSize=32, html=1,
                                whiteSpace="wrap", fillColor="#f5f5f5", strokeColor="#666666"),
                          vertex=True)
-        geometry(lane_cell, 20, TOP + HEADER_H + idx * LANE_H, width - 60, LANE_H)
+        geometry(lane_cell, 20, lane_y[lane["id"]], width - 60, lane_heights[lane["id"]])
         root.append(lane_cell)
 
     id_to_cell = {}
-    task_y_offset = 28
     for task in model.get("tasks", []) or []:
         lane_id = item_lane(task, lane_index)
-        y = TOP + HEADER_H + lane_index[lane_id] * LANE_H + task_y_offset
-        start_x = x_for_date(task.get("start") or task.get("end") or start.isoformat(), months)
-        end_x = x_for_date(task.get("end") or task.get("start") or task.get("date") or end.isoformat(), months)
-        if end_x < start_x:
-            start_x, end_x = end_x, start_x
+        level, local_x, task_w = task_levels[task["id"]]
+        local_y = 28 + level * (TASK_H + TASK_GAP)
         fill, stroke = STATUS_COLORS.get(task.get("status", "planned"), STATUS_COLORS["planned"])
         label = task["title"]
         if task.get("owner"):
@@ -204,34 +285,62 @@ def build_drawio(model):
         task_cell = cell(lane_parent(lane_id), f"task_{task['id']}", label,
                          style(rounded=1, arcSize=8, whiteSpace="wrap", html=1,
                                fillColor=fill, strokeColor=stroke), vertex=True)
-        geometry(task_cell, start_x - 20, task_y_offset, max(70, end_x - start_x), 42)
+        geometry(task_cell, local_x, local_y, task_w, TASK_H)
         root.append(task_cell)
         id_to_cell[task["id"]] = f"task_{task['id']}"
 
     baseline_milestones = {m["id"]: m for m in model.get("baseline", {}).get("milestones", []) or []}
     current_milestones = {m["id"]: m for m in model.get("milestones", []) or []}
     delta_by_id = {d["id"]: d for d in deltas}
+    milestone_label_counts = {}
 
     for mid, old in baseline_milestones.items():
         if mid not in current_milestones or delta_by_id.get(mid, {}).get("state") in ("delayed", "accelerated", "removed"):
             lane_id = item_lane(old, lane_index)
             x = x_for_date(old["date"], months)
-            old_cell = cell(lane_parent(lane_id), f"baseline_{mid}", old["title"],
+            my = milestone_y(lane_id, lane_task_counts)
+            old_cell = cell(lane_parent(lane_id), f"baseline_{mid}", "",
                             style(rhombus=1, whiteSpace="wrap", html=1, fillColor="#ffffff",
                                   strokeColor="#999999", dashed=1, opacity=45), vertex=True)
-            geometry(old_cell, x - 20 - 14, 90 - 14, 28, 28)
+            marker_x = x - 20 - 14
+            geometry(old_cell, marker_x, my - 14, 28, 28)
             root.append(old_cell)
+            label_text = old["title"]
+            if delta_by_id.get(mid, {}).get("state") == "removed":
+                label_text += "\\nremoved"
+            lw = label_width(label_text)
+            label_x = clamp(marker_x + 14 - lw / 2, 8, width - 80 - lw)
+            label_idx = milestone_label_counts.get(lane_id, 0)
+            milestone_label_counts[lane_id] = label_idx + 1
+            label_cell = cell(lane_parent(lane_id), f"baseline_label_{mid}", label_text,
+                              style(rounded=0, whiteSpace="wrap", html=1, fillColor="#ffffff",
+                                    strokeColor="none", fontColor="#666666", fontSize=10),
+                              vertex=True)
+            geometry(label_cell, label_x, my + 22 + label_idx * 36, lw, 32)
+            root.append(label_cell)
 
     for milestone in model.get("milestones", []) or []:
         lane_id = item_lane(milestone, lane_index)
         x = x_for_date(milestone["date"], months)
+        my = milestone_y(lane_id, lane_task_counts)
         fill, stroke = STATUS_COLORS.get(milestone.get("status", "planned"), ("#e1d5e7", "#9673a6"))
-        ms = cell(lane_parent(lane_id), f"milestone_{milestone['id']}", milestone["title"],
+        ms = cell(lane_parent(lane_id), f"milestone_{milestone['id']}", "",
                   style(rhombus=1, whiteSpace="wrap", html=1, fillColor=fill, strokeColor=stroke),
                   vertex=True)
-        geometry(ms, x - 20 - 18, 90 - 18, 36, 36)
+        marker_x = x - 20 - 18
+        geometry(ms, marker_x, my - 18, 36, 36)
         root.append(ms)
         id_to_cell[milestone["id"]] = f"milestone_{milestone['id']}"
+        lw = label_width(milestone["title"])
+        label_x = clamp(marker_x + 18 - lw / 2, 8, width - 80 - lw)
+        label_idx = milestone_label_counts.get(lane_id, 0)
+        milestone_label_counts[lane_id] = label_idx + 1
+        label_cell = cell(lane_parent(lane_id), f"milestone_label_{milestone['id']}", milestone["title"],
+                          style(rounded=0, whiteSpace="wrap", html=1, fillColor="#ffffff",
+                                strokeColor="none", fontSize=10),
+                          vertex=True)
+        geometry(label_cell, label_x, my + 22 + label_idx * 36, lw, 34)
+        root.append(label_cell)
 
     for delta in deltas:
         if delta["state"] not in ("delayed", "accelerated"):
@@ -261,6 +370,8 @@ def build_drawio(model):
         geometry(edge, relative=1)
         root.append(edge)
 
+    outcome_cells = {}
+    outcome_counts = {}
     for task in model.get("tasks", []) or []:
         for oid in task.get("outcomes", []) or []:
             outcome = next((o for o in model.get("outcomes", []) or [] if o["id"] == oid), None)
@@ -268,15 +379,21 @@ def build_drawio(model):
             if not outcome or not source:
                 continue
             lane_id = item_lane(task, lane_index)
-            y = TOP + HEADER_H + lane_index[lane_id] * LANE_H + 84
-            out = cell("1", f"outcome_{oid}_{task['id']}", outcome["title"],
-                       style(rounded=1, whiteSpace="wrap", html=1, fillColor="#fff2cc", strokeColor="#d6b656"),
-                       vertex=True)
-            geometry(out, width - 250, y, 190, 40)
-            root.append(out)
+            key = (lane_id, oid)
+            if key not in outcome_cells:
+                ordinal = outcome_counts.get(lane_id, 0)
+                outcome_counts[lane_id] = ordinal + 1
+                out_id = f"outcome_{oid}_{lane_id}"
+                out = cell("1", out_id, outcome["title"],
+                           style(rounded=1, whiteSpace="wrap", html=1, fillColor="#fff2cc", strokeColor="#d6b656"),
+                           vertex=True)
+                y = lane_y[lane_id] + lane_heights[lane_id] - 58 - ordinal * (OUTCOME_H + OUTCOME_GAP)
+                geometry(out, width - 250, y, 190, OUTCOME_H)
+                root.append(out)
+                outcome_cells[key] = out_id
             edge = cell("1", f"outcome_edge_{oid}_{task['id']}", "",
                         style(endArrow="open", dashed=1, strokeColor="#d6b656", html=1),
-                        edge=True, source=source, target=f"outcome_{oid}_{task['id']}")
+                        edge=True, source=source, target=outcome_cells[key])
             geometry(edge, relative=1)
             root.append(edge)
 

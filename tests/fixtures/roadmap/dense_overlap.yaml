@@ -1,0 +1,126 @@
+title: Цифровой Ассистент - Дорожная карта 2026-2027
+time_scale: month
+lane_dimension: stream
+shift_threshold_days: 0
+lanes:
+  - id: core
+    title: Ядро Ассистента
+  - id: integ
+    title: Интеграции
+  - id: analytics
+    title: Аналитика и отчеты
+outcomes:
+  - id: out-conversational
+    title: Естественное диалоговое общение
+  - id: out-enterprise-ready
+    title: Готовность к корпоративному внедрению
+  - id: out-insights
+    title: Измеримые бизнес-результаты
+tasks:
+  - id: task-nlp-engine
+    title: NLP-движок (RAG + LLM)
+    lane: core
+    start: 2026-07-01
+    end: 2026-10-31
+    status: at_risk
+    owner: ML-команда
+    outcomes: [out-conversational]
+    milestones: [m-nlp-mvp]
+  - id: task-voice-ui
+    title: Голосовой интерфейс
+    lane: core
+    start: 2026-09-01
+    end: 2027-01-31
+    status: planned
+    owner: UX-команда
+    outcomes: [out-conversational]
+    milestones: [m-voice-beta]
+  - id: task-sso
+    title: SSO / Корпоративная аутентификация
+    lane: integ
+    start: 2026-08-01
+    end: 2026-11-30
+    status: at_risk
+    owner: Platform
+    outcomes: [out-enterprise-ready]
+    milestones: [m-sso-ready]
+  - id: task-crm-connector
+    title: Коннектор к CRM (Salesforce)
+    lane: integ
+    start: 2026-10-01
+    end: 2027-02-28
+    status: planned
+    owner: Integrations
+    outcomes: [out-enterprise-ready]
+    milestones: [m-crm-live]
+  - id: task-dashboard
+    title: Дашборд метрик и аналитики
+    lane: analytics
+    start: 2026-11-01
+    end: 2027-03-31
+    status: planned
+    owner: Data
+    outcomes: [out-insights]
+    milestones: [m-dash-mvp]
+milestones:
+  - id: m-nlp-mvp
+    title: MVP NLP-движка
+    lane: core
+    date: 2026-10-31
+    status: at_risk
+  - id: m-voice-beta
+    title: Бета голосового UI
+    lane: core
+    date: 2027-01-31
+    status: planned
+  - id: m-sso-ready
+    title: SSO готов к интеграции
+    lane: integ
+    date: 2026-11-30
+    status: at_risk
+  - id: m-crm-live
+    title: CRM-коннектор в продакшн
+    lane: integ
+    date: 2027-02-28
+    status: planned
+  - id: m-dash-mvp
+    title: MVP дашборда
+    lane: analytics
+    date: 2027-03-31
+    status: planned
+  - id: m-sso-audit
+    title: Аудит безопасности SSO
+    lane: integ
+    date: 2026-09-15
+    status: planned
+dependencies:
+  - id: dep-nlp-voice
+    from: m-nlp-mvp
+    to: m-voice-beta
+    type: blocks
+    impact: high
+  - id: dep-sso-crm
+    from: m-sso-ready
+    to: m-crm-live
+    type: influences
+    impact: medium
+  - id: dep-nlp-dash
+    from: m-nlp-mvp
+    to: m-dash-mvp
+    type: blocks
+    impact: low
+baseline:
+  version: 2026-06
+  milestones:
+    - id: m-nlp-mvp
+      title: MVP NLP-движка
+      lane: core
+      date: 2026-10-15
+    - id: m-sso-ready
+      title: SSO готов к интеграции
+      lane: integ
+      date: 2026-11-15
+    - id: m-crm-live
+      title: CRM-коннектор в продакшн
+      lane: integ
+      date: 2027-01-15

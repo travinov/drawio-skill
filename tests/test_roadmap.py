@@ -78,6 +78,15 @@ class RoadmapGeneratorTests(unittest.TestCase):
             self.assertIn("shift_m-wallet-pilot", ids)
             self.assertIn("dep_dep-billing-wallet", ids)
 
+    def test_dense_roadmap_generates_without_overlap_warnings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "dense.drawio")
+            proc = run_cmd("scripts/roadmap.py", os.path.join(FIXTURES, "dense_overlap.yaml"), "-o", out)
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+
+            validate = run_cmd("scripts/validate.py", out, "--strict")
+            self.assertEqual(validate.returncode, 0, validate.stderr + validate.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
