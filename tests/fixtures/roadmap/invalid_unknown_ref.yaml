@@ -1,0 +1,10 @@
+title: Invalid roadmap
+milestones:
+  - id: m-one
+    title: First milestone
+    date: 2026-09-01
+dependencies:
+  - id: dep-missing
+    from: m-one
+    to: m-missing
+    type: blocks

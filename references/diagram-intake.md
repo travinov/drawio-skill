@@ -48,6 +48,7 @@ Choose the most likely type and confidence:
 | User intent | Likely route |
 |---|---|
 | actors exchanging messages over time | sequence, `scripts/seqlayout.py` |
+| product/project/release roadmap, milestones over dates, plan drift, baseline comparison | roadmap, `references/roadmap.md`, `scripts/roadmap_validate.py`, `scripts/roadmap.py` |
 | services, systems, integrations, protocols | architecture or C4 |
 | C4 context/container/component wording | C4, `scripts/c4.py` |
 | tables, PK/FK, schema, SQL DDL | ERD, `scripts/sqlerd.py` if DDL exists |
@@ -81,6 +82,7 @@ Type-specific prompts:
 | ERD | table list, PK/FK, whether to show column types |
 | UML class | target modules/classes and inheritance vs associations |
 | git-flow/custom flow | workflow type, branch names, timeline mode, merge/tag/PR events |
+| roadmap | time scale, lane dimension, input format, milestone ids, baseline version, material shift threshold |
 | process | swimlanes by role/team/system, decision points, start/end states |
 
 ## Defaults
@@ -90,10 +92,39 @@ Use these defaults when the user does not answer or ambiguity is low risk:
 - Diagram type: infer from nouns and verbs in the request.
 - Detail: key transitions only; compress internal work into labels.
 - Layout: lanes by the main structural entity (branches for git-flow, roles for
-  process only when the user asks or roles are central).
+  process only when the user asks or roles are central; products/teams/workstreams
+  for roadmap diagrams).
 - Timeline: use explicit dates if present, otherwise step order.
 - Output: `.drawio` plus PNG preview when the CLI is available.
 - Visual style: active preset if configured, otherwise built-in defaults.
+
+## Roadmap intake
+
+Use roadmap intake when the request mentions a roadmap, product roadmap, project
+roadmap, release roadmap, initiative roadmap, milestone roadmap, plan movement,
+baseline comparison, shifted milestones, delay, acceleration, or plan drift.
+
+Ask only questions that affect the roadmap model or comparison:
+
+| Need | Question |
+|---|---|
+| Time scale | "Какая шкала нужна: недели, месяцы, кварталы или конкретные даты?" |
+| Lanes | "По чему группировать дорожки: продуктам, командам, проектам, стримам или владельцам?" |
+| Baseline | "Есть предыдущая версия roadmap для сравнения? Если да, пришлите ее или укажите файл." |
+| IDs | "Есть стабильные ID задач/вех или сопоставлять по названиям и датам?" |
+| Shift threshold | "Показывать любое смещение вех или только смещения больше N дней/недель?" |
+
+Confirmed brief example:
+
+```markdown
+Type: roadmap
+Audience: product planning review
+Input: YAML current roadmap + previous YAML baseline
+Detail: tasks, milestones, dependencies, outcomes, milestone shifts
+Layout: lanes by product, X-axis by quarter
+Output: .drawio + PNG
+Assumptions: show every milestone date change; match milestones by stable id
+```
 
 ## Common mistakes
 

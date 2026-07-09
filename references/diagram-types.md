@@ -3,8 +3,31 @@
 When the user requests a specific diagram type, apply the matching preset below for shapes, styles, and layout conventions. These presets set **structural** style keywords (e.g. ERD's `shape=table;childLayout=tableLayout`); a user style preset (see `references/style-presets.md`) layers color/font/edge/extras on top.
 
 Read this file when:
-- The user names one of these diagram types (ERD, UML class, sequence, C4, architecture, ML/DL model, flowchart)
+- The user names one of these diagram types (roadmap, ERD, UML class, sequence, C4, architecture, ML/DL model, flowchart)
 - You're choosing shape vocabulary or layout direction for a new diagram
+
+## Roadmap Diagram
+
+**Don't use generic flowchart or Mermaid Gantt when baseline shifts matter** —
+read `references/roadmap.md`, normalize to `roadmap.yaml`, validate with
+`scripts/roadmap_validate.py`, and generate with `scripts/roadmap.py`.
+
+| Element | Style | Notes |
+|---------|-------|-------|
+| Roadmap lane | `swimlane;horizontal=0;startSize=32;html=1;whiteSpace=wrap;fillColor=#f5f5f5;strokeColor=#666666;` | One lane per product/team/workstream/project |
+| Timeline header | `rounded=0;whiteSpace=wrap;html=1;fillColor=#e6e6e6;strokeColor=#999999;fontStyle=1;` | Month/quarter/week columns |
+| Task span | `rounded=1;arcSize=8;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;` | Width encodes duration |
+| On-track task | task span + `fillColor=#d5e8d4;strokeColor=#82b366;` | Green status |
+| At-risk task | task span + `fillColor=#fff2cc;strokeColor=#d6b656;` | Yellow status |
+| Blocked task | task span + `fillColor=#f8cecc;strokeColor=#b85450;` | Red status |
+| Milestone | `rhombus;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;` | Point marker on timeline |
+| Baseline milestone | `rhombus;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#999999;dashed=1;opacity=45;` | Previous version marker |
+| Delay shift | `endArrow=block;strokeColor=#b85450;dashed=1;html=1;labelBackgroundColor=#ffffff;` | Baseline → current, label like `+15d` |
+| Acceleration shift | `endArrow=block;strokeColor=#82b366;dashed=1;html=1;labelBackgroundColor=#ffffff;` | Baseline → current, label like `-7d` |
+| Blocking dependency | `endArrow=block;strokeColor=#666666;html=1;labelBackgroundColor=#ffffff;` | Hard dependency |
+| Influence | `endArrow=open;dashed=1;strokeColor=#9673a6;html=1;labelBackgroundColor=#ffffff;` | Soft or mutual influence |
+| Outcome callout | `rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;` | Keep concise; avoid covering timeline |
+| Layout | LR, X = time, Y = lanes | Use explicit dates where available; otherwise ordered periods |
 
 ## ERD (Entity-Relationship Diagram)
 

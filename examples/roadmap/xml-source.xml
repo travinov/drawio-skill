@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<roadmap title="Payments roadmap" timeScale="month" laneDimension="product">
+  <lane id="checkout" title="Checkout" />
+  <lane id="billing" title="Billing" />
+  <outcome id="outcome-fast-payments" title="Faster successful payments" />
+  <task id="task-wallets" title="Wallet support" lane="checkout" start="2026-07-01" end="2026-09-30" status="at_risk" outcome="outcome-fast-payments" />
+  <milestone id="m-wallet-pilot" title="Wallet pilot" lane="checkout" date="2026-09-30" status="at_risk" />
+  <dependency id="dep-billing-wallet" from="m-billing-api" to="m-wallet-pilot" type="blocks" impact="high" />
+</roadmap>
