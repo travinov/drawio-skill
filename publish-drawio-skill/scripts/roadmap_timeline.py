@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic coordinate transforms for every roadmap v1 time scale."""
+"""Deterministic coordinate transforms for every supported roadmap time scale."""
 from __future__ import annotations
 
 import datetime as dt
@@ -52,6 +52,9 @@ def _values(model, scale):
             key = "order" if order_mode else "date"
             if milestone.get(key) is not None:
                 values.append(milestone[key] if order_mode else parse_date(milestone[key]))
+            for revision in milestone.get("history", []) or []:
+                if revision.get(key) is not None:
+                    values.append(revision[key] if order_mode else parse_date(revision[key]))
     return values
 
 

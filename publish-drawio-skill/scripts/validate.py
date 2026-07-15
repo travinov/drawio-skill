@@ -469,6 +469,10 @@ def _profile_roadmap(tree, source, report):
     lane_ids = {lane["id"] for lane in lanes}
     default_lane = lanes[0]["id"]
 
+    diagrams = tree.getroot().findall("diagram") or [tree.getroot()]
+    if diagrams and diagrams[0].get("data-schema-version") != str(model.get("schema_version", 1)):
+        report.add("round-trip", "error", "artifact.contract.schema_version", "/schema_version", "diagram schema version does not match source")
+
     title = by_id.get("title")
     if title is None or title.get("value") != model["title"]:
         report.add("round-trip", "error", "artifact.text.title", "/title", "diagram title does not exactly match roadmap source", "title")
@@ -495,6 +499,11 @@ def _profile_roadmap(tree, source, report):
             for field in ("status", "risk"):
                 if element.get(f"data-{field}", "") != str(item.get(field, "")):
                     report.add("round-trip", "error", f"artifact.coverage.{field}", path + f"/{field}", f"{field} is not preserved", item["id"])
+            if model.get("schema_version") == 2 and kind == "milestone":
+                for field in ("revision_id", "revision_order", "plan_version", "recorded_at", "reason"):
+                    attribute = f"data-{field.replace('_', '-')}"
+                    if element.get(attribute, "") != str(item.get(field, "")):
+                        report.add("round-trip", "error", f"artifact.coverage.current_{field}", path + f"/{field}", f"current milestone {field} is not preserved", item["id"])
             box = rect(element)
             lane_box = rect(by_id.get(f"lane_{lane}")) if by_id.get(f"lane_{lane}") is not None else None
             if box and lane_box and (box[1] < 0 or box[1] + box[3] > lane_box[3] + 0.1):
@@ -506,6 +515,48 @@ def _profile_roadmap(tree, source, report):
             for oid in item.get("outcomes", []) or []:
                 if f"outcome_edge_{oid}_{item['id']}" not in by_id:
                     report.add("round-trip", "error", "artifact.coverage.outcome", path + "/outcomes", f"missing outcome link {oid!r}", item["id"])
+    if model.get("schema_version") == 2:
+        history_deltas = source_report.get("history_deltas", [])
+        for milestone_index, milestone in enumerate(model.get("milestones", []) or []):
+            lane = milestone.get("lane") if milestone.get("lane") in lane_ids else default_lane
+            revisions = roadmap_validate.milestone_revisions(milestone, model.get("time_scale", "month"))
+            for revision_index, revision in enumerate(revisions[:-1]):
+                rid = revision["revision_id"]
+                path = f"/milestones/{milestone_index}/history/{revision_index}"
+                marker_id = f"history_{milestone['id']}_{rid}"
+                element = by_id.get(marker_id)
+                if element is None:
+                    report.add("round-trip", "error", "artifact.coverage.milestone_history", path, f"missing history marker {marker_id!r}", milestone["id"])
+                    continue
+                if element.get("parent") != f"lane_{lane}":
+                    report.add("round-trip", "error", "artifact.coordinate.history_lane", path + "/lane", "history marker is in the wrong lane", milestone["id"])
+                box = rect(element)
+                expected = axis.x(revision["order"] if axis.scale == "order" else revision["date"]) - 20 - 14
+                if box and abs(box[0] - expected) > 1.1:
+                    report.add("round-trip", "error", "artifact.coordinate.history_timeline", path, "history marker X coordinate does not match revision coordinate", milestone["id"])
+                for field in ("revision_id", "revision_order", "plan_version", "recorded_at", "reason"):
+                    if element.get(f"data-{field.replace('_', '-')}", "") != str(revision.get(field, "")):
+                        report.add("round-trip", "error", f"artifact.coverage.history_{field}", path + f"/{field}", f"history {field} is not preserved", milestone["id"])
+                label = by_id.get(f"history_label_{milestone['id']}_{rid}")
+                expected_label = f"{milestone['title']}\n{revision['plan_version']}"
+                if label is None or label.get("value") != expected_label:
+                    report.add("round-trip", "error", "artifact.text.milestone_history", path, "history label is not lossless", milestone["id"])
+        for delta in history_deltas:
+            edge_id = f"history_shift_{delta['id']}_{delta['from_revision_id']}_{delta['to_revision_id']}"
+            edge = by_id.get(edge_id)
+            suffix = "" if model.get("time_scale") == "order" else "d"
+            source_id = f"history_{delta['id']}_{delta['from_revision_id']}"
+            current_milestone = next(item for item in model["milestones"] if item["id"] == delta["id"])
+            target_id = (
+                f"milestone_{delta['id']}" if current_milestone["revision_id"] == delta["to_revision_id"]
+                else f"history_{delta['id']}_{delta['to_revision_id']}"
+            )
+            if edge is None:
+                report.add("round-trip", "error", "artifact.coverage.history_shift", "/milestones", f"missing history shift edge {edge_id!r}", delta["id"])
+            elif edge.get("source") != source_id or edge.get("target") != target_id:
+                report.add("round-trip", "error", "artifact.reference.history_shift", "/milestones", "history shift endpoints do not match source", delta["id"])
+            elif edge.get("value") != f"{delta['delta']:+d}{suffix}":
+                report.add("round-trip", "error", "artifact.text.history_shift", "/milestones", "history shift label does not match sequential delta", delta["id"])
     for index, dep in enumerate(model.get("dependencies", []) or []):
         edge = by_id.get(f"dep_{dep['id']}")
         if edge is None:

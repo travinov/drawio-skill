@@ -1,0 +1,14 @@
+entity_type,setting_key,setting_value,id,title,description,lane,start,end,start_order,end_order,status,owner,risk,milestones,outcomes,notes,milestone_id,milestone_title,revision_id,revision_order,plan_version,planned_date,planned_order,recorded_at,is_current,reason,previous_planned_date,shift_days,cumulative_shift_days,shift_state,from,to,type,impact,rationale,metric
+setting,schema_version,2,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+setting,title,Payments roadmap,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+setting,time_scale,month,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+setting,lane_dimension,product,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+setting,shift_threshold_days,3,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+lane,,,checkout,Checkout,Checkout workstream,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+task,,,task-wallets,Wallet support,,checkout,2026-07-01,2026-10-07,,,at_risk,Payments,Risk of API delay,m-wallet-pilot,outcome-fast-payments,,,,,,,,,,,,,,,,,,,,,
+milestone_revision,,,,,,checkout,,,,,planned,Payments,,,outcome-fast-payments,,m-wallet-pilot,Wallet pilot,rev-1,1,2026-05,2026-09-15,,2026-05-10,false,Initial plan,,,,initial,,,,,,
+milestone_revision,,,,,,checkout,,,,,at_risk,Payments,,,outcome-fast-payments,,m-wallet-pilot,Wallet pilot,rev-2,2,2026-06,2026-09-30,,2026-06-12,false,Billing API delay,2026-09-15,15,15,delayed,,,,,,
+milestone_revision,,,,,,checkout,,,,,blocked,Payments,,,outcome-fast-payments,,m-wallet-pilot,Wallet pilot,rev-3,3,2026-07,2026-10-14,,2026-07-08,false,Retesting,2026-09-30,14,29,delayed,,,,,,
+milestone_revision,,,,,,checkout,,,,,on_track,Payments,,,outcome-fast-payments,,m-wallet-pilot,Wallet pilot,rev-4,4,2026-08,2026-10-07,,2026-08-03,true,Schedule optimized,2026-10-14,-7,22,accelerated,,,,,,
+dependency,,,dep-wallets,,,,,,,,,,,,,,,,,,,,,,,,,,,,task-wallets,m-wallet-pilot,blocks,high,Build must finish before pilot,
+"outcome","","","outcome-fast-payments","Faster successful payments","Reduce checkout time","","","","","","","","","","","","","","","","","","","","","","","","","","","","","","","Payment success rate"

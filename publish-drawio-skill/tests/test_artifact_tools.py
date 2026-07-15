@@ -6,6 +6,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -195,6 +196,20 @@ class SelfCheckTests(unittest.TestCase):
         self.assertFalse(module.DEPENDENCIES["PyYAML"]["supported"](module.version_parts("7.0.0")))
         self.assertTrue(module.DEPENDENCIES["jsonschema"]["supported"](module.version_parts("4.18.0")))
         self.assertFalse(module.DEPENDENCIES["jsonschema"]["supported"](module.version_parts("4.17.3")))
+
+    def test_registry_check_uses_temporary_download_not_install_dry_run(self):
+        module = load_script("self_check")
+        completed = subprocess.CompletedProcess([], 0, "resolved", "")
+        with mock.patch.object(module.subprocess, "run", return_value=completed) as execute:
+            records = module.registry_checks()
+        self.assertTrue(records)
+        self.assertTrue(all(item["status"] == "passed" for item in records))
+        for call in execute.call_args_list:
+            command = call.args[0]
+            self.assertIn("download", command)
+            self.assertIn("--dest", command)
+            self.assertNotIn("install", command)
+            self.assertNotIn("--dry-run", command)
 
 
 if __name__ == "__main__":

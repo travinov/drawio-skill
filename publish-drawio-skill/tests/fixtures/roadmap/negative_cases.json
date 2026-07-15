@@ -48,7 +48,7 @@
       "id": "unsupported-version",
       "base": "basic.yaml",
       "expected": ["contract.version.unsupported"],
-      "ops": [{"op": "set", "path": "/schema_version", "value": 2}]
+      "ops": [{"op": "set", "path": "/schema_version", "value": 999}]
     },
     {
       "id": "required-title",

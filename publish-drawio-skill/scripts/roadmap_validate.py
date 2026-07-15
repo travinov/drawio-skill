@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate versioned roadmap YAML and calculate deterministic baseline deltas."""
+"""Validate versioned roadmap YAML and calculate deterministic roadmap deltas."""
 from __future__ import annotations
 
 import argparse
@@ -117,6 +117,59 @@ def calculate_milestone_deltas(model):
     return [d for d in calculate_deltas(model) if d["entity"] == "milestone"]
 
 
+def milestone_revisions(milestone, mode):
+    """Return v2 history plus current revision in deterministic order."""
+    if not isinstance(milestone, dict):
+        return []
+    coordinate_key = "order" if mode == "order" else "date"
+    history = [dict(item) for item in milestone.get("history", []) or [] if isinstance(item, dict)]
+    current = {
+        "revision_id": milestone.get("revision_id"),
+        "revision_order": milestone.get("revision_order"),
+        "plan_version": milestone.get("plan_version"),
+        coordinate_key: milestone.get(coordinate_key),
+        "recorded_at": milestone.get("recorded_at"),
+        "reason": milestone.get("reason", ""),
+        "is_current": True,
+    }
+    for item in history:
+        item["is_current"] = False
+    return sorted(history + [current], key=lambda item: (item.get("revision_order", 0), item.get("revision_id", "")))
+
+
+def calculate_history_deltas(model):
+    """Calculate every consecutive v2 milestone shift; never trust table formulas."""
+    if model.get("schema_version") != 2:
+        return []
+    mode = model.get("time_scale", "month")
+    threshold = int(model.get("shift_threshold_days", 0) or 0)
+    coordinate_key = "order" if mode == "order" else "date"
+    result = []
+    for milestone in sorted(model.get("milestones", []) or [], key=lambda item: item.get("id", "")):
+        revisions = milestone_revisions(milestone, mode)
+        if not revisions:
+            continue
+        initial = coordinate({coordinate_key: revisions[0].get(coordinate_key)}, mode)
+        cumulative = 0
+        for previous, current in zip(revisions, revisions[1:]):
+            old_value = coordinate({coordinate_key: previous.get(coordinate_key)}, mode)
+            new_value = coordinate({coordinate_key: current.get(coordinate_key)}, mode)
+            amount = delta_amount(old_value, new_value, mode)
+            cumulative = delta_amount(initial, new_value, mode)
+            state = "unchanged" if abs(amount) <= threshold else ("delayed" if amount > 0 else "accelerated")
+            result.append({
+                "entity": "milestone_history",
+                "id": milestone["id"],
+                "from_revision_id": previous["revision_id"],
+                "to_revision_id": current["revision_id"],
+                "state": state,
+                "delta": amount,
+                "days": amount,
+                "cumulative_delta": cumulative,
+            })
+    return result
+
+
 def _collect(items, kind, base_path, report, global_ids=None):
     by_id = {}
     if not isinstance(items, list):
@@ -178,6 +231,33 @@ def _validate_semantics(model, report):
         _reference(report, lanes, milestone.get("lane"), f"/milestones/{i}/lane", "reference.lane.unknown", owner)
         for j, oid in enumerate(milestone.get("outcomes", []) or []):
             _reference(report, outcomes, oid, f"/milestones/{i}/outcomes/{j}", "reference.outcome.unknown", owner)
+        if model.get("schema_version") == 2:
+            revisions = milestone_revisions(milestone, mode)
+            if revisions and not revisions[-1].get("is_current"):
+                report.add("semantics", "error", "roadmap.history.current.not_latest", f"/milestones/{i}/revision_order", "current milestone must have the greatest revision_order", owner)
+            seen_ids, seen_orders = set(), set()
+            previous_order = None
+            previous_recorded = None
+            for j, revision in enumerate(revisions):
+                path = f"/milestones/{i}/" + (f"history/{j}" if not revision.get("is_current") else "revision_id")
+                rid, order = revision.get("revision_id"), revision.get("revision_order")
+                if rid in seen_ids:
+                    report.add("semantics", "error", "roadmap.history.revision_id.duplicate", path, f"duplicate revision_id {rid!r}", owner)
+                if order in seen_orders:
+                    report.add("semantics", "error", "roadmap.history.revision_order.duplicate", path, f"duplicate revision_order {order!r}", owner)
+                if previous_order is not None and order is not None and order <= previous_order:
+                    report.add("semantics", "error", "roadmap.history.revision_order.invalid", path, "revision_order must increase strictly", owner)
+                recorded = revision.get("recorded_at")
+                try:
+                    recorded_date = parse_date(recorded) if recorded else None
+                    if previous_recorded and recorded_date and recorded_date < previous_recorded:
+                        report.add("semantics", "error", "roadmap.history.recorded_at.order", path, "recorded_at must not move backwards", owner)
+                    previous_recorded = recorded_date or previous_recorded
+                except (TypeError, ValueError):
+                    pass
+                seen_ids.add(rid)
+                seen_orders.add(order)
+                previous_order = order
 
     refs = set(tasks) | set(milestones)
     for i, dep in enumerate(model.get("dependencies", []) or []):
@@ -222,7 +302,7 @@ def _validate_semantics(model, report):
 def validate_document(model, strict=False):
     report = ValidationReport()
     model = normalize_scalars(model)
-    normalized = dispatch_version(model, "roadmap", report)
+    normalized = dispatch_version(model, "roadmap", report, supported=(1, 2))
     deltas = []
     if normalized is not None:
         schema_ok = validate_schema(normalized, "roadmap", report.schema_version, report)
@@ -230,7 +310,11 @@ def validate_document(model, strict=False):
             _validate_semantics(normalized, report)
             if not any(f["severity"] == "error" for f in report.findings):
                 deltas = calculate_deltas(normalized)
+                history_deltas = calculate_history_deltas(normalized)
+                if normalized.get("schema_version") == 2:
+                    report.details["history_deltas"] = history_deltas
                 changed = [d for d in deltas if d["state"] not in ("unchanged",)]
+                changed += [d for d in history_deltas if d["state"] not in ("unchanged",)]
                 if len(changed) > 20:
                     report.add("semantics", "warning", "roadmap.density.deltas", "/baseline", "many baseline changes; diagram may need filtering")
     report.details["deltas"] = deltas

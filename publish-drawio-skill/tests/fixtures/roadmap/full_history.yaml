@@ -1,0 +1,48 @@
+schema_version: 2
+title: Payments roadmap with revision history
+time_scale: month
+lane_dimension: product
+shift_threshold_days: 3
+lanes:
+  - id: checkout
+    title: Checkout
+tasks:
+  - id: task-wallets
+    title: Wallet support
+    lane: checkout
+    start: "2026-07-01"
+    end: "2026-10-07"
+    status: at_risk
+    milestones: [m-wallet-pilot]
+milestones:
+  - id: m-wallet-pilot
+    title: Wallet pilot
+    lane: checkout
+    date: "2026-10-07"
+    revision_id: rev-4
+    revision_order: 4
+    plan_version: 2026-08
+    recorded_at: "2026-08-03"
+    reason: Schedule optimized
+    status: on_track
+    history:
+      - revision_id: rev-1
+        revision_order: 1
+        plan_version: 2026-05
+        date: "2026-09-15"
+        recorded_at: "2026-05-10"
+        reason: Initial plan
+      - revision_id: rev-2
+        revision_order: 2
+        plan_version: 2026-06
+        date: "2026-09-30"
+        recorded_at: "2026-06-12"
+        reason: Billing API delay
+      - revision_id: rev-3
+        revision_order: 3
+        plan_version: 2026-07
+        date: "2026-10-14"
+        recorded_at: "2026-07-08"
+        reason: Retesting
+dependencies: []
+outcomes: []

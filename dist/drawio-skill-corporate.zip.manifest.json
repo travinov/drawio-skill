@@ -1,12 +1,12 @@
 {
   "archive": "drawio-skill-corporate.zip",
   "archive_root": "drawio-skill",
-  "archive_sha256": "678a548fd1b18ce667240e416053667aeb84ede01ce78ec32522bbedf4ce3b60",
+  "archive_sha256": "2cb12397602eeafde2b7167965018a038ce6cf4f6189faf072ec9d58ffd7c557",
   "files": [
     {
       "path": "DEPENDENCIES.md",
-      "sha256": "56d6fcff9f0470c85e5ada47481b4b5b5201c2831f2ee45a724a331e6b50dcec",
-      "size": 613
+      "sha256": "ba647d7a34e5963c6ddd5c80f6314617c883db50d1c688ef45309c777e34e1a4",
+      "size": 654
     },
     {
       "path": "LICENSE",
@@ -20,13 +20,23 @@
     },
     {
       "path": "README.md",
-      "sha256": "8694661e9f6d56fe3180ab3206e7d81c0ef87a30a23610cda77af6aee9a474c9",
-      "size": 10908
+      "sha256": "309d1ed2b6684630ce79625597b2551639b62d95904038019b19b54abc02de2a",
+      "size": 11445
     },
     {
       "path": "SKILL.md",
-      "sha256": "a3f0c8d2848a14f8a2954673f409a9aa0c2b2db602f946b4f047ddc5afad2a06",
-      "size": 37705
+      "sha256": "013120d7fb88d2c1a1ed17535fc93969c613e575b206608dc26aabac635feb09",
+      "size": 39573
+    },
+    {
+      "path": "assets/roadmap/roadmap-template.csv",
+      "sha256": "b74f7cf97ebfc52818d6f9428e320b6b9a25558182a1670a652322735f48bed4",
+      "size": 2032
+    },
+    {
+      "path": "assets/roadmap/roadmap-template.xlsx",
+      "sha256": "2516ccc0130b7e155cfb009cbb2668913da9cbde6becca18124b212d16eea8b1",
+      "size": 126730
     },
     {
       "path": "config.example.json",
@@ -54,6 +64,11 @@
       "size": 6729
     },
     {
+      "path": "data/roadmap.v2.schema.json",
+      "sha256": "260aef134e2f696823ce468957cec0271be7e98807b0aebfcab8d56a7b512dd3",
+      "size": 7650
+    },
+    {
       "path": "data/shape-index.json.gz",
       "sha256": "f19d9f794775d91e196b0a8d1fce32d6dbbf9828f094bedc53e843c8131ee8ea",
       "size": 436148
@@ -70,7 +85,7 @@
     },
     {
       "path": "metadata.md",
-      "sha256": "fb0c06e041941d509de0dc2818a513930cfabf821b3c05ee16d9dc00f1fd8f6e",
+      "sha256": "5a3b3e39f79dc527698113131ad95a5b13c83ee3bed5b6fc4b323f831d859059",
       "size": 3476
     },
     {
@@ -100,8 +115,8 @@
     },
     {
       "path": "references/roadmap.md",
-      "sha256": "7ddd82ef67e3dd80c02034a7159549da33cb0dd3d5399548444d81148aebb72c",
-      "size": 7618
+      "sha256": "a0ae24addd0eff72285a2e4413180f9f8c493aeffae02fd0da379148fb96bc8b",
+      "size": 9999
     },
     {
       "path": "references/shapes.md",
@@ -130,13 +145,13 @@
     },
     {
       "path": "requirements.lock.txt",
-      "sha256": "54b0cc7be27986b9a6680b255d1ffdb1c3ea79be1dc51759d7bde58549c484e8",
-      "size": 145
+      "sha256": "047ea4aa1a907a4ef20f2b41f00d8c7be3b557ddadb820c275f46cf7421d1e99",
+      "size": 161
     },
     {
       "path": "requirements.txt",
-      "sha256": "9e725fa2edb0b48146061b5f664388a0413b392f261300d609c7930e8cde090a",
-      "size": 35
+      "sha256": "435c986f87025efa7bf97ece9d272158a280676e5da14323762c9fcca4de31f8",
+      "size": 52
     },
     {
       "path": "scripts/aiicons.py",
@@ -210,18 +225,28 @@
     },
     {
       "path": "scripts/roadmap.py",
-      "sha256": "15e593bed3f8318662c6be0306ea213ed50ce83c370a1ea5b28dbfc597c1e7ac",
-      "size": 14025
+      "sha256": "caea2c28e8e03bc01211246ca2d881c660c2956ec70a996ce4b3de8142c67873",
+      "size": 17437
+    },
+    {
+      "path": "scripts/roadmap_table.py",
+      "sha256": "cf12b749be38a7ec733882881e6e76ac3d599a733011b58cd00ca2a073120862",
+      "size": 15756
+    },
+    {
+      "path": "scripts/roadmap_template.py",
+      "sha256": "3afb5509afc4935d38b11258ef606f059ea83f875d88529ca75811a6b1cbab1a",
+      "size": 3672
     },
     {
       "path": "scripts/roadmap_timeline.py",
-      "sha256": "49704b27f216ebb3026e54a7bcf9c5d34ee5f80df4903740a1f75a9f52dad776",
-      "size": 3924
+      "sha256": "f60c72e738cccbc40c94d6ec22851b86251c5208cde8e1705a2a23a47b810518",
+      "size": 4139
     },
     {
       "path": "scripts/roadmap_validate.py",
-      "sha256": "e680ef9e0f82cc9e32dd40410c1bf09d647000d5176e183aa54496e46e8b4a5d",
-      "size": 12904
+      "sha256": "776cb11ac7ca1086e752f4f8224ced786d6e549a7ff134045f7dd0221ab8d707",
+      "size": 17675
     },
     {
       "path": "scripts/rustimports.py",
@@ -230,8 +255,8 @@
     },
     {
       "path": "scripts/self_check.py",
-      "sha256": "d306c22cfac040e9f3dfcdaada9848cfb115d1c8b355005dc516fafaa4cea449",
-      "size": 10713
+      "sha256": "68bbfe2b8a494c33bc651450f1edfda6709f6455800c50057940b14016549a0f",
+      "size": 11747
     },
     {
       "path": "scripts/seqlayout.py",
@@ -255,8 +280,8 @@
     },
     {
       "path": "scripts/validate.py",
-      "sha256": "54700bdf7b02c87e17bf6e3a1d5013030c6d748676b815a114899f813c0daa72",
-      "size": 28811
+      "sha256": "efeae9f04fdda2bd99ec8881416520cfa91c4dc00236412a893c3d0517f74e42",
+      "size": 33236
     },
     {
       "path": "scripts/validation_common.py",
@@ -409,14 +434,19 @@
       "size": 3277
     },
     {
+      "path": "tests/fixtures/roadmap/full_history.yaml",
+      "sha256": "eecec271064ec49dac88fd5faab8c7f25d45c85cda6b8fdd272bf18418f981f5",
+      "size": 1164
+    },
+    {
       "path": "tests/fixtures/roadmap/invalid_unknown_ref.yaml",
       "sha256": "b6b9c2a98a5da2c40c4e10d7351a19338ca87ae34d194f9ec8d21178977f19b5",
       "size": 200
     },
     {
       "path": "tests/fixtures/roadmap/negative_cases.json",
-      "sha256": "76b23a40147744886a0683b1679cfd90bf5a3fa52846ebc217beb859e9e971a8",
-      "size": 7573
+      "sha256": "708397d96b355305a33f85749a015128398608678446cf78eaca5d15b7c9b1da",
+      "size": 7575
     },
     {
       "path": "tests/fixtures/roadmap/order.yaml",
@@ -465,8 +495,8 @@
     },
     {
       "path": "tests/test_artifact_tools.py",
-      "sha256": "aeec38750134da7e13b44d049bf2393741e63c1f31b850111479b4ea009fa4f9",
-      "size": 8903
+      "sha256": "e3853175015611d24a14f72cfdbee076ef862429946fa73c4557fad386074988",
+      "size": 9644
     },
     {
       "path": "tests/test_contract_docs.py",
@@ -475,8 +505,8 @@
     },
     {
       "path": "tests/test_contracts.py",
-      "sha256": "9db91b47f733d09b2d984890763e2dbbf3a084c93fd966866cb608d5e8bc5878",
-      "size": 11860
+      "sha256": "708cbe5a653bfebc375b2cf5d81906fd08e5c9a44e1560f1b85c3abdff8de568",
+      "size": 11862
     },
     {
       "path": "tests/test_finding_fixtures.py",
@@ -504,6 +534,11 @@
       "size": 3738
     },
     {
+      "path": "tests/test_roadmap_template.py",
+      "sha256": "428fe8a5b0643b3f9bfe9e778b4129bb1d791d0af6bb83df14506e62d6c2e466",
+      "size": 21093
+    },
+    {
       "path": "tests/test_validate.py",
       "sha256": "985faa7a90cfa147cfeef9e67ed6e3122ff1d7078f54860d88c405c88690ea94",
       "size": 1562
@@ -511,15 +546,15 @@
   ],
   "format_version": 1,
   "skill": "drawio",
-  "version": "1.20.0-corporate.1",
+  "version": "1.21.0-corporate.1",
   "version_sources": [
     {
       "path": "SKILL.md",
-      "value": "1.20.0-corporate.1"
+      "value": "1.21.0-corporate.1"
     },
     {
       "path": "metadata.md",
-      "value": "1.20.0-corporate.1"
+      "value": "1.21.0-corporate.1"
     }
   ]
 }

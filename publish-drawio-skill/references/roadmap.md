@@ -13,6 +13,8 @@ positions or dependency influence must be rendered explicitly.
 ## Commands
 
 ```bash
+python3 <this-skill-dir>/scripts/roadmap_template.py . --format xlsx --json
+python3 <this-skill-dir>/scripts/roadmap_table.py roadmap-template.xlsx -o roadmap.yaml --strict --report roadmap.import.json
 python3 <this-skill-dir>/scripts/roadmap_validate.py roadmap.yaml
 python3 <this-skill-dir>/scripts/roadmap_validate.py roadmap.yaml --strict
 python3 <this-skill-dir>/scripts/roadmap.py roadmap.yaml -o roadmap.drawio
@@ -23,17 +25,33 @@ python3 <this-skill-dir>/scripts/export_smoke.py roadmap.drawio -o roadmap.png
 
 ## Roadmap workflow
 
-1. Run Diagram Intake Agent when the request is broad or source data is
-   incomplete.
-2. Normalize prose, table, YAML, or XML source data into `roadmap.yaml`.
-3. Validate `roadmap.yaml` with `roadmap_validate.py`.
-4. If a baseline is present, calculate milestone/task/dependency/outcome deltas.
-5. Generate `.drawio` with `roadmap.py`.
-6. Validate the generated `.drawio` structurally and against its source model.
-7. Verify byte-deterministic generation.
+1. When source data is incomplete, offer the canonical XLSX template; offer
+   CSV only when XLSX cannot be used.
+2. After consent, copy the bundled asset into the working directory, report
+   its absolute path, and stop until the user confirms it is filled. Never edit
+   the bundled asset. Copying does not require `openpyxl`; if the importer
+   dependency is missing, report `python3 -m pip install -r
+   <this-skill-dir>/requirements.txt` as remediation without blocking the copy.
+3. If asked to fill it, fill only the working copy, summarize it, and stop
+   until the user confirms generation.
+4. Import the table into deterministic v2 YAML with `roadmap_table.py`, or
+   normalize an already complete prose/YAML/XML source into `roadmap.yaml`.
+5. Validate `roadmap.yaml` with `roadmap_validate.py`.
+6. Generate `.drawio` with `roadmap.py`.
+7. Validate it structurally and against its source model; verify determinism.
 8. Export locally with `export_smoke.py` when draw.io CLI is available.
 
-## Canonical `roadmap.yaml`
+## Canonical table intake
+
+`assets/roadmap/roadmap-template.xlsx` contains `Settings`, `Lanes`, `Tasks`,
+`MilestoneHistory`, `Dependencies`, `Outcomes`, `Lists`, and `Instructions`.
+Yellow columns calculate `previous_planned_date`, `shift_days`,
+`cumulative_shift_days`, and `shift_state`. The importer ignores those formula
+results and recalculates all shifts from authoritative revision coordinates.
+The macro-free workbook has no external links. `roadmap-template.csv` is the
+data-only long-form fallback with an `entity_type` discriminator.
+
+## Canonical v1 `roadmap.yaml`
 
 ```yaml
 schema_version: 1
@@ -91,7 +109,7 @@ baseline:
 
 | Field | Required | Notes |
 |---|---:|---|
-| `schema_version` | yes | Integer major version; current value is `1` |
+| `schema_version` | yes | `1` for baseline comparison; `2` for full milestone revision history |
 | `title` | yes | Diagram title |
 | `time_scale` | no | `week`, `month`, `quarter`, `date`, or `order`; default `month` |
 | `lane_dimension` | no | Human-facing grouping label, e.g. `product`, `team`, `workstream` |
@@ -107,13 +125,42 @@ IDs must be stable, unique, and match `^[A-Za-z][A-Za-z0-9_-]*$`. Prefer IDs
 from the source system. When source data lacks IDs, derive them deterministically
 from the label and date, and record the assumption.
 
-The canonical schema is `data/roadmap.v1.schema.json` (JSON Schema Draft
-2020-12). During one compatibility release an input without `schema_version` is
+The canonical schemas are `data/roadmap.v1.schema.json` and
+`data/roadmap.v2.schema.json` (JSON Schema Draft 2020-12). During one
+compatibility release an input without `schema_version` is
 validated as v1 and receives `contract.version.missing`; the source file is not
 rewritten. Unknown versions and unknown object properties are errors.
 
 Calendar and ordinal coordinates are exclusive. Do not mix `date`/`start`/`end`
 with `order`/`start_order`/`end_order` in one model or its baseline.
+
+## Canonical v2 milestone history
+
+Use one current milestone plus all previous revisions under `history`. Revision
+IDs and orders must be unique; order and `recorded_at` must increase; the
+current revision must have the greatest `revision_order`.
+
+```yaml
+schema_version: 2
+title: Payments roadmap
+time_scale: month
+shift_threshold_days: 3
+milestones:
+  - id: m-wallet-pilot
+    title: Wallet pilot
+    date: 2026-10-07
+    revision_id: rev-4
+    revision_order: 4
+    plan_version: 2026-08
+    recorded_at: 2026-08-03
+    reason: Schedule optimized
+    history:
+      - {revision_id: rev-1, revision_order: 1, plan_version: 2026-05, date: 2026-09-15, recorded_at: 2026-05-10}
+      - {revision_id: rev-2, revision_order: 2, plan_version: 2026-06, date: 2026-09-30, recorded_at: 2026-06-12}
+      - {revision_id: rev-3, revision_order: 3, plan_version: 2026-07, date: 2026-10-14, recorded_at: 2026-07-08}
+```
+
+This example recalculates `+15d`, `+14d`, `-7d`, and `+22d` cumulative.
 
 ## Input normalization
 
@@ -176,6 +223,8 @@ they are not rendered as separate visual deltas.
 - Render task duration bars behind milestone markers.
 - Render old baseline milestone positions as dashed/faded diamonds.
 - Render current milestone positions as solid diamonds.
+- In v2 render every historical revision as a faded diamond and every
+  consecutive move as its own `+Nd`/`-Nd` arrow.
 - Render shift arrows from baseline position to current position.
 - Label material shifts with day deltas such as `+15d` or `-7d`.
 - Render blocking dependencies as solid directed arrows.

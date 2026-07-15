@@ -1,12 +1,12 @@
 ---
 name: drawio-skill
-version: 1.20.0-corporate.1
-description: Use when the user requests diagrams, flowcharts, roadmap diagrams, git-flow / branching strategy timelines, architecture diagrams, ER diagrams, UML / sequence / class diagrams, network topology, cloud architecture from Terraform or Kubernetes manifests, ML/DL model figures (Transformer/CNN/LSTM), mind maps, or any visualization. Also use proactively when explaining systems with 3+ components, complex data flows, or relationships that benefit from visual representation. Best suited when the diagram needs custom styling, rich shape vocabulary, swimlanes, precise timeline/lane placement, intake clarification, baseline comparison, milestone shift markers, or exportable images (PNG/SVG/PDF/JPG). Generates .drawio XML and exports locally via the native draw.io desktop CLI.
+version: 1.21.0-corporate.1
+description: Use when the user requests diagrams, flowcharts, roadmap diagrams, git-flow / branching strategy timelines, architecture diagrams, ER diagrams, UML / sequence / class diagrams, network topology, cloud architecture from Terraform or Kubernetes manifests, ML/DL model figures (Transformer/CNN/LSTM), mind maps, or any visualization. Also use proactively when explaining systems with 3+ components, complex data flows, or relationships that benefit from visual representation. Best suited when the diagram needs custom styling, rich shape vocabulary, swimlanes, precise timeline/lane placement, intake clarification, canonical XLSX/CSV roadmap intake, full milestone revision history, baseline comparison, milestone shift markers, or exportable images (PNG/SVG/PDF/JPG). Generates .drawio XML and exports locally via the native draw.io desktop CLI.
 license: MIT
 homepage: https://github.com/Agents365-ai/drawio-skill
 compatibility: Requires draw.io desktop app CLI on PATH or configured via DRAWIO_BIN / ~/.drawio-skill/config.json / %USERPROFILE%\.drawio-skill\config.json (macOS/Linux/Windows). Self-check step requires a vision-enabled model (e.g., Claude Sonnet/Opus); gracefully skipped if unavailable. Optional auto-layout (scripts/autolayout.py) needs Graphviz (dot).
 platforms: [macos, linux, windows]
-metadata: {"openclaw":{"requires":{"anyBins":["draw.io","drawio"]},"emoji":"📐","os":["darwin","linux","win32"],"install":[{"id":"marketplace-drawio","kind":"manual","label":"Install draw.io Desktop from the corporate application marketplace / SberUserSoft","os":["darwin","win32"]},{"id":"graphviz","kind":"manual","label":"Install Graphviz for optional autolayout.py / gitflow.py edge routing if approved in your environment","optional":true}]},"hermes":{"tags":["drawio","diagram","flowchart","git-flow","architecture","visualization","uml"],"category":"design","requires_tools":["drawio","draw.io"],"related_skills":["mermaid","excalidraw","plantuml"]},"author":"Agents365-ai","version":"1.20.0-corporate.1"}
+metadata: {"openclaw":{"requires":{"anyBins":["draw.io","drawio"]},"emoji":"📐","os":["darwin","linux","win32"],"install":[{"id":"marketplace-drawio","kind":"manual","label":"Install draw.io Desktop from the corporate application marketplace / SberUserSoft","os":["darwin","win32"]},{"id":"graphviz","kind":"manual","label":"Install Graphviz for optional autolayout.py / gitflow.py edge routing if approved in your environment","optional":true}]},"hermes":{"tags":["drawio","diagram","flowchart","git-flow","architecture","visualization","uml"],"category":"design","requires_tools":["drawio","draw.io"],"related_skills":["mermaid","excalidraw","plantuml"]},"author":"Agents365-ai","version":"1.21.0-corporate.1"}
 ---
 
 # Draw.io Diagrams
@@ -39,6 +39,7 @@ When the workflow references one of these, read it on demand — none of them ne
 | `references/mermaid-authoring.md` | The diagram is a **standard type with no custom styling/icon needs** (flowchart, state, gantt, mindmap, timeline, journey, pie, …) and the CLI is **≥ v30** — author it as Mermaid text and let the CLI convert to native `.drawio` (structure only, layout free). Also documents the CLI's ELK `--layout` pass for XML |
 | `references/diagram-types.md` | The user names a specific diagram type (ERD, UML class, sequence, C4, architecture, ML/DL, flowchart) |
 | `references/roadmap.md` + `scripts/roadmap_validate.py` + `scripts/roadmap.py` | The user wants a **roadmap / product roadmap / project roadmap / release roadmap / milestone roadmap** from text, table, YAML, or XML, especially when milestone shifts against a previous version must be shown |
+| `assets/roadmap/roadmap-template.xlsx` + `scripts/roadmap_template.py` + `scripts/roadmap_table.py` | Roadmap source data is incomplete or tabular: copy the canonical XLSX (CSV fallback), wait for confirmation, then import the working copy into strict roadmap v2 YAML. Never edit the bundled asset |
 | `references/shapes.md` + `scripts/shapesearch.py` | The diagram needs a **specific shape** — a cloud icon (AWS/Azure/GCP), Cisco/Kubernetes/network symbol, UML/BPMN/ER/electrical/P&ID element — or any time you'd otherwise guess a `style=` string. `shapesearch.py "<keywords>"` returns the exact official style for 10k+ shapes |
 | `scripts/aiicons.py` | Corporate-safe brand-name helper for **AI/LLM brands**. It lists/recognizes known brand names but does **not** return CDN-backed image styles and does **not** fetch external SVGs. Use local draw.io shapes instead unless approved local assets are added. See `references/shapes.md` → "AI / LLM brand logos" |
 | `references/style-presets.md` | The user asks to learn / save / list / set-default / delete a style preset, or you've resolved an active preset and need the application rules |
@@ -60,9 +61,37 @@ When the workflow references one of these, read it on demand — none of them ne
 
 ## Versioned roadmap and git-flow gate
 
-Roadmap and git-flow source models use `schema_version: 1`. For one compatibility
-release, an omitted version is treated as v1 with `contract.version.missing`;
-never rewrite the user's source silently. Unknown versions and properties fail.
+Roadmap supports `schema_version: 1` for baseline compatibility and `2` for full
+milestone revision history. Git-flow remains v1. For one compatibility release,
+an omitted version is treated as v1 with `contract.version.missing`; never
+rewrite the user's source silently. Unknown versions and properties fail.
+
+### Mandatory roadmap template intake gate
+
+When roadmap data is missing or incomplete, offer the bundled XLSX by default
+and CSV only as a fallback. After the user agrees, copy it into the user's
+working directory with `scripts/roadmap_template.py`, report the exact absolute
+path, and **STOP until the user confirms that the working copy is filled**.
+Never open for editing or modify `assets/roadmap/roadmap-template.xlsx` or its
+CSV fallback in place.
+
+Template copying has no `openpyxl` dependency and must not be blocked by a
+missing importer package. Report the dependency remediation command
+`python3 -m pip install -r <this-skill-dir>/requirements.txt` when needed, but
+still copy the working template and wait for the user's confirmation.
+
+If the user asks the agent to fill the table, first copy the asset, fill only
+that working copy, summarize what was entered, and **STOP until the user
+confirms generation**. After confirmation run, in order:
+
+```bash
+python3 scripts/roadmap_table.py <working-copy.xlsx> -o roadmap.yaml --strict --report roadmap.import.json
+python3 scripts/roadmap_validate.py roadmap.yaml --strict --json
+python3 scripts/roadmap.py roadmap.yaml -o roadmap.drawio
+python3 scripts/validate.py roadmap.drawio --profile roadmap --source roadmap.yaml --strict --json
+python3 scripts/verify_determinism.py roadmap roadmap.yaml
+python3 scripts/export_smoke.py roadmap.drawio -o roadmap.png --json
+```
 
 Before generating either profile, run its validator in `--strict` mode. After
 generation, run source-aware artifact validation and determinism verification:

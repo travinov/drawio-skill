@@ -28,6 +28,10 @@ DEPENDENCIES = {
         "requirement": "jsonschema>=4.18,<5",
         "supported": lambda parts: len(parts) >= 2 and parts[0] == 4 and parts[1] >= 18,
     },
+    "openpyxl": {
+        "requirement": "openpyxl>=3.1,<4",
+        "supported": lambda parts: len(parts) >= 2 and parts[0] == 3 and parts[1] >= 1,
+    },
 }
 
 
@@ -48,37 +52,38 @@ def check_record(name: str, status: str, code: str, message: str, **details):
 
 def registry_checks():
     records = []
-    for name, config in DEPENDENCIES.items():
-        command = [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--dry-run",
-            "--ignore-installed",
-            "--no-deps",
-            "--disable-pip-version-check",
-            config["requirement"],
-        ]
-        proc = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
-        if proc.returncode:
-            diagnostic = (proc.stderr or proc.stdout or "pip returned no diagnostic output").strip()
-            records.append(check_record(
-                f"registry:{name}",
-                "failed",
-                "dependency.registry.unavailable",
-                f"configured pip source cannot resolve {config['requirement']}: {diagnostic[:1200]}",
-                command=command,
-                remediation=remediation(),
-            ))
-        else:
-            records.append(check_record(
-                f"registry:{name}",
-                "passed",
-                "dependency.registry.available",
-                f"configured pip source resolves {config['requirement']}",
-                command=command,
-            ))
+    with tempfile.TemporaryDirectory(prefix="drawio-registry-check-") as temp:
+        for name, config in DEPENDENCIES.items():
+            command = [
+                sys.executable,
+                "-m",
+                "pip",
+                "download",
+                "--no-deps",
+                "--disable-pip-version-check",
+                "--dest",
+                temp,
+                config["requirement"],
+            ]
+            proc = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
+            if proc.returncode:
+                diagnostic = (proc.stderr or proc.stdout or "pip returned no diagnostic output").strip()
+                records.append(check_record(
+                    f"registry:{name}",
+                    "failed",
+                    "dependency.registry.unavailable",
+                    f"configured pip source cannot resolve {config['requirement']}: {diagnostic[:1200]}",
+                    command=command,
+                    remediation=remediation(),
+                ))
+            else:
+                records.append(check_record(
+                    f"registry:{name}",
+                    "passed",
+                    "dependency.registry.available",
+                    f"configured pip source resolves {config['requirement']}",
+                    command=command,
+                ))
     return records
 
 
@@ -202,6 +207,19 @@ def minimal_pipeline_checks():
     records = []
     with tempfile.TemporaryDirectory(prefix="drawio-self-check-") as temp:
         temp_path = Path(temp)
+        template_copy = temp_path / "roadmap-template.xlsx"
+        template_yaml = temp_path / "roadmap-template.yaml"
+        records.append(run_command(
+            "template:copy",
+            [sys.executable, str(ROOT / "scripts" / "roadmap_template.py"), str(template_copy), "--format", "xlsx"],
+            "selfcheck.template_copy.failed",
+        ))
+        if records[-1]["status"] == "passed":
+            records.append(run_command(
+                "template:import",
+                [sys.executable, str(ROOT / "scripts" / "roadmap_table.py"), str(template_copy), "-o", str(template_yaml), "--strict"],
+                "selfcheck.template_import.failed",
+            ))
         roadmap_source = temp_path / "roadmap.yaml"
         gitflow_source = temp_path / "gitflow.json"
         roadmap_source.write_text(yaml.safe_dump(roadmap, allow_unicode=True, sort_keys=False), encoding="utf-8")
@@ -295,7 +313,7 @@ def main(argv=None):
     parser.add_argument(
         "--check-registry",
         action="store_true",
-        help="query only pip's already-configured package sources with --dry-run; never installs packages",
+        help="query only pip's already-configured package sources via a temporary download; never installs packages",
     )
     parser.add_argument("--json", action="store_true", help="print a machine-readable report")
     args = parser.parse_args(argv)

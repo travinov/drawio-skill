@@ -23,6 +23,7 @@
         "requirements.lock.txt",
         "DEPENDENCIES.md",
         "config.example.json",
+        "assets/roadmap/*",
         "data/*",
         "examples/**/*.*",
         "references/*.md",
@@ -41,6 +42,8 @@
         "scripts/pyimports.py",
         "scripts/repair_png.py",
         "scripts/roadmap.py",
+        "scripts/roadmap_table.py",
+        "scripts/roadmap_template.py",
         "scripts/roadmap_timeline.py",
         "scripts/roadmap_validate.py",
         "scripts/rustimports.py",
@@ -64,10 +67,11 @@
       ],
       "python_packages": {
         "jsonschema": "jsonschema",
-        "PyYAML": "yaml"
+        "PyYAML": "yaml",
+        "openpyxl": "openpyxl"
       },
       "python_requirements": "requirements.lock.txt",
-      "registry_packages": ["jsonschema", "PyYAML"],
+      "registry_packages": ["jsonschema", "PyYAML", "openpyxl"],
       "required_commands": ["python3", "drawio"],
       "optional_commands": ["dot", "neato"],
       "verify_commands": [

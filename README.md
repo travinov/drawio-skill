@@ -4,7 +4,7 @@
 
 | Extension | Версия | Назначение |
 |---|---:|---|
-| [`drawio-skill`](publish-drawio-skill/) | `1.20.0-corporate.1` | Редактируемые draw.io-диаграммы, roadmap, git-flow, архитектурные и специализированные схемы |
+| [`drawio-skill`](publish-drawio-skill/) | `1.21.0-corporate.1` | Редактируемые draw.io-диаграммы, roadmap, git-flow, архитектурные и специализированные схемы |
 | [`bpmn-architect`](publish-bpmn-skill/) | `0.3.0` | Семантические BPMN 2.0 модели с многоуровневой раскладкой collaboration, spatial validation и round-trip проверкой |
 
 Extension не вложены друг в друга и могут устанавливаться отдельно.

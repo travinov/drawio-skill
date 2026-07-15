@@ -9,7 +9,7 @@ import sys
 import xml.etree.ElementTree as ET
 
 from roadmap_timeline import TimelineAxis
-from roadmap_validate import load_yaml, validate_document
+from roadmap_validate import load_yaml, milestone_revisions, validate_document
 from validation_common import messages
 
 
@@ -103,7 +103,7 @@ def lane_layout(lanes, level_counts, model):
         lane = item.get("lane") if item.get("lane") in lane_ids else default
         outcomes[lane].update(item.get("outcomes", []) or [])
         if "date" in item or "order" in item:
-            milestones[lane] += 1
+            milestones[lane] += 1 + len(item.get("history", []) or [])
     for lane in lanes:
         lid = lane["id"]
         task_band = 30 + level_counts[lid] * (TASK_H + TASK_GAP)
@@ -131,6 +131,7 @@ def build_drawio(model):
     model = normalized
     deltas = report.get("deltas", [])
     milestone_deltas = {d["id"]: d for d in deltas if d.get("entity") == "milestone"}
+    history_deltas = report.get("history_deltas", [])
     lanes, lane_index = lanes_for(model)
     axis = TimelineAxis(model, LEFT_W, COL_W)
     task_levels, level_counts = assign_task_levels(model.get("tasks", []) or [], lane_index, axis)
@@ -139,7 +140,7 @@ def build_drawio(model):
 
     mxfile = ET.Element("mxfile", {"host": "app.diagrams.net", "type": "device"})
     diagram = ET.SubElement(mxfile, "diagram", {
-        "id": "roadmap", "name": "Roadmap", "data-schema-version": "1",
+        "id": "roadmap", "name": "Roadmap", "data-schema-version": str(model.get("schema_version", 1)),
         "data-time-scale": model.get("time_scale", "month"),
         "data-lane-dimension": model.get("lane_dimension", ""),
         "data-assumptions": json.dumps(model.get("assumptions", []), ensure_ascii=False, sort_keys=True),
@@ -202,11 +203,64 @@ def build_drawio(model):
         geometry(label_cell, clamp(x - lw / 2, 8, width - 80 - lw), marker_y[lane] + 22 + row * 42, lw, 38)
         root.append(label_cell)
 
+    if model.get("schema_version") == 2:
+        suffix = "" if model.get("time_scale") == "order" else "d"
+        history_delta_by_edge = {
+            (item["id"], item["from_revision_id"], item["to_revision_id"]): item
+            for item in history_deltas
+        }
+        for milestone in model.get("milestones", []) or []:
+            lane = item_lane(milestone, lane_index)
+            revisions = milestone_revisions(milestone, model.get("time_scale", "month"))
+            for revision in revisions[:-1]:
+                rid = revision["revision_id"]
+                x = axis.x(revision["order"] if axis.scale == "order" else revision["date"]) - 20
+                marker = cell(
+                    f"lane_{lane}", f"history_{milestone['id']}_{rid}", "",
+                    style(rhombus=1, html=1, fillColor="#ffffff", strokeColor="#999999", dashed=1, opacity=45),
+                    vertex=True,
+                )
+                _source_metadata(marker, revision, ("revision_id", "revision_order", "plan_version", "recorded_at", "reason"))
+                marker.set("data-milestone-id", milestone["id"])
+                geometry(marker, x - 14, marker_y[lane] - 14, 28, 28)
+                root.append(marker)
+                text = f"{milestone['title']}\n{revision['plan_version']}"
+                lw, row = label_width(text), label_counts[lane]
+                label_counts[lane] += 1
+                label_cell = cell(
+                    f"lane_{lane}", f"history_label_{milestone['id']}_{rid}", text,
+                    style(whiteSpace="wrap", html=1, fillColor="#ffffff", strokeColor="none", fontColor="#666666", fontSize=10, opacity=65),
+                    vertex=True,
+                )
+                geometry(label_cell, clamp(x - lw / 2, 8, width - 80 - lw), marker_y[lane] + 22 + row * 42, lw, 38)
+                root.append(label_cell)
+
+            for previous, current_revision in zip(revisions, revisions[1:]):
+                delta = history_delta_by_edge[(milestone["id"], previous["revision_id"], current_revision["revision_id"])]
+                color = "#b85450" if delta["state"] == "delayed" else "#82b366" if delta["state"] == "accelerated" else "#999999"
+                source_id = f"history_{milestone['id']}_{previous['revision_id']}"
+                target_id = (
+                    f"milestone_{milestone['id']}" if current_revision.get("is_current")
+                    else f"history_{milestone['id']}_{current_revision['revision_id']}"
+                )
+                edge = cell(
+                    "1", f"history_shift_{milestone['id']}_{previous['revision_id']}_{current_revision['revision_id']}",
+                    f"{delta['delta']:+d}{suffix}",
+                    style(endArrow="block", strokeColor=color, dashed=1, html=1, labelBackgroundColor="#ffffff"),
+                    edge=True, source=source_id, target=target_id,
+                )
+                edge.set("data-cumulative-delta", str(delta["cumulative_delta"]))
+                geometry(edge, relative=1)
+                root.append(edge)
+
     for milestone in model.get("milestones", []) or []:
         lane, x = item_lane(milestone, lane_index), axis.milestone_x(milestone) - 20
         fill, stroke = STATUS_COLORS.get(milestone.get("status", "planned"), STATUS_COLORS["planned"])
         marker = cell(f"lane_{lane}", f"milestone_{milestone['id']}", "", style(rhombus=1, html=1, fillColor=fill, strokeColor=stroke, strokeWidth=3 if milestone.get("risk") else 1), vertex=True)
-        _source_metadata(marker, milestone, ("title", "owner", "status", "risk", "notes", "outcomes"))
+        metadata_fields = ("title", "owner", "status", "risk", "notes", "outcomes")
+        if model.get("schema_version") == 2:
+            metadata_fields += ("revision_id", "revision_order", "plan_version", "recorded_at", "reason")
+        _source_metadata(marker, milestone, metadata_fields)
         geometry(marker, x - 18, marker_y[lane] - 18, 36, 36)
         root.append(marker)
         id_to_cell[milestone["id"]] = marker.get("id")

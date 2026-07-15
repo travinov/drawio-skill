@@ -88,7 +88,7 @@ class RoadmapContractTests(unittest.TestCase):
     def test_unsupported_unknown_mixed_invalid_duplicate_and_baseline_refs_fail(self):
         base = yaml.safe_load((ROADMAP / "basic.yaml").read_text(encoding="utf-8"))
         cases = []
-        unsupported = copy.deepcopy(base); unsupported["schema_version"] = 2
+        unsupported = copy.deepcopy(base); unsupported["schema_version"] = 999
         cases.append((unsupported, "contract.version.unsupported"))
         unknown = copy.deepcopy(base); unknown["unknown"] = True
         cases.append((unknown, "schema.additionalProperties"))

@@ -10,10 +10,11 @@ Supported ranges:
 
 - `PyYAML>=6.0,<7`
 - `jsonschema>=4.18,<5`
+- `openpyxl>=3.1,<4`
 
 Availability was verified on 2026-07-09 without changing the configured package
 source. The tested environment resolved and imported PyYAML 6.0.3 and
-jsonschema 4.26.0.
+jsonschema 4.26.0, and openpyxl 3.1.5.
 
 Supported interpreter: Python 3.11-3.14.
 
