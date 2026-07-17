@@ -65,6 +65,24 @@
         "tests/**/*.yaml",
         "tests/**/*.drawio"
       ],
+      "extra_files": [
+        {
+          "source": "scripts/gigacode/README.md",
+          "destination": "install/README.md"
+        },
+        {
+          "source": "scripts/gigacode/install_drawio_agent_extension.sh",
+          "destination": "install/install_drawio_agent_extension.sh"
+        },
+        {
+          "source": "scripts/gigacode/rollback_drawio_agent_extension.sh",
+          "destination": "install/rollback_drawio_agent_extension.sh"
+        },
+        {
+          "source": "scripts/gigacode/verify_drawio_agent_extension.sh",
+          "destination": "install/verify_drawio_agent_extension.sh"
+        }
+      ],
       "version_sources": [
         {"path": "SKILL.md", "pattern": "\"version\"\\s*:\\s*\"([^\"]+)\""},
         {"path": "metadata.md", "pattern": "(?m)^- Версия:\\s*(\\S+)\\s*$"},

@@ -89,6 +89,107 @@ class ReleaseSkillsTests(unittest.TestCase):
             finally:
                 release.ROOT = original_root
 
+    def test_extra_files_are_mapped_into_archive_with_executable_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_root = Path(tmp)
+            self.fixture(fake_root)
+            extra = fake_root / "offline" / "install.sh"
+            extra.parent.mkdir(parents=True)
+            extra.write_text("#!/usr/bin/env bash\necho offline\n", encoding="utf-8")
+            output = fake_root / "dist"
+            spec = self.spec()
+            spec["extra_files"] = [
+                {"source": "offline/install.sh", "destination": "install/install.sh"}
+            ]
+            original_root = release.ROOT
+            try:
+                release.ROOT = fake_root
+                release.build_skill("sample", spec, set(), output)
+                release.write_checksums({"skills": {"sample": spec}}, output)
+                release.verify_skill("sample", spec, set(), output, run_commands=False)
+                with zipfile.ZipFile(output / "sample.zip") as bundle:
+                    info = bundle.getinfo("sample-skill/install/install.sh")
+                    self.assertEqual(0o755, (info.external_attr >> 16) & 0o777)
+                    self.assertEqual(extra.read_bytes(), bundle.read(info))
+            finally:
+                release.ROOT = original_root
+
+    def test_extra_file_destination_cannot_escape_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_root = Path(tmp)
+            self.fixture(fake_root)
+            extra = fake_root / "install.sh"
+            extra.write_text("#!/bin/sh\n", encoding="utf-8")
+            spec = self.spec()
+            spec["extra_files"] = [
+                {"source": "install.sh", "destination": "../install.sh"}
+            ]
+            original_root = release.ROOT
+            try:
+                release.ROOT = fake_root
+                with self.assertRaisesRegex(release.ReleaseError, "unsafe extra release destination"):
+                    release.release_files(fake_root / "skill", spec, set())
+            finally:
+                release.ROOT = original_root
+
+    def test_extra_file_source_cannot_escape_repository(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_root = Path(tmp)
+            self.fixture(fake_root)
+            spec = self.spec()
+            spec["extra_files"] = [
+                {"source": "../outside.sh", "destination": "install/install.sh"}
+            ]
+            original_root = release.ROOT
+            try:
+                release.ROOT = fake_root
+                with self.assertRaisesRegex(release.ReleaseError, "unsafe extra release source"):
+                    release.release_files(fake_root / "skill", spec, set())
+            finally:
+                release.ROOT = original_root
+
+    def test_extra_file_source_cannot_be_a_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_root = Path(tmp)
+            self.fixture(fake_root)
+            target = fake_root / "target.sh"
+            target.write_text("#!/bin/sh\n", encoding="utf-8")
+            link = fake_root / "linked.sh"
+            link.symlink_to(target)
+            spec = self.spec()
+            spec["extra_files"] = [
+                {"source": "linked.sh", "destination": "install/install.sh"}
+            ]
+            original_root = release.ROOT
+            try:
+                release.ROOT = fake_root
+                with self.assertRaisesRegex(release.ReleaseError, "unsafe extra release source"):
+                    release.release_files(fake_root / "skill", spec, set())
+            finally:
+                release.ROOT = original_root
+
+    def test_extra_file_paths_reject_windows_or_backslash_forms(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_root = Path(tmp)
+            self.fixture(fake_root)
+            original_root = release.ROOT
+            try:
+                release.ROOT = fake_root
+                cases = [
+                    ({"source": r"..\\outside.sh", "destination": "install/install.sh"}, "source"),
+                    ({"source": r"C:\\outside.sh", "destination": "install/install.sh"}, "source"),
+                    ({"source": "skill/SKILL.md", "destination": r"..\\install.sh"}, "destination"),
+                    ({"source": "skill/SKILL.md", "destination": r"C:\\install.sh"}, "destination"),
+                ]
+                for mapping, kind in cases:
+                    with self.subTest(mapping=mapping):
+                        spec = self.spec()
+                        spec["extra_files"] = [mapping]
+                        with self.assertRaisesRegex(release.ReleaseError, f"unsafe extra release {kind}"):
+                            release.release_files(fake_root / "skill", spec, set())
+            finally:
+                release.ROOT = original_root
+
     def test_stale_archive_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             fake_root = Path(tmp)
@@ -142,6 +243,32 @@ class ReleaseSkillsTests(unittest.TestCase):
             expected = f"{release.sha256_file(archive)}  sample.zip\n"
             self.assertEqual((output / "sample.zip.sha256").read_text(), expected)
             self.assertEqual((output / "SHA256SUMS.txt").read_text(), expected)
+
+    def test_production_drawio_release_has_self_contained_installer_contract(self):
+        config = release.load_config(ROOT / "release" / "skills.json")
+        mappings = {
+            item["destination"]: item["source"]
+            for item in config["skills"]["drawio"]["extra_files"]
+        }
+        self.assertEqual(
+            {
+                "install/README.md": "scripts/gigacode/README.md",
+                "install/install_drawio_agent_extension.sh": "scripts/gigacode/install_drawio_agent_extension.sh",
+                "install/rollback_drawio_agent_extension.sh": "scripts/gigacode/rollback_drawio_agent_extension.sh",
+                "install/verify_drawio_agent_extension.sh": "scripts/gigacode/verify_drawio_agent_extension.sh",
+            },
+            mappings,
+        )
+        for path in (
+            ROOT / "README.md",
+            ROOT / "release" / "README.md",
+            ROOT / "publish-drawio-skill" / "README.md",
+            ROOT / "scripts" / "gigacode" / "README.md",
+        ):
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("./install/install_drawio_agent_extension.sh", text, path)
+        embedded_readme = (ROOT / "scripts" / "gigacode" / "README.md").read_text(encoding="utf-8")
+        self.assertNotIn("scripts/gigacode/", embedded_readme)
 
 
 if __name__ == "__main__":

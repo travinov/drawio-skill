@@ -78,6 +78,46 @@ def resolve_files(root: Path, patterns: list[str], forbidden: set[str]) -> list[
     return [found[key] for key in sorted(found)]
 
 
+def release_files(source: Path, spec: dict, forbidden: set[str]) -> list[tuple[Path, str]]:
+    """Resolve source allowlist plus explicitly mapped repo files."""
+    mapped: dict[str, Path] = {
+        path.relative_to(source).as_posix(): path
+        for path in resolve_files(source, spec["include"], forbidden)
+    }
+    for item in spec.get("extra_files", []):
+        source_path = PurePosixPath(item["source"])
+        destination = PurePosixPath(item["destination"])
+        if (
+            source_path.is_absolute()
+            or ".." in source_path.parts
+            or "\\" in item["source"]
+            or re.match(r"^[A-Za-z]:", item["source"])
+        ):
+            raise ReleaseError(f"unsafe extra release source: {source_path}")
+        path = ROOT.joinpath(*source_path.parts)
+        try:
+            path.resolve(strict=True).relative_to(ROOT.resolve())
+        except (FileNotFoundError, ValueError) as exc:
+            raise ReleaseError(f"unsafe extra release source: {source_path}") from exc
+        if path.is_symlink():
+            raise ReleaseError(f"unsafe extra release source: {source_path}")
+        if not path.is_file():
+            raise ReleaseError(f"extra release file is missing: {path}")
+        if (
+            destination.is_absolute()
+            or ".." in destination.parts
+            or "\\" in item["destination"]
+            or re.match(r"^[A-Za-z]:", item["destination"])
+            or is_forbidden(destination, forbidden)
+        ):
+            raise ReleaseError(f"unsafe extra release destination: {destination}")
+        key = destination.as_posix()
+        if not key or key in mapped:
+            raise ReleaseError(f"duplicate extra release destination: {destination}")
+        mapped[key] = path
+    return [(mapped[key], key) for key in sorted(mapped)]
+
+
 def nested_json_value(path: Path, key: str) -> str:
     value = json.loads(path.read_text(encoding="utf-8"))
     for part in key.split("."):
@@ -169,6 +209,17 @@ def file_records(source: Path, files: list[Path]) -> list[dict]:
     ]
 
 
+def release_records(files: list[tuple[Path, str]]) -> list[dict]:
+    return [
+        {
+            "path": destination,
+            "size": path.stat().st_size,
+            "sha256": sha256_file(path),
+        }
+        for path, destination in files
+    ]
+
+
 def manifest_text(records: list[dict]) -> str:
     return "".join(f"{record['sha256']}  {record['path']}\n" for record in records)
 
@@ -185,16 +236,19 @@ def zip_info(name: str, executable: bool = False) -> zipfile.ZipInfo:
 def build_skill(name: str, spec: dict, forbidden: set[str], output_dir: Path) -> dict:
     source = ROOT / spec["source"]
     version, version_sources = read_versions(source, spec["version_sources"])
-    files = resolve_files(source, spec["include"], forbidden)
-    records = file_records(source, files)
+    files = release_files(source, spec, forbidden)
+    records = release_records(files)
     output_dir.mkdir(parents=True, exist_ok=True)
     archive = output_dir / spec["output"]
     archive_root = spec["archive_root"]
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
-        for path, record in zip(files, records):
+        for (path, _), record in zip(files, records):
             relative = record["path"]
             data = path.read_bytes()
-            executable = relative.startswith("scripts/") and (path.suffix in {".py", ".mjs", ".sh"})
+            executable = (
+                relative.startswith(("scripts/", "install/"))
+                and path.suffix in {".py", ".mjs", ".sh"}
+            )
             bundle.writestr(zip_info(f"{archive_root}/{relative}", executable), data, compresslevel=9)
         bundle.writestr(zip_info(f"{archive_root}/MANIFEST.sha256"), manifest_text(records).encode("utf-8"), compresslevel=9)
     external_manifest = {
@@ -232,8 +286,8 @@ def archive_records(bundle: zipfile.ZipFile, archive_root: str, forbidden: set[s
 
 def verify_skill(name: str, spec: dict, forbidden: set[str], output_dir: Path, *, run_commands: bool = True) -> dict:
     source = ROOT / spec["source"]
-    files = resolve_files(source, spec["include"], forbidden)
-    records = file_records(source, files)
+    files = release_files(source, spec, forbidden)
+    records = release_records(files)
     expected = {record["path"]: record["sha256"] for record in records}
     archive = output_dir / spec["output"]
     if not archive.is_file():

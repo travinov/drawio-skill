@@ -16,6 +16,7 @@ GIGACODE_BACKUP_DIR="${GIGACODE_BACKUP_DIR:-$GIGACODE_HOME/backups/drawio-agent-
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 archive=""
+source_dir=""
 checksum_file=""
 expected_sha256=""
 base_url="${DRAWIO_EXTENSION_BASE_URL:-$DEFAULT_BASE_URL}"
@@ -33,6 +34,7 @@ Usage:
   install_drawio_agent_extension.sh [options]
 
 Options:
+  --source PATH        Install an already extracted drawio-skill directory.
   --archive PATH       Install from a transferred local ZIP (offline mode).
   --checksum PATH      SHA-256 file for --archive (default: PATH.sha256).
   --sha256 HEX         Expected SHA-256 value instead of a checksum file.
@@ -255,6 +257,7 @@ trap cleanup EXIT
 
 while (($#)); do
   case "$1" in
+    --source) [[ $# -ge 2 ]] || die "--source requires PATH"; source_dir="$2"; shift 2 ;;
     --archive) [[ $# -ge 2 ]] || die "--archive requires PATH"; archive="$2"; shift 2 ;;
     --checksum) [[ $# -ge 2 ]] || die "--checksum requires PATH"; checksum_file="$2"; shift 2 ;;
     --sha256) [[ $# -ge 2 ]] || die "--sha256 requires HEX"; expected_sha256="$2"; shift 2 ;;
@@ -270,34 +273,116 @@ done
 require_command "$PYTHON_BIN"
 [[ -x "$GIGACODE_BIN" ]] || die "GigaCode CLI not executable: $GIGACODE_BIN"
 
-work_dir="$(mktemp -d "${TMPDIR:-/tmp}/drawio-extension-install.XXXXXX")"
-if [[ -z "$archive" ]]; then
-  archive="$work_dir/$ARCHIVE_NAME"
-  checksum_file="$work_dir/$ARCHIVE_NAME.sha256"
-  log "Downloading agent extension from $base_url"
-  download_file "$base_url/$ARCHIVE_NAME" "$archive"
-  download_file "$base_url/$ARCHIVE_NAME.sha256" "$checksum_file"
+[[ -n "$source_dir" && -n "$archive" ]] && die "--source and --archive cannot be used together"
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+bundled_source="$(cd "$script_dir/.." && pwd)"
+if [[ -z "$source_dir" && -z "$archive" && -f "$bundled_source/gemini-extension.json" ]]; then
+  source_dir="$bundled_source"
+fi
+
+if [[ -n "$source_dir" ]]; then
+  [[ -z "$checksum_file" && -z "$expected_sha256" ]] || die "Checksum options apply to --archive, not --source"
+  source_dir="$(cd "$source_dir" 2>/dev/null && pwd)" || die "Extracted extension directory not found: $source_dir"
+  extension_root="$source_dir"
+  for required in \
+    gemini-extension.json \
+    MANIFEST.sha256 \
+    SKILL.md \
+    agents/diagram-supervisor.md \
+    agents/diagram-reviewer.md \
+    agents/diagram-repair.md \
+    agents/diagram-semantic-analyst.md; do
+    [[ -f "$extension_root/$required" ]] || die "Extracted extension is missing: $required"
+  done
+  "$PYTHON_BIN" - "$extension_root" <<'PY'
+import hashlib
+import os
+import re
+import sys
+from pathlib import Path, PurePosixPath
+
+root = Path(sys.argv[1]).resolve()
+manifest = root / "MANIFEST.sha256"
+if manifest.is_symlink():
+    raise SystemExit("MANIFEST.sha256 must not be a symlink")
+expected = {}
+for number, line in enumerate(manifest.read_text(encoding="utf-8").splitlines(), 1):
+    try:
+        digest, relative = line.split("  ", 1)
+    except ValueError:
+        raise SystemExit(f"Malformed MANIFEST.sha256 line {number}")
+    path = PurePosixPath(relative)
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", digest)
+        or path.is_absolute()
+        or ".." in path.parts
+        or "\\" in relative
+        or re.match(r"^[A-Za-z]:", relative)
+    ):
+        raise SystemExit(f"Unsafe MANIFEST.sha256 line {number}")
+    if relative in expected:
+        raise SystemExit(f"Duplicate MANIFEST.sha256 entry: {relative}")
+    expected[relative] = digest
+
+actual_files = set()
+for current, directories, files in os.walk(root, followlinks=False):
+    current_path = Path(current)
+    for directory in directories:
+        candidate = current_path / directory
+        if candidate.is_symlink():
+            relative = candidate.relative_to(root).as_posix()
+            raise SystemExit(f"Extracted directory must not be a symlink: {relative}")
+    for filename in files:
+        candidate = current_path / filename
+        if candidate == manifest:
+            continue
+        relative = candidate.relative_to(root).as_posix()
+        if candidate.is_symlink():
+            raise SystemExit(f"Extracted file must not be a symlink: {relative}")
+        actual_files.add(relative)
+
+missing = sorted(set(expected) - actual_files)
+extra = sorted(actual_files - set(expected))
+if missing or extra:
+    raise SystemExit(f"Extracted inventory mismatch: missing={missing}, extra={extra}")
+
+for relative, digest in expected.items():
+    target = root.joinpath(*PurePosixPath(relative).parts)
+    actual = hashlib.sha256(target.read_bytes()).hexdigest()
+    if actual != digest:
+        raise SystemExit(f"Manifest checksum mismatch: {relative}")
+PY
+  log "Using already extracted extension: $extension_root"
 else
-  archive="$(cd "$(dirname "$archive")" && pwd)/$(basename "$archive")"
-  [[ -f "$archive" ]] || die "Archive not found: $archive"
-  if [[ -z "$checksum_file" && -z "$expected_sha256" ]]; then
-    [[ -f "$archive.sha256" ]] || die "Offline install requires --checksum, --sha256, or $archive.sha256"
-    checksum_file="$archive.sha256"
+  work_dir="$(mktemp -d "${TMPDIR:-/tmp}/drawio-extension-install.XXXXXX")"
+  if [[ -z "$archive" ]]; then
+    archive="$work_dir/$ARCHIVE_NAME"
+    checksum_file="$work_dir/$ARCHIVE_NAME.sha256"
+    log "Downloading agent extension from $base_url"
+    download_file "$base_url/$ARCHIVE_NAME" "$archive"
+    download_file "$base_url/$ARCHIVE_NAME.sha256" "$checksum_file"
+  else
+    archive="$(cd "$(dirname "$archive")" && pwd)/$(basename "$archive")"
+    [[ -f "$archive" ]] || die "Archive not found: $archive"
+    if [[ -z "$checksum_file" && -z "$expected_sha256" ]]; then
+      [[ -f "$archive.sha256" ]] || die "Offline install requires --checksum, --sha256, or $archive.sha256"
+      checksum_file="$archive.sha256"
+    fi
   fi
-fi
 
-if [[ -n "$expected_sha256" ]]; then
-  [[ "$expected_sha256" =~ ^[[:xdigit:]]{64}$ ]] || die "--sha256 must contain exactly 64 hex characters"
-  expected_sha256="$(printf '%s' "$expected_sha256" | tr '[:upper:]' '[:lower:]')"
-else
-  expected_sha256="$(read_expected_sha256 "$checksum_file")"
-fi
-actual_sha256="$(file_sha256 "$archive")"
-[[ "$actual_sha256" == "$expected_sha256" ]] || die "Checksum mismatch: expected $expected_sha256, got $actual_sha256"
-log "Archive SHA-256 verified: $actual_sha256"
+  if [[ -n "$expected_sha256" ]]; then
+    [[ "$expected_sha256" =~ ^[[:xdigit:]]{64}$ ]] || die "--sha256 must contain exactly 64 hex characters"
+    expected_sha256="$(printf '%s' "$expected_sha256" | tr '[:upper:]' '[:lower:]')"
+  else
+    expected_sha256="$(read_expected_sha256 "$checksum_file")"
+  fi
+  actual_sha256="$(file_sha256 "$archive")"
+  [[ "$actual_sha256" == "$expected_sha256" ]] || die "Checksum mismatch: expected $expected_sha256, got $actual_sha256"
+  log "Archive SHA-256 verified: $actual_sha256"
 
-extract_dir="$work_dir/extracted"
-"$PYTHON_BIN" - "$archive" "$extract_dir" <<'PY'
+  extract_dir="$work_dir/extracted"
+  "$PYTHON_BIN" - "$archive" "$extract_dir" <<'PY'
 import os
 import stat
 import sys
@@ -333,7 +418,9 @@ with zipfile.ZipFile(archive) as zf:
     zf.extractall(root)
 PY
 
-extension_root="$extract_dir/drawio-skill"
+  extension_root="$extract_dir/drawio-skill"
+fi
+
 manifest_version="$($PYTHON_BIN - "$extension_root/gemini-extension.json" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))

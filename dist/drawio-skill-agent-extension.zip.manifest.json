@@ -1,7 +1,7 @@
 {
   "archive": "drawio-skill-agent-extension.zip",
   "archive_root": "drawio-skill",
-  "archive_sha256": "bf7ff8b1857b5d8c9ed3819343ad7eb3e6d7ca7936e8b4b9e7b591ccbb4698bc",
+  "archive_sha256": "942dfd11c9ee9386e748919b799dcdca891dfc1121403408ede91064e2124a21",
   "files": [
     {
       "path": "DEPENDENCIES.md",
@@ -20,8 +20,8 @@
     },
     {
       "path": "README.md",
-      "sha256": "5bc3052805e1fb92136456d6aef09f6138b90525e27ee9aea891c598db3eac2a",
-      "size": 15104
+      "sha256": "316450e983ba418cd30006ca713c921ff9a3886f2e490084947fcaae23c3da68",
+      "size": 15065
     },
     {
       "path": "SKILL.md",
@@ -159,9 +159,29 @@
       "size": 258
     },
     {
+      "path": "install/README.md",
+      "sha256": "705a582ae6460394bb2d67a16adf35e8d6a6bf5540ddf98b10ea35cac7be6aed",
+      "size": 1996
+    },
+    {
+      "path": "install/install_drawio_agent_extension.sh",
+      "sha256": "48bf865f988bffae1f3ba009e3597a59eb0767c3bf48f7b5f3f07b64a0da3a42",
+      "size": 18043
+    },
+    {
+      "path": "install/rollback_drawio_agent_extension.sh",
+      "sha256": "f5c5347df6b51ac325e964a6378e76071c45f0215874c4349d0a4e4b8baa627c",
+      "size": 7000
+    },
+    {
+      "path": "install/verify_drawio_agent_extension.sh",
+      "sha256": "c94e88e1fa0e252af8878013c5fa3914e35a967f5fea5d98ea306ba8800c25b2",
+      "size": 3456
+    },
+    {
       "path": "metadata.md",
-      "sha256": "751a498c19b1273e19c1bf4d8c595f3e051066618b8adf85c222ba999b4331ff",
-      "size": 3858
+      "sha256": "f62bd6d67835fb71862c40e91d2acc5be6f86862cee717f99e1539d5852d4575",
+      "size": 3923
     },
     {
       "path": "references/autolayout.md",

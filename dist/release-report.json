@@ -2,8 +2,8 @@
   "reports": [
     {
       "archive": "drawio-skill-agent-extension.zip",
-      "files": 130,
-      "sha256": "bf7ff8b1857b5d8c9ed3819343ad7eb3e6d7ca7936e8b4b9e7b591ccbb4698bc",
+      "files": 134,
+      "sha256": "942dfd11c9ee9386e748919b799dcdca891dfc1121403408ede91064e2124a21",
       "skill": "drawio",
       "status": "passed"
     }

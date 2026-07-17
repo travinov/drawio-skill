@@ -30,29 +30,29 @@ shasum -a 256 -c SHA256SUMS.txt
 
 Агентная версия Draw.io устанавливается как **extension**, а не копируется в
 `~/.gigacode/skills`. Установщик использует корпоративный CLI
-`/Users/travinov-sv/.gigacode/bin/gigacode`, проверяет SHA-256 и manifest,
+`/Users/travinov-sv/.gigacode/bin/gigacode`, проверяет полный внутренний
+manifest распакованной поставки (а в режиме `--archive` также SHA-256 ZIP),
 переносит прежний `~/.gigacode/skills/drawio-skill` в backup вне активных
 каталогов и вызывает native `extensions validate/install`.
 
-На корпоративном ноутбуке из клона репозитория:
+Для корпоративного ноутбука без доступа к GitHub перенесите только ZIP,
+распакуйте его в `Downloads` и запустите вложенный установщик:
 
 ```bash
-chmod +x scripts/gigacode/*.sh
-scripts/gigacode/install_drawio_agent_extension.sh \
-  --archive dist/drawio-skill-agent-extension.zip \
-  --checksum dist/drawio-skill-agent-extension.zip.sha256
+cd ~/Downloads/drawio-skill
+chmod +x install/*.sh
+./install/install_drawio_agent_extension.sh
 ```
 
-Если GitHub доступен, достаточно перенести только каталог `scripts/gigacode` и
-запустить установщик без `--archive`: он загрузит ZIP и checksum из этой ветки.
-Для полностью офлайн-установки перенесите на корпоративный ноутбук три скрипта,
-ZIP и соседний `.zip.sha256`.
+Скрипт автоматически определяет окружающую распакованную папку, поэтому ничего
+не нужно скачивать с GitHub или копировать в `skills`. Установка зависимостей
+может обратиться к Python registry, уже настроенному в корпоративной среде.
 
 Проверка и откат:
 
 ```bash
-scripts/gigacode/verify_drawio_agent_extension.sh
-scripts/gigacode/rollback_drawio_agent_extension.sh --latest
+./install/verify_drawio_agent_extension.sh
+./install/rollback_drawio_agent_extension.sh --latest
 ```
 
 После перезапуска GigaCode команда `/agents list` должна показать четыре
