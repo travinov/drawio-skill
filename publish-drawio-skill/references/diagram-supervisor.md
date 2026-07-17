@@ -53,7 +53,7 @@ Run the following from the extension root. Set `INPUT`, `EDGE_ID`, and `ROLE_CLI
 RUN_DIR=.diagram-runs/example-run
 INPUT=input.drawio
 EDGE_ID=edge-id
-ROLE_CLI=gemini
+ROLE_CLI="$HOME/.gigacode/bin/gigacode"
 
 python3 scripts/diagram_supervisor.py inspect "$INPUT" \
   --output "$RUN_DIR/diagram-spec.json"

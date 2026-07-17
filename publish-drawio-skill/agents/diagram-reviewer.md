@@ -1,16 +1,15 @@
 ---
 name: diagram-reviewer
 description: Independently reviews diagram semantics, layout diffs, monotonic quality, and validation receipts without write access.
-kind: local
 tools:
   - glob
   - grep_search
   - list_directory
   - read_file
   - read_many_files
-model: vllm/DeepSeek-V4-Flash-262k
-temperature: 0.1
-max_turns: 12
+model: inherit
+approvalMode: plan
+maxTurns: 12
 ---
 
 # Independent Diagram Reviewer

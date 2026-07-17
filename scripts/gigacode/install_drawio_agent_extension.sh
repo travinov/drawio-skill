@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 EXTENSION_NAME="publish-drawio-skill"
 ARCHIVE_NAME="drawio-skill-agent-extension.zip"
-DEFAULT_VERSION="1.22.0-corporate.1"
+DEFAULT_VERSION="1.22.0-corporate.2"
 DEFAULT_BRANCH="codex/drawio-agent-extension-v1.22.0"
 DEFAULT_BASE_URL="https://raw.githubusercontent.com/travinov/corporate-agent-skills/refs/heads/${DEFAULT_BRANCH}/dist"
 
@@ -502,4 +502,4 @@ fi
 install_completed=1
 log "Installed $EXTENSION_NAME $manifest_version"
 log "Backup for rollback: $backup_path"
-log "Restart GigaCode and run /agents list; expect four diagram-* agents."
+log "Restart GigaCode and run /agents manage; expect four diagram-* extension agents."

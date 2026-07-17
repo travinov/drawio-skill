@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -50,6 +51,9 @@ case "${2:-}" in
     rm -rf "$destination"
     mkdir -p "$GIGACODE_EXTENSIONS_DIR"
     cp -aL "$source_path" "$destination"
+    cp "$destination/gemini-extension.json" "$destination/gigacode-extension.json"
+    printf '{"source":"%s","type":"local","originSource":"Gemini"}\n' \
+      "$source_path" >"$destination/.gigacode-extension-install.json"
     [[ "${FAKE_GIGACODE_FAIL_INSTALL:-0}" == 1 ]] && exit 42
     echo publish-drawio-skill >"$registry"
     ;;
@@ -168,7 +172,7 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
 
         result = self.install()
 
-        self.assertIn("Installed publish-drawio-skill 1.22.0-corporate.1", result.stdout)
+        self.assertIn("Installed publish-drawio-skill 1.22.0-corporate.2", result.stdout)
         self.assertIn("Self-check skipped by request", result.stdout)
         self.assertFalse(legacy.exists())
         installed = self.home / "extensions" / "publish-drawio-skill"
@@ -191,7 +195,7 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
         self.assertIn("Installing pinned Python dependencies", result.stdout)
         self.assertIn("Running extension self-check", result.stdout)
         self.assertIn("fake self-check passed", result.stdout)
-        self.assertIn("Installed publish-drawio-skill 1.22.0-corporate.1", result.stdout)
+        self.assertIn("Installed publish-drawio-skill 1.22.0-corporate.2", result.stdout)
         self.assertNotIn("unbound variable", result.stdout)
         self.assertNotIn("restoring backup", result.stdout)
         self.assertEqual(
@@ -204,7 +208,7 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
         result = self.install()
 
         self.assertIn("Native 'extensions validate' is unavailable", result.stdout)
-        self.assertIn("Installed publish-drawio-skill 1.22.0-corporate.1", result.stdout)
+        self.assertIn("Installed publish-drawio-skill 1.22.0-corporate.2", result.stdout)
         self.assertTrue(
             (self.home / "extensions" / "publish-drawio-skill" / "gemini-extension.json").is_file()
         )
@@ -344,6 +348,102 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
         self.assertNotEqual(0, result.returncode)
         self.assertIn("would compete with the extension", result.stdout)
 
+    def test_verifier_uses_active_copy_when_current_source_is_missing(self) -> None:
+        self.install()
+        current = (
+            self.home / "extension-sources" / "publish-drawio-skill" / "current"
+        )
+        current.unlink()
+
+        result = self.run_script(
+            "verify_drawio_agent_extension.sh", "--skip-self-check"
+        )
+
+        self.assertIn("Verified publish-drawio-skill 1.22.0-corporate.2", result.stdout)
+
+    def test_verifier_rejects_active_source_content_mismatch(self) -> None:
+        self.install()
+        active_runtime = (
+            self.home / "extensions" / "publish-drawio-skill"
+            / "scripts" / "agent_runtime.py"
+        )
+        active_runtime.write_text(
+            active_runtime.read_text(encoding="utf-8") + "\n# tampered\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_script(
+            "verify_drawio_agent_extension.sh", "--skip-self-check", check=False
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("Manifest checksum mismatch in active: scripts/agent_runtime.py", result.stdout)
+
+    def test_verifier_rejects_unmanifested_active_payload(self) -> None:
+        self.install()
+        active = self.home / "extensions" / "publish-drawio-skill"
+        (active / "unexpected-payload.py").write_text("print('unexpected')\n", encoding="utf-8")
+
+        result = self.run_script(
+            "verify_drawio_agent_extension.sh", "--skip-self-check", check=False
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("Active inventory mismatch", result.stdout)
+        self.assertIn("unexpected-payload.py", result.stdout)
+
+    def test_verifier_rejects_invalid_active_policy_without_current_source(self) -> None:
+        self.install()
+        current = (
+            self.home / "extension-sources" / "publish-drawio-skill" / "current"
+        )
+        current.unlink()
+        active_policy = (
+            self.home / "extensions" / "publish-drawio-skill"
+            / "data" / "model-routing.default.json"
+        )
+        active_policy.write_text(
+            active_policy.read_text(encoding="utf-8").replace(
+                "vllm/DeepSeek-V4-Flash-262k", "wrong-reviewer-model"
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_script(
+            "verify_drawio_agent_extension.sh", "--skip-self-check", check=False
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("Unexpected active model routing", result.stdout)
+
+    def test_verifier_rejects_generated_manifest_or_install_metadata_mismatch(self) -> None:
+        for case in ("manifest", "metadata"):
+            with self.subTest(case=case):
+                self.install()
+                active = self.home / "extensions" / "publish-drawio-skill"
+                target = (
+                    active / "gigacode-extension.json"
+                    if case == "manifest"
+                    else active / ".gigacode-extension-install.json"
+                )
+                value = json.loads(target.read_text(encoding="utf-8"))
+                if case == "manifest":
+                    value["version"] = "0.0.0"
+                    expected = "Active GigaCode manifest mismatch for version"
+                else:
+                    value["source"] = "/unapproved/source"
+                    expected = "Active extension source mismatch"
+                target.write_text(
+                    json.dumps(value) + "\n", encoding="utf-8"
+                )
+
+                result = self.run_script(
+                    "verify_drawio_agent_extension.sh", "--skip-self-check", check=False
+                )
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn(expected, result.stdout)
+
     def test_registered_extension_without_restorable_files_is_not_uninstalled(self) -> None:
         registry = self.root / "registry.txt"
         registry.write_text("publish-drawio-skill\n", encoding="utf-8")
@@ -376,7 +476,7 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
             self.home
             / "extension-sources"
             / "publish-drawio-skill"
-            / "1.22.0-corporate.1"
+            / "1.22.0-corporate.2"
         )
         self.assertFalse(version_dir.exists())
 

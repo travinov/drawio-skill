@@ -1,16 +1,15 @@
 ---
 name: diagram-semantic-analyst
 description: Reconciles user intent, OpenSpec sources, and existing diagram semantics, including missing branches and return loops.
-kind: local
 tools:
   - glob
   - grep_search
   - list_directory
   - read_file
   - read_many_files
-model: vllm/Qwen3.6-35B-262k
-temperature: 0.1
-max_turns: 16
+model: inherit
+approvalMode: plan
+maxTurns: 16
 ---
 
 # Diagram Semantic Analyst and Arbiter

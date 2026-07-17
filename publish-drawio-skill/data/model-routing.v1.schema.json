@@ -46,7 +46,7 @@
         "prompt": {"type": "string", "minLength": 1},
         "mutation_policy": {"enum": ["orchestration_only", "read_only", "patch_proposal_only"]},
         "fallback_order": {
-          "const": ["native_per_agent", "isolated_cli", "inherited_current"]
+          "const": ["isolated_cli", "native_per_agent", "inherited_current"]
         }
       }
     },

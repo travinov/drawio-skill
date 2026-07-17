@@ -4,7 +4,7 @@
 
 | Extension | Версия | Назначение |
 |---|---:|---|
-| [`drawio-skill`](publish-drawio-skill/) | `1.22.0-corporate.1` | Редактируемые draw.io-диаграммы с Supervisor/Reviewer/Repair/Semantic Analyst, roadmap, git-flow и архитектурными схемами |
+| [`drawio-skill`](publish-drawio-skill/) | `1.22.0-corporate.2` | Редактируемые draw.io-диаграммы с Supervisor/Reviewer/Repair/Semantic Analyst, roadmap, git-flow и архитектурными схемами |
 | [`bpmn-architect`](publish-bpmn-skill/) | `0.3.0` | Семантические BPMN 2.0 модели с многоуровневой раскладкой collaboration, spatial validation и round-trip проверкой |
 
 Extension не вложены друг в друга и могут устанавливаться отдельно.
@@ -56,7 +56,7 @@ chmod +x install/*.sh
 ./install/rollback_drawio_agent_extension.sh --latest
 ```
 
-После перезапуска GigaCode команда `/agents list` должна показать четыре
+После перезапуска GigaCode команда `/agents manage` должна показать четыре
 `diagram-*` агента. Реальный запуск выполняется только на ноутбуке, где
 установлен GigaCode CLI; локальные тесты репозитория используют fake CLI и не
 изменяют `~/.gigacode`.

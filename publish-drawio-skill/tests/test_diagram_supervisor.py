@@ -1367,7 +1367,7 @@ class EvidenceAndStateTests(unittest.TestCase):
 
 
 class ModelRoutingTests(unittest.TestCase):
-    def test_approved_role_models_and_native_isolated_inherited_fallback_order(self):
+    def test_approved_role_models_and_isolated_native_inherited_fallback_order(self):
         policy_path = ROOT / "data" / "model-routing.default.json"
         policy = json.loads(policy_path.read_text(encoding="utf-8"))
         expected = {
@@ -1389,32 +1389,43 @@ class ModelRoutingTests(unittest.TestCase):
         }
         for role, agent_file in agent_files.items():
             agent_definition = (ROOT / "agents" / agent_file).read_text(encoding="utf-8")
-            self.assertIn(f"model: {expected[role]}\n", agent_definition)
+            self.assertIn("model: inherit\n", agent_definition)
+            self.assertIn("maxTurns:", agent_definition)
+            self.assertNotIn("max_turns:", agent_definition)
+            self.assertNotIn("kind:", agent_definition)
+            self.assertNotIn("temperature:", agent_definition)
+        for role in ("reviewer", "repair", "semantic_analyst"):
+            agent_definition = (ROOT / "agents" / agent_files[role]).read_text(encoding="utf-8")
+            self.assertIn("approvalMode: plan\n", agent_definition)
         self.assertEqual(policy["global_interactive_model"], "preserve")
+        self.assertEqual(
+            {tuple(config["fallback_order"]) for config in policy["roles"].values()},
+            {("isolated_cli", "native_per_agent", "inherited_current")},
+        )
 
         results = []
         for role, requested_model in expected.items():
-            with self.subTest(role=role, mode="native"):
-                native = supervisor.resolve_model(
+            with self.subTest(role=role, mode="isolated"):
+                isolated = supervisor.resolve_model(
                     policy_path, role, native_available=True,
                     isolated_available=True, current_model="interactive-model",
                 )
-                self.assertEqual(native["resolution_mode"], "native_per_agent")
-                self.assertEqual(native["requested_model"], requested_model)
-                self.assertEqual(native["resolved_model"], requested_model)
-                self.assertFalse(native["fallback_used"])
-                self.assertIsNone(native["degradation_reason"])
-                results.append(native)
+                self.assertEqual(isolated["resolution_mode"], "isolated_cli")
+                self.assertEqual(isolated["requested_model"], requested_model)
+                self.assertEqual(isolated["resolved_model"], requested_model)
+                self.assertFalse(isolated["fallback_used"])
+                self.assertIsNone(isolated["degradation_reason"])
+                results.append(isolated)
 
-        isolated = supervisor.resolve_model(
-            policy_path, "reviewer", isolated_available=True,
+        native = supervisor.resolve_model(
+            policy_path, "reviewer", native_available=True,
             current_model="interactive-model",
         )
-        self.assertEqual(isolated["resolution_mode"], "isolated_cli")
-        self.assertEqual(isolated["resolved_model"], expected["reviewer"])
-        self.assertTrue(isolated["fallback_used"])
-        self.assertIsNone(isolated["degradation_reason"])
-        results.append(isolated)
+        self.assertEqual(native["resolution_mode"], "native_per_agent")
+        self.assertEqual(native["resolved_model"], expected["reviewer"])
+        self.assertTrue(native["fallback_used"])
+        self.assertIsNone(native["degradation_reason"])
+        results.append(native)
 
         inherited = supervisor.resolve_model(
             policy_path, "reviewer", current_model="interactive-model"
@@ -1424,7 +1435,7 @@ class ModelRoutingTests(unittest.TestCase):
         self.assertEqual(inherited["resolved_model"], "interactive-model")
         self.assertEqual(inherited["provider"], "unknown")
         self.assertTrue(inherited["fallback_used"])
-        self.assertIn("neither native", inherited["degradation_reason"])
+        self.assertIn("neither a verified isolated", inherited["degradation_reason"])
         results.append(inherited)
 
         serialized = json.dumps(results, ensure_ascii=False, sort_keys=True)
@@ -1442,6 +1453,140 @@ class AgentRuntimeTests(unittest.TestCase):
             "validation_receipt": {"sha256": digest},
         }
 
+    @classmethod
+    def reviewer_verdict(cls, verdict_id="proof"):
+        payload = cls.reviewer_input()
+        digest = payload["candidate"]["sha256"]
+        return {
+            "schema_version": 1,
+            "verdict_id": verdict_id,
+            "run_id": payload["run_id"],
+            "candidate_sha256": digest,
+            "report_sha256": digest,
+            "receipt_sha256": digest,
+            "verdict": "approve",
+            "reviewed_at": "2026-07-16T00:00:00Z",
+            "findings": [],
+        }
+
+    @staticmethod
+    def gigacode_events(value, *, model="vllm/DeepSeek-V4-Flash-262k"):
+        encoded = json.dumps(value)
+        return [
+            {
+                "type": "system", "subtype": "init", "model": model,
+                "qwen_code_version": "0.13.1",
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "model": model,
+                    "content": [{"type": "text", "text": encoded}],
+                },
+            },
+            {
+                "type": "result", "subtype": "success", "is_error": False,
+                "result": encoded, "stats": {"models": {model: {}}},
+            },
+        ]
+
+    def test_gigacode_event_parser_accepts_result_and_last_assistant_payload(self):
+        verdict = self.reviewer_verdict()
+        events = self.gigacode_events(verdict)
+        events.insert(2, {
+            "type": "assistant",
+            "message": {
+                "model": "vllm/DeepSeek-V4-Flash-262k",
+                "content": [{"type": "text", "text": json.dumps(verdict)}],
+            },
+        })
+        parsed, metadata = agent_runtime.parse_runtime_output(
+            "reviewer", json.dumps(events)
+        )
+        self.assertEqual(parsed, verdict)
+        self.assertTrue(metadata["model_proof"]["verified"])
+        self.assertEqual(metadata["runtime_version"], "0.13.1")
+
+        events[-1]["result"] = ""
+        parsed_from_assistant, fallback_metadata = agent_runtime.parse_runtime_output(
+            "reviewer", json.dumps(events)
+        )
+        self.assertEqual(parsed_from_assistant, verdict)
+        self.assertEqual(
+            fallback_metadata["reported_model"], "vllm/DeepSeek-V4-Flash-262k"
+        )
+
+    def test_gigacode_event_parser_rejects_incomplete_or_ambiguous_model_proof(self):
+        verdict = self.reviewer_verdict()
+        base = self.gigacode_events(verdict)
+
+        def without(event_type):
+            return [event for event in self.gigacode_events(verdict) if event["type"] != event_type]
+
+        cases = {
+            "missing-system": (without("system"), "model proof is ambiguous"),
+            "missing-assistant": (without("assistant"), "model proof is ambiguous"),
+            "missing-result": (without("result"), "has no result event"),
+            "empty-stats-models": (
+                [*base[:-1], {**base[-1], "stats": {"models": {}}}],
+                "model proof mismatch",
+            ),
+            "missing-stats": (
+                [*base[:-1], {key: value for key, value in base[-1].items() if key != "stats"}],
+                "model proof mismatch",
+            ),
+            "ambiguous-system": (
+                [
+                    base[0],
+                    {**base[0], "model": "other-model"},
+                    *base[1:],
+                ],
+                "model proof is ambiguous",
+            ),
+            "ambiguous-assistant": (
+                [
+                    base[0], base[1],
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "model": "other-model",
+                            "content": [{"type": "text", "text": json.dumps(verdict)}],
+                        },
+                    },
+                    base[2],
+                ],
+                "model proof is ambiguous",
+            ),
+        }
+        for name, (events, message) in cases.items():
+            with self.subTest(case=name), self.assertRaisesRegex(
+                supervisor.SupervisorError, message
+            ):
+                agent_runtime.parse_runtime_output("reviewer", json.dumps(events))
+
+    def test_gigacode_event_parser_rejects_failed_result_and_bad_payload(self):
+        verdict = self.reviewer_verdict()
+        base = self.gigacode_events(verdict)
+        cases = {
+            "is-error": (
+                [*base[:-1], {**base[-1], "is_error": True, "result": "denied"}],
+                "result reports failure",
+            ),
+            "failed-subtype": (
+                [*base[:-1], {**base[-1], "subtype": "error", "result": "denied"}],
+                "result reports failure",
+            ),
+            "malformed-role-json": (
+                [*base[:-1], {**base[-1], "result": "not-json"}],
+                "is not role JSON",
+            ),
+        }
+        for name, (events, message) in cases.items():
+            with self.subTest(case=name), self.assertRaisesRegex(
+                supervisor.SupervisorError, message
+            ):
+                agent_runtime.parse_runtime_output("reviewer", json.dumps(events))
+
     @staticmethod
     def fake_cli(path, behavior):
         script = (
@@ -1450,6 +1595,14 @@ class AgentRuntimeTests(unittest.TestCase):
             "if '--help' in sys.argv:\n"
             "    print('--model --prompt --output-format --approval-mode')\n"
             "    raise SystemExit(0)\n"
+            "def emit(value):\n"
+            "    model=sys.argv[sys.argv.index('--model')+1]\n"
+            "    encoded=json.dumps(value)\n"
+            "    print(json.dumps([\n"
+            "      {'type':'system','subtype':'init','model':model,'qwen_code_version':'0.13.1'},\n"
+            "      {'type':'assistant','message':{'model':model,'content':[{'type':'text','text':encoded}]}},\n"
+            "      {'type':'result','subtype':'success','is_error':False,'result':encoded,'stats':{'models':{model:{'api':{'totalRequests':1}}}}}\n"
+            "    ]))\n"
             + behavior
         )
         write_text(path, script)
@@ -1464,7 +1617,7 @@ class AgentRuntimeTests(unittest.TestCase):
                 "if 'DIAGRAM_TEST_SECRET' in os.environ: raise SystemExit(91)\n"
                 "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
                 "d=payload['candidate']['sha256']\n"
-                "print(json.dumps({'schema_version':1,'verdict_id':'v1','run_id':payload['run_id'],'candidate_sha256':d,'report_sha256':payload['validation_report']['sha256'],'receipt_sha256':payload['validation_receipt']['sha256'],'verdict':'approve','reviewed_at':'2026-07-16T00:00:00Z','findings':[]}))\n",
+                "emit({'schema_version':1,'verdict_id':'v1','run_id':payload['run_id'],'candidate_sha256':d,'report_sha256':payload['validation_report']['sha256'],'receipt_sha256':payload['validation_receipt']['sha256'],'verdict':'approve','reviewed_at':'2026-07-16T00:00:00Z','findings':[]})\n",
             )
             input_path = write_json(temp / "input.json", self.reviewer_input())
             output_path = temp / "verdict.json"
@@ -1481,8 +1634,54 @@ class AgentRuntimeTests(unittest.TestCase):
                     os.environ["DIAGRAM_TEST_SECRET"] = old
             self.assertEqual(result["exit_code"], 0)
             self.assertEqual(json.loads(output_path.read_text())["verdict"], "approve")
+            self.assertEqual(result["runtime_metadata"]["format"], "gigacode_json_events")
+            self.assertTrue(result["runtime_metadata"]["model_proof"]["verified"])
+            self.assertEqual(result["runtime_metadata"]["runtime_version"], "0.13.1")
             events = [json.loads(line) for line in (temp / "run/run-manifest.jsonl").read_text().splitlines()]
             self.assertEqual([event["event_type"] for event in events], ["model_resolved", "review_verdict"])
+
+    def test_gigacode_model_proof_mismatch_or_missing_proof_is_not_published(self):
+        valid = (
+            "{'schema_version':1,'verdict_id':'proof','run_id':payload['run_id'],"
+            "'candidate_sha256':d,'report_sha256':payload['validation_report']['sha256'],"
+            "'receipt_sha256':payload['validation_receipt']['sha256'],'verdict':'approve',"
+            "'reviewed_at':'2026-07-16T00:00:00Z','findings':[]}"
+        )
+        cases = (
+            (
+                "mismatch",
+                "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
+                "d=payload['candidate']['sha256']\n"
+                f"value={valid}\n"
+                "requested=sys.argv[sys.argv.index('--model')+1]\n"
+                "encoded=json.dumps(value)\n"
+                "print(json.dumps([{'type':'system','subtype':'init','model':requested},"
+                "{'type':'assistant','message':{'model':'wrong-model','content':[{'type':'text','text':encoded}]}},"
+                "{'type':'result','subtype':'success','is_error':False,'result':encoded,'stats':{'models':{requested:{}}}}]))\n",
+                "model proof mismatch",
+            ),
+            (
+                "missing",
+                "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
+                "d=payload['candidate']['sha256']\n"
+                f"print(json.dumps({valid}))\n",
+                "did not provide verifiable model evidence",
+            ),
+        )
+        for name, behavior, message in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as temp:
+                temp = Path(temp)
+                cli = self.fake_cli(temp / f"{name}-cli", behavior)
+                output = temp / "verdict.json"
+                with self.assertRaisesRegex(supervisor.SupervisorError, message):
+                    agent_runtime.invoke_role(
+                        "reviewer", write_json(temp / "input.json", self.reviewer_input()),
+                        output, cli=str(cli), run_dir=temp / "run",
+                    )
+                self.assertFalse(output.exists())
+                manifest = temp / "run/run-manifest.jsonl"
+                events = [json.loads(line) for line in manifest.read_text().splitlines()]
+                self.assertEqual([event["event_type"] for event in events], ["role_failed"])
 
     def test_realistic_gemini_envelope_extracts_inner_verdict_and_keeps_sanitized_stats(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1492,7 +1691,8 @@ class AgentRuntimeTests(unittest.TestCase):
                 "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
                 "d=payload['candidate']['sha256']\n"
                 "inner={'schema_version':1,'verdict_id':'vg','run_id':payload['run_id'],'candidate_sha256':d,'report_sha256':payload['validation_report']['sha256'],'receipt_sha256':payload['validation_receipt']['sha256'],'verdict':'approve','reviewed_at':'2026-07-16T00:00:00Z','findings':[]}\n"
-                "print(json.dumps({'response':json.dumps(inner),'stats':{'input_tokens':12,'secret':'do-not-record'},'errors':[]}))\n",
+                "model=sys.argv[sys.argv.index('--model')+1]\n"
+                "print(json.dumps({'response':json.dumps(inner),'model':model,'stats':{'input_tokens':12,'secret':'do-not-record'},'errors':[]}))\n",
             )
             result = agent_runtime.invoke_role(
                 "reviewer", write_json(temp / "input.json", self.reviewer_input()),
@@ -1552,7 +1752,7 @@ class AgentRuntimeTests(unittest.TestCase):
                 "    raise SystemExit(3)\n"
                 "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
                 "d=payload['candidate']['sha256']\n"
-                "print(json.dumps({'schema_version':1,'verdict_id':'vf','run_id':payload['run_id'],'candidate_sha256':d,'report_sha256':payload['validation_report']['sha256'],'receipt_sha256':payload['validation_receipt']['sha256'],'verdict':'approve','reviewed_at':'2026-07-16T00:00:00Z','findings':[]}))\n",
+                "emit({'schema_version':1,'verdict_id':'vf','run_id':payload['run_id'],'candidate_sha256':d,'report_sha256':payload['validation_report']['sha256'],'receipt_sha256':payload['validation_receipt']['sha256'],'verdict':'approve','reviewed_at':'2026-07-16T00:00:00Z','findings':[]})\n",
             )
             result = agent_runtime.invoke_role(
                 "reviewer", write_json(temp / "input.json", self.reviewer_input()),
@@ -1569,6 +1769,37 @@ class AgentRuntimeTests(unittest.TestCase):
             )
             events = [json.loads(line) for line in (temp / "run/run-manifest.jsonl").read_text().splitlines()]
             self.assertEqual([event["event_type"] for event in events], ["role_failed", "model_resolved", "review_verdict"])
+
+    def test_cli_without_model_flag_records_proven_runtime_default_as_degradation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            cli = write_text(
+                temp / "inherited-cli",
+                f"#!{sys.executable}\n"
+                "import json, sys\n"
+                "if '--help' in sys.argv:\n"
+                "    print('--prompt --output-format --approval-mode')\n"
+                "    raise SystemExit(0)\n"
+                "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
+                "d=payload['candidate']['sha256']\n"
+                "value={'schema_version':1,'verdict_id':'inherited','run_id':payload['run_id'],'candidate_sha256':d,'report_sha256':payload['validation_report']['sha256'],'receipt_sha256':payload['validation_receipt']['sha256'],'verdict':'approve','reviewed_at':'2026-07-16T00:00:00Z','findings':[]}\n"
+                "encoded=json.dumps(value)\n"
+                "model='runtime-default-model'\n"
+                "print(json.dumps([{'type':'system','subtype':'init','model':model},"
+                "{'type':'assistant','message':{'model':model,'content':[{'type':'text','text':encoded}]}},"
+                "{'type':'result','subtype':'success','is_error':False,'result':encoded,'stats':{'models':{model:{}}}}]))\n",
+            )
+            os.chmod(cli, 0o755)
+            result = agent_runtime.invoke_role(
+                "reviewer", write_json(temp / "input.json", self.reviewer_input()),
+                temp / "verdict.json", cli=str(cli), run_dir=temp / "run",
+                current_model="interactive-model", current_provider="parent-provider",
+            )
+            self.assertEqual(result["resolution"]["resolution_mode"], "inherited_current")
+            self.assertEqual(result["resolution"]["resolved_model"], "runtime-default-model")
+            self.assertEqual(result["resolution"]["provider"], "unknown")
+            self.assertTrue(result["resolution"]["fallback_used"])
+            self.assertNotIn("--model", result["command"])
 
     def test_dry_run_uses_capability_checked_argument_array_without_global_model_command(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1610,6 +1841,65 @@ class AgentRuntimeTests(unittest.TestCase):
                 (ROOT / "data" / "model-routing.default.json").read_text(encoding="utf-8")
             )
             self.assertEqual(policy["global_interactive_model"], "preserve")
+
+    def test_gigacode_dry_run_pins_corporate_auth_type_when_supported(self):
+        for executable, help_text in (
+            ("gigacode", "--model --prompt --output-format --approval-mode --auth-type"),
+            (
+                "corporate-wrapper",
+                "GigaCode - CLI --model --prompt --output-format --approval-mode "
+                "--auth-type choices: gigacode",
+            ),
+        ):
+            with self.subTest(executable=executable), tempfile.TemporaryDirectory() as temp:
+                temp = Path(temp)
+                cli = write_text(
+                    temp / executable,
+                    f"#!{sys.executable}\n"
+                    "import sys\n"
+                    "if '--help' in sys.argv:\n"
+                    f"    print({help_text!r})\n"
+                    "    raise SystemExit(0)\n"
+                    "raise SystemExit(99)\n",
+                )
+                os.chmod(cli, 0o755)
+                result = agent_runtime.invoke_role(
+                    "reviewer", write_json(temp / "input.json", {"artifact": "candidate.drawio"}),
+                    temp / "output.json", cli=str(cli), dry_run=True,
+                )
+                self.assertEqual(result["command"].count("--auth-type"), 1)
+                self.assertEqual(
+                    result["command"][result["command"].index("--auth-type") + 1],
+                    "gigacode",
+                )
+
+    def test_default_cli_uses_detected_corporate_gigacode_path(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            cli = write_text(
+                temp / "gigacode",
+                f"#!{sys.executable}\n"
+                "import sys\n"
+                "if '--help' in sys.argv:\n"
+                "    print('GigaCode --model --prompt --output-format --approval-mode --auth-type gigacode')\n"
+                "    raise SystemExit(0)\n"
+                "raise SystemExit(99)\n",
+            )
+            os.chmod(cli, 0o755)
+            original = agent_runtime.DEFAULT_CLI
+            agent_runtime.DEFAULT_CLI = str(cli)
+            try:
+                result = agent_runtime.invoke_role(
+                    "reviewer", write_json(temp / "input.json", {"artifact": "candidate.drawio"}),
+                    temp / "output.json", dry_run=True,
+                )
+            finally:
+                agent_runtime.DEFAULT_CLI = original
+            self.assertEqual(result["command"][0], str(cli))
+            self.assertEqual(
+                result["command"][result["command"].index("--auth-type") + 1],
+                "gigacode",
+            )
 
     def test_dry_run_refuses_cli_without_required_capabilities(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1663,7 +1953,7 @@ class AgentRuntimeTests(unittest.TestCase):
             fake = self.fake_cli(
                 temp / "reviewer-cli",
                 "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
-                "print(json.dumps({'schema_version':1,'verdict_id':'e2e','run_id':payload['run_id'],'candidate_sha256':payload['candidate']['artifact']['sha256'],'report_sha256':payload['candidate']['report']['sha256'],'receipt_sha256':payload['candidate']['receipt']['sha256'],'verdict':'approve','reviewed_at':'2026-07-16T00:00:00Z','findings':[]}))\n",
+                "emit({'schema_version':1,'verdict_id':'e2e','run_id':payload['run_id'],'candidate_sha256':payload['candidate']['artifact']['sha256'],'report_sha256':payload['candidate']['report']['sha256'],'receipt_sha256':payload['candidate']['receipt']['sha256'],'verdict':'approve','reviewed_at':'2026-07-16T00:00:00Z','findings':[]})\n",
             )
             run(
                 agent_cli, "reviewer", run_dir / "reviewer-input.json", "--cli", fake,

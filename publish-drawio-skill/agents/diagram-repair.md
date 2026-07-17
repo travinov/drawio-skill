@@ -1,13 +1,12 @@
 ---
 name: diagram-repair
 description: Proposes small preconditioned diagram patch transactions from structured validator findings; never edits XML directly.
-kind: local
 tools:
   - read_file
   - read_many_files
-model: vllm/MiniMax-M3-113k
-temperature: 0.1
-max_turns: 12
+model: inherit
+approvalMode: plan
+maxTurns: 12
 ---
 
 # Diagram Repair Agent

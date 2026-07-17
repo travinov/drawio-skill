@@ -23,6 +23,10 @@ from diagram_supervisor import SupervisorError, append_event, load_json, resolve
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_POLICY = ROOT / "data" / "model-routing.default.json"
+CORPORATE_GIGACODE = Path.home() / ".gigacode" / "bin" / "gigacode"
+DEFAULT_CLI = os.environ.get("GIGACODE_BIN") or (
+    str(CORPORATE_GIGACODE) if CORPORATE_GIGACODE.is_file() else "gemini"
+)
 SAFE_ENV_KEYS = {
     "HOME", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "PATH",
     "SYSTEMROOT", "TEMP", "TMP", "TMPDIR", "WINDIR",
@@ -48,8 +52,10 @@ def role_body(path):
     return text[marker + 5:].strip()
 
 
-def build_gemini_command(cli, model=None):
+def build_gemini_command(cli, model=None, auth_type=None):
     command = [cli]
+    if auth_type:
+        command.extend(["--auth-type", auth_type])
     if model:
         command.extend(["--model", model])
     command.extend([
@@ -74,12 +80,113 @@ def detect_cli_capabilities(cli):
     required = ("--model", *base_required)
     missing = [flag for flag in required if flag not in help_text]
     inherited_missing = [flag for flag in base_required if flag not in help_text]
+    supports_auth_type = "--auth-type" in help_text
+    looks_like_gigacode = (
+        "gigacode" in Path(cli).name.lower()
+        or bool(re.search(r"(?i)\bGigaCode\b|--auth-type.{0,240}\bgigacode\b", help_text, re.DOTALL))
+    )
     return {
         "available": completed.returncode == 0 and not missing,
         "inherited_available": completed.returncode == 0 and not inherited_missing,
+        "supports_auth_type": supports_auth_type,
+        "suggested_auth_type": "gigacode" if supports_auth_type and looks_like_gigacode else None,
         "exit_code": completed.returncode,
         "required_flags": list(required),
         "missing_flags": missing,
+    }
+
+
+def _parse_json_role_text(role, value, source):
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        raise SupervisorError(f"isolated {role} {source} must be a JSON object or encoded JSON string")
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise SupervisorError(f"isolated {role} {source} is not role JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise SupervisorError(f"isolated {role} {source} must decode to a JSON object")
+    return parsed
+
+
+def _parse_gigacode_events(role, events):
+    if not events or not all(isinstance(event, dict) for event in events):
+        raise SupervisorError(f"isolated {role} GigaCode event output must be a non-empty object array")
+
+    system_models = {
+        event.get("model")
+        for event in events
+        if event.get("type") == "system" and event.get("subtype") == "init" and event.get("model")
+    }
+    assistant_models = set()
+    assistant_texts = []
+    for event in events:
+        if event.get("type") != "assistant" or not isinstance(event.get("message"), dict):
+            continue
+        message = event["message"]
+        if message.get("model"):
+            assistant_models.add(message["model"])
+        content = message.get("content")
+        if isinstance(content, list):
+            text_parts = [
+                item.get("text") for item in content
+                if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str)
+            ]
+            if text_parts:
+                assistant_texts.append("".join(text_parts))
+
+    results = [event for event in events if event.get("type") == "result"]
+    if not results:
+        raise SupervisorError(f"isolated {role} GigaCode output has no result event")
+    result = results[-1]
+    if result.get("is_error") is True or result.get("subtype") not in (None, "success"):
+        raise SupervisorError(
+            f"isolated {role} GigaCode result reports failure: "
+            f"{redact(str(result.get('result') or result.get('error') or result.get('subtype')))}"
+        )
+
+    stats = result.get("stats") if isinstance(result.get("stats"), dict) else {}
+    stats_models_value = stats.get("models") if isinstance(stats.get("models"), dict) else {}
+    stats_models = set(stats_models_value)
+    if len(system_models) != 1 or len(assistant_models) != 1:
+        raise SupervisorError(
+            f"isolated {role} GigaCode model proof is ambiguous: "
+            f"system={sorted(system_models)}, assistant={sorted(assistant_models)}"
+        )
+    system_model = next(iter(system_models))
+    assistant_model = next(iter(assistant_models))
+    if system_model != assistant_model or system_model not in stats_models:
+        raise SupervisorError(
+            f"isolated {role} GigaCode model proof mismatch: system={system_model!r}, "
+            f"assistant={assistant_model!r}, stats={sorted(stats_models)!r}"
+        )
+
+    role_value = result.get("result")
+    if role_value in (None, ""):
+        if not assistant_texts:
+            raise SupervisorError(f"isolated {role} GigaCode output has no assistant role payload")
+        role_value = assistant_texts[-1]
+    parsed = _parse_json_role_text(role, role_value, "GigaCode result")
+    return parsed, {
+        "format": "gigacode_json_events",
+        "stats": sanitized_metadata(stats),
+        "errors": sanitized_metadata(result.get("error")),
+        "reported_model": system_model,
+        "model_proof": {
+            "verified": True,
+            "system_model": system_model,
+            "assistant_model": assistant_model,
+            "stats_models": sorted(stats_models),
+        },
+        "runtime_version": next(
+            (
+                event.get("qwen_code_version")
+                for event in events
+                if event.get("type") == "system" and event.get("subtype") == "init"
+            ),
+            None,
+        ),
     }
 
 
@@ -107,29 +214,27 @@ def parse_runtime_output(role, output):
         outer = json.loads(output)
     except json.JSONDecodeError as exc:
         raise SupervisorError(f"isolated {role} output is not valid JSON: {exc}") from exc
+    if isinstance(outer, list):
+        return _parse_gigacode_events(role, outer)
     if isinstance(outer, dict) and "response" in outer:
         errors = outer.get("errors")
         error = outer.get("error")
         if errors not in (None, [], {}, "") or error not in (None, [], {}, "", False):
             raise SupervisorError(f"isolated {role} Gemini envelope reports errors")
-        response = outer["response"]
-        if isinstance(response, str):
-            try:
-                parsed = json.loads(response)
-            except json.JSONDecodeError as exc:
-                raise SupervisorError(f"isolated {role} Gemini response is not role JSON: {exc}") from exc
-        elif isinstance(response, dict):
-            parsed = response
-        else:
-            raise SupervisorError(f"isolated {role} Gemini response must be a JSON object or encoded JSON string")
+        parsed = _parse_json_role_text(role, outer["response"], "Gemini response")
+        reported_model = outer.get("model") or (outer.get("stats") or {}).get("model")
         metadata = {
             "format": "gemini_json_envelope",
             "stats": sanitized_metadata(outer.get("stats")),
             "errors": sanitized_metadata(errors if errors is not None else error),
-            "reported_model": outer.get("model") or (outer.get("stats") or {}).get("model"),
+            "reported_model": reported_model,
+            "model_proof": {"verified": bool(reported_model), "envelope_model": reported_model},
         }
         return parsed, metadata
-    return outer, {"format": "direct_role_json", "stats": None, "errors": None, "reported_model": None}
+    return outer, {
+        "format": "direct_role_json", "stats": None, "errors": None,
+        "reported_model": None, "model_proof": {"verified": False},
+    }
 
 
 def validate_role_output(role, parsed):
@@ -168,10 +273,11 @@ def record_failure(run_dir, role, phase, requested_model, *, exit_code=None, dia
 
 
 def invoke_role(
-    role, input_path, output_path, *, cli="gemini", policy_path=DEFAULT_POLICY,
+    role, input_path, output_path, *, cli=None, policy_path=DEFAULT_POLICY,
     run_dir=None, timeout=600, cwd=None, dry_run=False,
-    current_model=None, current_provider=None,
+    current_model=None, current_provider=None, auth_type=None,
 ):
+    cli = cli or DEFAULT_CLI
     policy = load_json(policy_path)
     config = policy.get("roles", {}).get(role)
     if config is None:
@@ -188,7 +294,16 @@ def invoke_role(
     if not capabilities["available"] and not inherited_without_override:
         record_failure(run_dir, role, "capability_detection", config["requested_model"], diagnostic=str(capabilities))
         raise SupervisorError(f"CLI {cli!r} lacks isolated-role capabilities: {capabilities}")
-    command = build_gemini_command(cli, None if inherited_without_override else config["requested_model"])
+    if auth_type and not capabilities["supports_auth_type"]:
+        record_failure(
+            run_dir, role, "capability_detection", config["requested_model"],
+            diagnostic=f"CLI {cli!r} does not support explicit --auth-type",
+        )
+        raise SupervisorError(f"CLI {cli!r} does not support explicit --auth-type")
+    auth_type = auth_type or capabilities["suggested_auth_type"]
+    command = build_gemini_command(
+        cli, None if inherited_without_override else config["requested_model"], auth_type=auth_type,
+    )
     resolution = resolve_model(
         policy_path, role, isolated_available=not inherited_without_override,
         current_model=("unknown/default" if inherited_without_override else None),
@@ -214,13 +329,14 @@ def invoke_role(
     except subprocess.TimeoutExpired as exc:
         record_failure(run_dir, role, "execution_timeout", config["requested_model"], diagnostic=str(exc))
         raise SupervisorError(f"isolated {role} process timed out after {timeout}s") from exc
-    if completed.returncode != 0 and not inherited_without_override and current_model and model_unavailable(completed.stderr):
+    failure_diagnostic = (completed.stderr or "") + "\n" + (completed.stdout or "")
+    if completed.returncode != 0 and not inherited_without_override and current_model and model_unavailable(failure_diagnostic):
         record_failure(
             run_dir, role, "requested_model_unavailable", config["requested_model"],
-            exit_code=completed.returncode, diagnostic=completed.stderr,
+            exit_code=completed.returncode, diagnostic=failure_diagnostic,
         )
         inherited_without_override = False
-        command = build_gemini_command(cli, current_model)
+        command = build_gemini_command(cli, current_model, auth_type=auth_type)
         try:
             completed = subprocess.run(
                 command, input=stdin_text, text=True, capture_output=True, check=False,
@@ -237,22 +353,35 @@ def invoke_role(
         result["resolution"] = resolution
         result["fallback_from"] = config["requested_model"]
     if completed.returncode != 0:
+        failure_diagnostic = (completed.stderr or "") + "\n" + (completed.stdout or "")
         record_failure(
             run_dir, role, "execution", config["requested_model"],
-            exit_code=completed.returncode, diagnostic=completed.stderr,
+            exit_code=completed.returncode, diagnostic=failure_diagnostic,
         )
-        raise SupervisorError(f"isolated {role} process failed with exit code {completed.returncode}: {redact(completed.stderr[-1000:])}")
+        raise SupervisorError(
+            f"isolated {role} process failed with exit code {completed.returncode}: "
+            f"{redact(failure_diagnostic[-1000:])}"
+        )
     try:
         parsed_output, runtime_metadata = parse_runtime_output(role, completed.stdout)
         parsed_output = validate_role_output(role, parsed_output)
         reported_model = runtime_metadata.get("reported_model")
-        if reported_model:
-            if current_model and result.get("fallback_from") and reported_model != current_model:
-                raise SupervisorError(
-                    f"inherited fallback reported model {reported_model!r}, expected {current_model!r}"
-                )
-            resolution["resolved_model"] = reported_model
-            resolution["fallback_used"] = resolution["resolution_mode"] != "native_per_agent" or reported_model != resolution["requested_model"]
+        expected_model = (
+            None
+            if inherited_without_override and not result.get("fallback_from")
+            else current_model if result.get("fallback_from")
+            else config["requested_model"]
+        )
+        if not runtime_metadata.get("model_proof", {}).get("verified") or not reported_model:
+            raise SupervisorError(f"isolated {role} runtime did not provide verifiable model evidence")
+        if expected_model is not None and reported_model != expected_model:
+            raise SupervisorError(
+                f"isolated {role} reported model {reported_model!r}, expected {expected_model!r}"
+            )
+        resolution["resolved_model"] = reported_model
+        resolution["fallback_used"] = (
+            resolution["fallback_used"] or reported_model != resolution["requested_model"]
+        )
     except SupervisorError as exc:
         record_failure(run_dir, role, "output_validation", config["requested_model"], diagnostic=str(exc))
         raise
@@ -293,13 +422,14 @@ def main():
     parser.add_argument("role", choices=("supervisor", "reviewer", "repair", "semantic_analyst"))
     parser.add_argument("input", help="JSON role input")
     parser.add_argument("--output", required=True)
-    parser.add_argument("--cli", default="gemini")
+    parser.add_argument("--cli", default=DEFAULT_CLI)
     parser.add_argument("--policy", default=str(DEFAULT_POLICY))
     parser.add_argument("--run-dir")
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--cwd")
     parser.add_argument("--current-model")
     parser.add_argument("--current-provider")
+    parser.add_argument("--auth-type")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     try:
@@ -307,6 +437,7 @@ def main():
             args.role, args.input, args.output, cli=args.cli, policy_path=args.policy,
             run_dir=args.run_dir, timeout=args.timeout, cwd=args.cwd, dry_run=args.dry_run,
             current_model=args.current_model, current_provider=args.current_provider,
+            auth_type=args.auth_type,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, SupervisorError) as exc:

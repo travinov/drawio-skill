@@ -31,6 +31,10 @@ Finder-created `.DS_Store` metadata is ignored during the strict inventory check
 The dependency step may still contact the Python package registry already
 configured by the corporate environment.
 
+Corporate mode disables `gigacode extensions update`. To upgrade, transfer and
+unpack the new ZIP, then run its bundled installer again. Do not manually delete
+the previous extension: the installer backs it up before local reinstall.
+
 Use `--skip-deps` only if the locked Python dependencies are already installed
 or the corporate Python environment is managed separately. Use `--dry-run` to
 validate the complete internal manifest, invoke native GigaCode validation when
@@ -46,7 +50,7 @@ from the extracted `drawio-skill` directory:
 ./install/verify_drawio_agent_extension.sh
 ```
 
-After verification, restart GigaCode and run `/agents list`. Expected agents:
+After verification, restart GigaCode and run `/agents manage`. Expected extension agents:
 
 - `diagram-supervisor`
 - `diagram-reviewer`

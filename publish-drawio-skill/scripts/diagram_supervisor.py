@@ -1163,22 +1163,30 @@ def resolve_model(
         raise SupervisorError(f"unknown model role {role!r}")
     config = policy["roles"][role]
     requested = config["requested_model"]
-    if native_available:
-        mode, resolved, provider, reason = "native_per_agent", requested, config["provider"], None
-    elif isolated_available:
-        mode, resolved, provider, reason = "isolated_cli", requested, config["provider"], None
-    elif current_model:
-        mode, resolved, provider = "inherited_current", current_model, current_provider or "unknown"
-        reason = "runtime has neither native per-agent model overrides nor an isolated explicit-model CLI"
-    else:
+    availability = {
+        "native_per_agent": native_available,
+        "isolated_cli": isolated_available,
+        "inherited_current": bool(current_model),
+    }
+    selected_index = next(
+        (index for index, candidate in enumerate(config["fallback_order"]) if availability[candidate]),
+        None,
+    )
+    if selected_index is None:
         raise SupervisorError("model resolution requires native support, isolated CLI support, or current_model fallback")
+    mode = config["fallback_order"][selected_index]
+    if mode == "inherited_current":
+        resolved, provider = current_model, current_provider or "unknown"
+        reason = "runtime has neither a verified isolated explicit-model CLI nor native per-agent model overrides"
+    else:
+        resolved, provider, reason = requested, config["provider"], None
     result = {
         "role": role,
         "requested_model": requested,
         "resolved_model": resolved,
         "provider": provider,
         "resolution_mode": mode,
-        "fallback_used": mode != "native_per_agent" or resolved != requested,
+        "fallback_used": selected_index > 0 or resolved != requested,
         "degradation_reason": reason,
         "resolved_at": utc_now(),
     }

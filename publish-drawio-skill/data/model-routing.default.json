@@ -9,7 +9,7 @@
       "activation": "permanent",
       "prompt": "agents/diagram-supervisor.md",
       "mutation_policy": "orchestration_only",
-      "fallback_order": ["native_per_agent", "isolated_cli", "inherited_current"]
+      "fallback_order": ["isolated_cli", "native_per_agent", "inherited_current"]
     },
     "reviewer": {
       "requested_model": "vllm/DeepSeek-V4-Flash-262k",
@@ -17,7 +17,7 @@
       "activation": "permanent",
       "prompt": "agents/diagram-reviewer.md",
       "mutation_policy": "read_only",
-      "fallback_order": ["native_per_agent", "isolated_cli", "inherited_current"]
+      "fallback_order": ["isolated_cli", "native_per_agent", "inherited_current"]
     },
     "repair": {
       "requested_model": "vllm/MiniMax-M3-113k",
@@ -25,7 +25,7 @@
       "activation": "on_demand",
       "prompt": "agents/diagram-repair.md",
       "mutation_policy": "patch_proposal_only",
-      "fallback_order": ["native_per_agent", "isolated_cli", "inherited_current"]
+      "fallback_order": ["isolated_cli", "native_per_agent", "inherited_current"]
     },
     "semantic_analyst": {
       "requested_model": "vllm/Qwen3.6-35B-262k",
@@ -33,7 +33,7 @@
       "activation": "on_demand",
       "prompt": "agents/diagram-semantic-analyst.md",
       "mutation_policy": "patch_proposal_only",
-      "fallback_order": ["native_per_agent", "isolated_cli", "inherited_current"]
+      "fallback_order": ["isolated_cli", "native_per_agent", "inherited_current"]
     }
   }
 }

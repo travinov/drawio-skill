@@ -86,11 +86,13 @@ chmod +x install/*.sh
 ./install/install_drawio_agent_extension.sh
 ```
 
-После перезапуска `/agents list` должен показать `diagram-supervisor`,
+После перезапуска откройте `/agents manage`: раздел extension agents должен показать `diagram-supervisor`,
 `diagram-reviewer`, `diagram-repair` и `diagram-semantic-analyst`. В GigaCode
-используйте эквивалентные команды extension/agents конкретной сборки; если fork
-не поддерживает native per-agent model override, применяется fallback из
-`references/model-routing.md` без глобального `/model`.
+используйте эквивалентные команды extension/agents конкретной сборки. Проверенная
+корпоративная сборка GigaCode 26.5.17 (Qwen Code 0.13.1) запускает extension
+agents, но наследует модель основной сессии. Поэтому роли с отдельными моделями
+запускаются через isolated `gigacode --model ...`; глобальный `/model` не
+переключается. Подробности и доказательство модели: `references/model-routing.md`.
 
 Установщик по умолчанию использует следующие пути корпоративного ноутбука:
 
@@ -108,6 +110,11 @@ chmod +x install/*.sh
 Вложенный установщик автоматически использует окружающую распакованную папку;
 дополнительные файлы и GitHub не нужны. Откат:
 `./install/rollback_drawio_agent_extension.sh --latest`.
+
+В corporate mode команда `gigacode extensions update` отключена. Для обновления
+перенесите новый ZIP, распакуйте его и повторно запустите вложенный установщик.
+Предыдущую версию вручную удалять не нужно: установщик сначала сохранит её в
+backup, затем переустановит extension из локального approved source.
 
 draw.io Desktop в корпоративной среде macOS/Windows устанавливается через внутренний маркетплейс SberUserSoft:
 
