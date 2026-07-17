@@ -1,7 +1,7 @@
 {
   "archive": "drawio-skill-agent-extension.zip",
   "archive_root": "drawio-skill",
-  "archive_sha256": "51a7c84090f428a52b85451d4ce8adb668252f6733669535da2ffe6d426dce44",
+  "archive_sha256": "d01e1f51c42059deaab2cc4166b76df7039f7b8f63bc5a44cabf85972c8dfc5e",
   "files": [
     {
       "path": "DEPENDENCIES.md",
@@ -165,8 +165,8 @@
     },
     {
       "path": "install/install_drawio_agent_extension.sh",
-      "sha256": "1163e1443cbc126e61002ddda6aa65f79e19d5443645eb9a93a86e23ecfb4774",
-      "size": 19041
+      "sha256": "4e4af2266f3946190480b3472959c4607b304401591e65ed4326b0fc4d785bbd",
+      "size": 19034
     },
     {
       "path": "install/rollback_drawio_agent_extension.sh",

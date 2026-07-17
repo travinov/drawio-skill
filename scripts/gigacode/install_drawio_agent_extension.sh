@@ -489,9 +489,11 @@ native_install "$current_source"
 
 verify_script="$(cd "$(dirname "$0")" && pwd)/verify_drawio_agent_extension.sh"
 if [[ -x "$verify_script" ]]; then
-  verify_args=()
-  (( skip_deps )) && verify_args+=(--skip-self-check)
-  run "$verify_script" "${verify_args[@]}"
+  if (( skip_deps )); then
+    run "$verify_script" --skip-self-check
+  else
+    run "$verify_script"
+  fi
 else
   log "Verifier script not found beside installer; checking native registration only"
   (( dry_run )) || extensions_list_contains || die "GigaCode did not list $EXTENSION_NAME after installation"

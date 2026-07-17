@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -105,15 +106,36 @@ class InstallerTests(unittest.TestCase):
             self.fail(f"{name} failed ({result.returncode}):\n{result.stdout}")
         return result
 
-    def install(self) -> subprocess.CompletedProcess[str]:
-        return self.run_script(
-            "install_drawio_agent_extension.sh",
+    def install(self, *, skip_deps: bool = True) -> subprocess.CompletedProcess[str]:
+        args = [
             "--archive",
             str(self.archive),
             "--checksum",
             str(self.checksum),
-            "--skip-deps",
+        ]
+        if skip_deps:
+            args.append("--skip-deps")
+        return self.run_script("install_drawio_agent_extension.sh", *args)
+
+    def use_fake_pip(self) -> None:
+        fake_python = self.root / "python-with-fake-pip"
+        fake_python.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == -m && "${2:-}" == pip ]]; then
+  exit 0
+fi
+if [[ "${1:-}" == */scripts/self_check.py ]]; then
+  printf 'fake self-check passed\n'
+  exit 0
+fi
+exec "${FAKE_PYTHON_REAL:?}" "$@"
+""",
+            encoding="utf-8",
         )
+        fake_python.chmod(0o755)
+        self.env["PYTHON_BIN"] = str(fake_python)
+        self.env["FAKE_PYTHON_REAL"] = sys.executable
 
     def extract_bundle(self, name: str) -> Path:
         extracted = self.root / name
@@ -125,10 +147,13 @@ class InstallerTests(unittest.TestCase):
         return extension
 
     def run_bundled(
-        self, extension: Path, *args: str
+        self, extension: Path, *args: str, bash_bin: str | None = None
     ) -> subprocess.CompletedProcess[str]:
+        command = [str(extension / "install" / "install_drawio_agent_extension.sh"), *args]
+        if bash_bin is not None:
+            command.insert(0, bash_bin)
         return subprocess.run(
-            [str(extension / "install" / "install_drawio_agent_extension.sh"), *args],
+            command,
             cwd=extension,
             env=self.env,
             text=True,
@@ -144,6 +169,7 @@ class InstallerTests(unittest.TestCase):
         result = self.install()
 
         self.assertIn("Installed publish-drawio-skill 1.22.0-corporate.1", result.stdout)
+        self.assertIn("Self-check skipped by request", result.stdout)
         self.assertFalse(legacy.exists())
         installed = self.home / "extensions" / "publish-drawio-skill"
         self.assertTrue((installed / "agents" / "diagram-supervisor.md").is_file())
@@ -153,6 +179,23 @@ class InstallerTests(unittest.TestCase):
         self.run_script("verify_drawio_agent_extension.sh", "--skip-self-check")
         self.assertIn(
             "extensions validate", (self.root / "gigacode.log").read_text()
+        )
+
+    def test_bundled_install_with_dependencies_runs_verifier_under_system_bash(self) -> None:
+        self.use_fake_pip()
+        extension = self.extract_bundle("bash-3.2")
+
+        result = self.run_bundled(extension, bash_bin="/bin/bash")
+
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertIn("Installing pinned Python dependencies", result.stdout)
+        self.assertIn("Running extension self-check", result.stdout)
+        self.assertIn("fake self-check passed", result.stdout)
+        self.assertIn("Installed publish-drawio-skill 1.22.0-corporate.1", result.stdout)
+        self.assertNotIn("unbound variable", result.stdout)
+        self.assertNotIn("restoring backup", result.stdout)
+        self.assertEqual(
+            "publish-drawio-skill\n", (self.root / "registry.txt").read_text()
         )
 
     def test_install_falls_back_when_native_validate_is_unavailable(self) -> None:
