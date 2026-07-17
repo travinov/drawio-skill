@@ -12,13 +12,15 @@
     "drawio": {
       "source": "publish-drawio-skill",
       "archive_root": "drawio-skill",
-      "output": "drawio-skill-corporate.zip",
+      "output": "drawio-skill-agent-extension.zip",
       "include": [
         "SKILL.md",
         "README.md",
         "metadata.md",
         "ORIGIN.md",
         "LICENSE",
+        "gemini-extension.json",
+        "agents/*.md",
         "requirements.txt",
         "requirements.lock.txt",
         "DEPENDENCIES.md",
@@ -29,8 +31,10 @@
         "references/*.md",
         "scripts/aiicons.py",
         "scripts/autolayout.py",
+        "scripts/agent_runtime.py",
         "scripts/c4.py",
         "scripts/composeimports.py",
+        "scripts/diagram_supervisor.py",
         "scripts/encode_drawio_url.py",
         "scripts/export_smoke.py",
         "scripts/gitflow.py",
@@ -62,8 +66,9 @@
         "tests/**/*.drawio"
       ],
       "version_sources": [
-        {"path": "SKILL.md", "pattern": "(?m)^version:\\s*(\\S+)\\s*$"},
-        {"path": "metadata.md", "pattern": "(?m)^- Версия:\\s*(\\S+)\\s*$"}
+        {"path": "SKILL.md", "pattern": "\"version\"\\s*:\\s*\"([^\"]+)\""},
+        {"path": "metadata.md", "pattern": "(?m)^- Версия:\\s*(\\S+)\\s*$"},
+        {"path": "gemini-extension.json", "json_key": "version"}
       ],
       "python_packages": {
         "jsonschema": "jsonschema",

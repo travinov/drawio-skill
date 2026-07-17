@@ -1,0 +1,1784 @@
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+import jsonschema
+
+
+ROOT = Path(__file__).resolve().parent.parent
+SCRIPTS = ROOT / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+
+import agent_runtime
+import diagram_supervisor as supervisor
+import validate as drawio_validator
+
+
+def assert_schema(test_case, instance, schema_name):
+    schema = json.loads((ROOT / "data" / schema_name).read_text(encoding="utf-8"))
+    validator = jsonschema.Draft202012Validator(
+        schema, format_checker=jsonschema.FormatChecker()
+    )
+    errors = sorted(
+        validator.iter_errors(instance),
+        key=lambda error: (list(error.absolute_path), error.message),
+    )
+    rendered = "\n".join(
+        f"/{'/'.join(map(str, error.absolute_path))}: {error.message}"
+        for error in errors
+    )
+    test_case.assertFalse(errors, rendered)
+
+
+def diagram_xml(*, obstacle=False, crossing=False):
+    if crossing:
+        cells = """
+          <mxCell id="a" value="" parent="1" vertex="1"><mxGeometry x="0" y="0" width="20" height="20" as="geometry" /></mxCell>
+          <mxCell id="b" value="" parent="1" vertex="1"><mxGeometry x="200" y="200" width="20" height="20" as="geometry" /></mxCell>
+          <mxCell id="c" value="" parent="1" vertex="1"><mxGeometry x="0" y="200" width="20" height="20" as="geometry" /></mxCell>
+          <mxCell id="d" value="" parent="1" vertex="1"><mxGeometry x="200" y="0" width="20" height="20" as="geometry" /></mxCell>
+          <mxCell id="e1" parent="1" source="a" target="b" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+          <mxCell id="e2" parent="1" source="c" target="d" edge="1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        """
+    else:
+        middle = """
+          <mxCell id="obstacle" value="Obstacle" parent="1" vertex="1">
+            <mxGeometry x="140" y="0" width="80" height="60" as="geometry" />
+          </mxCell>
+        """ if obstacle else ""
+        cells = f"""
+          <mxCell id="source" value="Source" data-custom="preserve-me" parent="1" vertex="1">
+            <mxGeometry x="0" y="0" width="80" height="60" as="geometry" />
+          </mxCell>
+          {middle}
+          <mxCell id="target" value="Target" parent="1" vertex="1">
+            <mxGeometry x="300" y="0" width="80" height="60" as="geometry" />
+          </mxCell>
+          <mxCell id="edge" value="flow" style="html=1;" parent="1" source="source" target="target" edge="1">
+            <mxGeometry relative="1" as="geometry" />
+          </mxCell>
+        """
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net" custom-root="preserve-root">
+  <diagram id="page-1" name="Page-1" custom-page="preserve-page">
+    <mxGraphModel><root>
+      <mxCell id="0" />
+      <mxCell id="1" parent="0" />
+      {cells}
+    </root></mxGraphModel>
+  </diagram>
+</mxfile>
+"""
+
+
+def clean_diagram_xml():
+    return """<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net">
+  <diagram id="page-1" name="Page-1">
+    <mxGraphModel><root>
+      <mxCell id="0" />
+      <mxCell id="1" parent="0" />
+      <mxCell id="node" value="" parent="1" vertex="1">
+        <mxGeometry x="100" y="100" width="120" height="60" as="geometry" />
+      </mxCell>
+    </root></mxGraphModel>
+  </diagram>
+</mxfile>
+"""
+
+
+def write_text(path, value):
+    path.write_text(value, encoding="utf-8")
+    return path
+
+
+def write_json(path, value):
+    path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def cell(path, cell_id):
+    return next(item for item in ET.parse(path).findall(".//mxCell") if item.get("id") == cell_id)
+
+
+def report(*findings, route_complexity=0):
+    return {
+        "report_version": 2,
+        "findings": [
+            {"layer": layer, "severity": severity, "code": code, "path": "", "message": code}
+            for layer, severity, code in findings
+        ],
+        "metrics": {"route_complexity": route_complexity},
+    }
+
+
+def parsed_cells(source):
+    raw, _, cells = supervisor.safe_parse(source)
+    return raw, {item.get("id"): item for item in cells if item.get("id")}
+
+
+def canonical_patch(source, operations, affected_ids=None, created_by="tool"):
+    raw, cells = parsed_cells(source)
+    semantic_baseline, _ = supervisor.artifact_invariants(source)
+    return {
+        "schema_version": 1,
+        "patch_id": "test-patch",
+        "created_at": "2026-07-16T12:00:00+00:00",
+        "created_by": created_by,
+        "baseline": {
+            "artifact_sha256": hashlib.sha256(raw).hexdigest(),
+            "semantic_digest": semantic_baseline,
+        },
+        "affected_region": {
+            "page_id": "page-1",
+            "cell_ids": affected_ids or sorted({operation["target_id"] for operation in operations}),
+        },
+        "operations": operations,
+    }
+
+
+def semantic_patch(source, operation):
+    return canonical_patch(source, [operation], created_by="human")
+
+
+def canonical_move_operation(source, target_id, x, y, *, target_hash=None, expected_parent="1", expected_value=None):
+    _, cells = parsed_cells(source)
+    target = cells[target_id]
+    return {
+        "operation_id": f"move-{target_id}-{x}-{y}",
+        "op": "move_vertex",
+        "target_id": target_id,
+        "precondition": {
+            "target_exists": True,
+            "target_hash": target_hash or supervisor.cell_hash(target),
+            "expected_parent_id": expected_parent,
+            "expected_value": expected_value or {
+                "attributes": {"value": target.get("value", "")},
+                "geometry": {"x": float(target.find("mxGeometry").get("x", "0"))},
+            },
+        },
+        "proposed_value": {"x": x, "y": y},
+        "semantic_effect": "layout_only",
+        "reasons": ["focused test move"],
+        "finding_ids": [],
+        "rollback": {
+            "action": "restore_value",
+            "value": {"cell_xml": ET.tostring(target, encoding="unicode")},
+        },
+    }
+
+
+def canonical_route_operation(source, waypoint):
+    _, cells = parsed_cells(source)
+    edge = cells["edge"]
+    return {
+        "operation_id": "route-edge",
+        "op": "set_edge_route",
+        "target_id": "edge",
+        "precondition": {
+            "target_exists": True,
+            "target_hash": supervisor.cell_hash(edge),
+            "expected_parent_id": "1",
+            "expected_value": {"attributes": {"source": "source", "target": "target"}},
+        },
+        "proposed_value": {"waypoints": [waypoint], "orthogonal": True},
+        "semantic_effect": "layout_only",
+        "reasons": ["focused route test"],
+        "finding_ids": [],
+        "rollback": {
+            "action": "restore_value",
+            "value": {"cell_xml": ET.tostring(edge, encoding="unicode")},
+        },
+    }
+
+
+def create_move_candidate(temp, run_dir, baseline, attempt, x, *, route_complexity=None):
+    operation = canonical_move_operation(baseline, "node", x, 100)
+    patch = canonical_patch(baseline, [operation])
+    patch_path = write_json(temp / f"patch-{attempt}.json", patch)
+    candidate = temp / f"candidate-{attempt}.drawio"
+    supervisor.apply_patch_file(baseline, patch_path, candidate)
+    supervisor.run_validation(candidate, run_dir, attempt_id=attempt)
+    report_path = run_dir / "attempts" / attempt / "validation-report.json"
+    receipt_path = run_dir / "attempts" / attempt / "validation-receipt.json"
+    if route_complexity is not None:
+        report_value = json.loads(report_path.read_text(encoding="utf-8"))
+        report_value["metrics"]["route_complexity"] = route_complexity
+        supervisor.write_json(report_path, report_value)
+        stdout_path = run_dir / "attempts" / attempt / "validator.stdout"
+        stdout_path.write_text(json.dumps(report_value, ensure_ascii=False), encoding="utf-8")
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["outputs"]["report"]["sha256"] = supervisor.sha256_file(report_path)
+        receipt["outputs"]["report"]["byte_length"] = report_path.stat().st_size
+        receipt["outputs"]["stdout_sha256"] = supervisor.sha256_file(stdout_path)
+        supervisor.write_json(receipt_path, receipt)
+    return candidate, patch_path, report_path, receipt_path
+
+
+def reviewer_verdict(run_dir, candidate, report_path, receipt_path, *, verdict="approve", suffix=""):
+    state = supervisor.load_state(run_dir)
+    value = {
+        "schema_version": 1,
+        "verdict_id": f"review-{suffix or 'candidate'}",
+        "run_id": state["run_id"],
+        "candidate_sha256": supervisor.sha256_file(candidate),
+        "report_sha256": supervisor.sha256_file(report_path),
+        "receipt_sha256": supervisor.sha256_file(receipt_path),
+        "verdict": verdict,
+        "reviewed_at": "2026-07-16T12:00:00+00:00",
+        "reviewer": {
+            "resolved_model": "DeepSeek-V4-Flash",
+            "provider": "deepseek",
+            "resolution_mode": "isolated_cli",
+        },
+        "findings": [],
+    }
+    path = Path(run_dir) / f"reviewer-verdict{('-' + suffix) if suffix else ''}.json"
+    return write_json(path, value)
+
+
+def prepare_routed_candidate(temp):
+    temp = Path(temp)
+    run_dir = temp / "run"
+    baseline = write_text(temp / "baseline.drawio", diagram_xml(obstacle=True))
+    supervisor.transition(run_dir, "analyzed", artifact=baseline)
+    supervisor.run_validation(baseline, run_dir, attempt_id="baseline")
+    patch = supervisor.route_patch(baseline, "edge", ["route-through"])
+    patch_path = write_json(temp / "route.patch.json", patch)
+    candidate = temp / "candidate.drawio"
+    supervisor.apply_patch_file(baseline, patch_path, candidate)
+    supervisor.run_validation(candidate, run_dir, attempt_id="candidate")
+    supervisor.transition(run_dir, "patching")
+    supervisor.transition(run_dir, "validating")
+    return {
+        "run_dir": run_dir,
+        "baseline": baseline,
+        "candidate": candidate,
+        "patch": patch_path,
+        "baseline_report": run_dir / "attempts/baseline/validation-report.json",
+        "baseline_receipt": run_dir / "attempts/baseline/validation-receipt.json",
+        "candidate_report": run_dir / "attempts/candidate/validation-report.json",
+        "candidate_receipt": run_dir / "attempts/candidate/validation-receipt.json",
+    }
+
+
+def prepare_semantic_candidate(temp):
+    temp = Path(temp)
+    run_dir = temp / "run"
+    baseline = write_text(temp / "baseline.drawio", diagram_xml(obstacle=True))
+    supervisor.transition(run_dir, "analyzed", artifact=baseline)
+    supervisor.run_validation(baseline, run_dir, attempt_id="baseline")
+    operation = {
+        "operation_id": "add-approved-step", "op": "add_semantic_element", "target_id": "approved-step",
+        "precondition": {"target_exists": False},
+        "proposed_value": {"kind": "vertex", "semantic_type": "process", "label": "Approved step", "parent_id": "1", "geometry": {"x": 500, "y": 100, "width": 100, "height": 40}},
+        "semantic_effect": "semantic_addition", "reasons": ["user approved process step"], "finding_ids": [],
+        "rollback": {"action": "remove_added_cell", "value": {}},
+    }
+    patch_path = write_json(temp / "semantic.patch.json", canonical_patch(baseline, [operation], created_by="human"))
+    candidate = temp / "semantic-candidate.drawio"
+    supervisor.apply_patch_file(baseline, patch_path, candidate, allow_semantic=True)
+    supervisor.run_validation(candidate, run_dir, attempt_id="semantic")
+    supervisor.transition(run_dir, "patching")
+    supervisor.transition(run_dir, "validating")
+    candidate_report = run_dir / "attempts/semantic/validation-report.json"
+    candidate_receipt = run_dir / "attempts/semantic/validation-receipt.json"
+    return {
+        "run_dir": run_dir, "baseline": baseline, "candidate": candidate, "patch": patch_path,
+        "baseline_report": run_dir / "attempts/baseline/validation-report.json",
+        "baseline_receipt": run_dir / "attempts/baseline/validation-receipt.json",
+        "candidate_report": candidate_report, "candidate_receipt": candidate_receipt,
+        "reviewer": reviewer_verdict(run_dir, candidate, candidate_report, candidate_receipt),
+    }
+
+
+class DiagramWorkingModelTests(unittest.TestCase):
+    def test_make_spec_conforms_to_diagramspec_schema(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = write_text(Path(temp) / "source.drawio", diagram_xml())
+            spec = supervisor.make_spec(source)
+
+        assert_schema(self, spec, "diagramspec.v1.schema.json")
+
+    def test_userobject_import_and_patch_preserve_wrapper_shape(self):
+        wrapped_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<mxfile><diagram id="page-1" name="Page-1"><mxGraphModel><root>
+  <mxCell id="0"/><mxCell id="1" parent="0"/>
+  <UserObject id="wrapped" label="Wrapped label" custom="keep-me">
+    <mxCell parent="1" vertex="1" style="rounded=1;">
+      <mxGeometry x="10" y="20" width="100" height="40" as="geometry"/>
+    </mxCell>
+  </UserObject>
+</root></mxGraphModel></diagram></mxfile>"""
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            source = write_text(temp / "wrapped.drawio", wrapped_xml)
+            spec = supervisor.make_spec(source)
+            wrapped = next(
+                item for page in spec["pages"] for item in page["cells"]
+                if item["id"] == "wrapped"
+            )
+            self.assertEqual(wrapped["label"], "Wrapped label")
+
+            operation = canonical_move_operation(source, "wrapped", 40, 50)
+            patch = canonical_patch(source, [operation])
+            assert_schema(self, patch, "diagram-patch.v1.schema.json")
+            candidate = temp / "candidate.drawio"
+            supervisor.apply_patch_file(
+                source, write_json(temp / "patch.json", patch), candidate
+            )
+
+            tree = ET.parse(candidate)
+            wrapper = tree.find(".//UserObject")
+            inner = wrapper.find("mxCell")
+            self.assertEqual(wrapper.get("id"), "wrapped")
+            self.assertEqual(wrapper.get("label"), "Wrapped label")
+            self.assertEqual(wrapper.get("custom"), "keep-me")
+            self.assertIsNone(inner.get("id"))
+            self.assertIsNone(inner.get("value"))
+            self.assertNotIn(supervisor.WRAPPER_MARKER, inner.attrib)
+            self.assertEqual(
+                (inner.find("mxGeometry").get("x"), inner.find("mxGeometry").get("y")),
+                ("40.0", "50.0"),
+            )
+
+    def test_full_file_dtd_and_unsafe_links_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            late_dtd = (
+                '<?xml version="1.0"?>\n<!--' + ("x" * 9000) + '-->\n'
+                '<!DOCTYPE mxfile [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>\n'
+                '<mxfile><diagram><mxGraphModel><root><mxCell id="0"/>'
+                '<mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>'
+            )
+            dtd_path = write_text(temp / "late-dtd.drawio", late_dtd)
+            with self.assertRaisesRegex(supervisor.SupervisorError, "DTD and entity"):
+                supervisor.safe_parse(dtd_path)
+
+            for attribute, value in (
+                ("link", "JaVaScRiPt:alert(1)"),
+                ("href", "file:///etc/passwd"),
+                ("href", "data:text/html,unsafe-content"),
+            ):
+                with self.subTest(attribute=attribute, value=value):
+                    unsafe = clean_diagram_xml().replace(
+                        '<mxCell id="node"', f'<mxCell {attribute}="{value}" id="node"'
+                    )
+                    path = write_text(temp / f"unsafe-{attribute}.drawio", unsafe)
+                    with self.assertRaisesRegex(supervisor.SupervisorError, "unsafe"):
+                        supervisor.safe_parse(path)
+
+            embedded_cases = (
+                "&lt;a href=&quot;java&amp;#x73;cript:alert(1)&quot;&gt;bad&lt;/a&gt;",
+                "&lt;a href=&quot;java&amp;#x09;script:alert(1)&quot;&gt;bad&lt;/a&gt;",
+                "&lt;a href=&quot;data&amp;#58;text / html,unsafe&quot;&gt;bad&lt;/a&gt;",
+                "&lt;a href=&quot;file:///etc/passwd&quot;&gt;bad&lt;/a&gt;",
+            )
+            for index, embedded in enumerate(embedded_cases):
+                with self.subTest(embedded=index):
+                    unsafe = clean_diagram_xml().replace('value=""', f'value="{embedded}"', 1)
+                    path = write_text(temp / f"unsafe-embedded-{index}.drawio", unsafe)
+                    with self.assertRaisesRegex(supervisor.SupervisorError, "unsafe"):
+                        supervisor.safe_parse(path)
+
+            safe_html = clean_diagram_xml().replace(
+                'value=""',
+                'value="&lt;a href=&quot;https://example.com/docs?q=1&quot;&gt;docs&lt;/a&gt;"',
+                1,
+            )
+            safe_path = write_text(temp / "safe-embedded.drawio", safe_html)
+            supervisor.safe_parse(safe_path)
+            plain_path = write_text(
+                temp / "plain-text.drawio",
+                clean_diagram_xml().replace('value=""', 'value="Discuss javascript: URLs safely"', 1),
+            )
+            supervisor.safe_parse(plain_path)
+
+    def test_source_refs_preserve_existing_provenance_and_priority(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = write_text(Path(temp) / "source.drawio", clean_diagram_xml())
+            digest = "1" * 64
+            refs = [
+                {"source_id": "spec", "kind": "openspec", "uri": "openspec/specs/x/spec.md", "revision": "r1", "fragment": "req", "content_hash": digest, "confidence": 0.9},
+                {"source_id": "user", "kind": "explicit_user_decision", "uri": "user://decision/1", "revision": None, "fragment": None, "content_hash": digest, "confidence": 1.0},
+            ]
+            spec = supervisor.make_spec(source, refs)
+            self.assertEqual(
+                [item["kind"] for item in spec["source_refs"]],
+                ["explicit_user_decision", "openspec", "existing_diagram"],
+            )
+            with self.assertRaisesRegex(supervisor.SupervisorError, "source_refs"):
+                supervisor.make_spec(source, [{"kind": "openspec"}])
+
+    def test_multi_page_duplicate_ids_are_page_scoped(self):
+        raw = """<?xml version="1.0"?>
+<mxfile><diagram id="p1" name="One"><mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="node" value="one" parent="1" vertex="1"><mxGeometry x="1" y="2" width="10" height="10" as="geometry"/></mxCell>
+</root></mxGraphModel></diagram><diagram id="p2" name="Two"><mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="node" value="two" parent="1" vertex="1"><mxGeometry x="20" y="30" width="10" height="10" as="geometry"/></mxCell>
+</root></mxGraphModel></diagram></mxfile>"""
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            source = write_text(temp / "two-page.drawio", raw)
+            _, root, _ = supervisor.safe_parse(source)
+            p1 = next(page for page_id, page in supervisor.page_scopes(root) if page_id == "p1")
+            target = supervisor.page_by_id(p1)["node"]
+            operation = {
+                "operation_id": "move-p1-node", "op": "move_vertex", "target_id": "node",
+                "precondition": {"target_exists": True, "target_hash": supervisor.cell_hash(target), "expected_parent_id": "1"},
+                "proposed_value": {"x": 11, "y": 12}, "semantic_effect": "layout_only",
+                "reasons": ["page-scoped move"], "finding_ids": [],
+                "rollback": {"action": "restore_value", "value": {"cell_xml": ET.tostring(target, encoding="unicode")}},
+            }
+            patch = canonical_patch(source, [operation], ["node"])
+            patch["affected_region"]["page_id"] = "p1"
+            candidate = temp / "candidate.drawio"
+            supervisor.apply_patch_file(source, write_json(temp / "patch.json", patch), candidate)
+            tree = ET.parse(candidate).getroot()
+            pages = {page.get("id"): page for page in tree.findall("diagram")}
+            p1_node = supervisor.page_by_id(pages["p1"])["node"]
+            p2_node = supervisor.page_by_id(pages["p2"])["node"]
+            self.assertEqual(p1_node.find("mxGeometry").get("x"), "11.0")
+            self.assertEqual(p2_node.find("mxGeometry").get("x"), "20")
+            self.assertEqual(supervisor.make_spec(source)["semantic_digest"]["value"], patch["baseline"]["semantic_digest"])
+
+    def test_inspect_is_read_only_and_layout_only_patch_keeps_semantic_digest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            source = write_text(temp / "source.drawio", diagram_xml())
+            original = source.read_bytes()
+            before = supervisor.make_spec(source)
+            patch = canonical_patch(
+                source, [canonical_route_operation(source, {"x": 190, "y": 30})]
+            )
+            assert_schema(self, patch, "diagram-patch.v1.schema.json")
+            patch_path = write_json(temp / "patch.json", patch)
+            candidate = temp / "candidate.drawio"
+
+            result = supervisor.apply_patch_file(source, patch_path, candidate)
+            after = supervisor.make_spec(candidate)
+
+            self.assertEqual(source.read_bytes(), original, "inspection/patching must not mutate the baseline")
+            self.assertEqual(before["semantic_digest"], after["semantic_digest"])
+            self.assertEqual(result["semantic_digest_before"], result["semantic_digest_after"])
+            self.assertNotEqual(before["artifact"]["sha256"], after["artifact"]["sha256"])
+            self.assertEqual(cell(candidate, "source").get("data-custom"), "preserve-me")
+
+
+class TransactionalPatchTests(unittest.TestCase):
+    def test_wrapped_removal_rollback_captures_owner_and_location(self):
+        wrapped_xml = """<?xml version="1.0"?><mxfile><diagram id="page-1"><mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/><UserObject id="wrapped" label="Wrapped" custom="keep"><mxCell parent="1" vertex="1"><mxGeometry x="1" y="2" width="10" height="10" as="geometry"/></mxCell></UserObject>
+</root></mxGraphModel></diagram></mxfile>"""
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            source = write_text(temp / "source.drawio", wrapped_xml)
+            _, root, _ = supervisor.safe_parse(source)
+            page = supervisor.page_scopes(root)[0][1]
+            target = supervisor.page_by_id(page)["wrapped"]
+            wrapper = page.find(".//UserObject")
+            operation = {
+                "operation_id": "remove-wrapped", "op": "remove_semantic_element", "target_id": "wrapped",
+                "precondition": {"target_exists": True, "target_hash": supervisor.cell_hash(target)},
+                "proposed_value": {"remove": True}, "semantic_effect": "semantic_removal",
+                "reasons": ["approved removal"], "finding_ids": [],
+                "rollback": {"action": "restore_removed_cell", "value": {"owner_xml": ET.tostring(wrapper, encoding="unicode")}},
+            }
+            patch_path = write_json(temp / "patch.json", canonical_patch(source, [operation], created_by="human"))
+            candidate = temp / "candidate.drawio"
+            result = supervisor.apply_patch_file(source, patch_path, candidate, allow_semantic=True)
+            snapshot = result["rollback"][0]
+            self.assertTrue(snapshot["value"]["wrapped"])
+            self.assertIn("<UserObject", snapshot["value"]["owner_xml"])
+            self.assertIsInstance(snapshot["value"]["insertion_index"], int)
+            self.assertIsNone(ET.parse(candidate).find(".//UserObject"))
+
+            bad = json.loads(patch_path.read_text(encoding="utf-8"))
+            bad["operations"][0]["rollback"]["value"] = {"cell_xml": ET.tostring(target, encoding="unicode")}
+            with self.assertRaisesRegex(supervisor.SupervisorError, "rollback removed XML mismatch"):
+                supervisor.apply_patch_file(
+                    source, write_json(temp / "bad.json", bad), temp / "bad.drawio", allow_semantic=True,
+                )
+
+    def test_edge_label_offset_round_trips_position_and_offset_point(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            source = write_text(temp / "source.drawio", diagram_xml())
+            before_spec = supervisor.make_spec(source)
+            _, cells = parsed_cells(source)
+            edge = cells["edge"]
+            operation = {
+                "operation_id": "offset-edge-label",
+                "op": "set_label_offset",
+                "target_id": "edge",
+                "precondition": {"target_exists": True, "target_hash": supervisor.cell_hash(edge)},
+                "proposed_value": {"x": 0.25, "y": -0.5, "offset": {"x": 12, "y": 8}},
+                "semantic_effect": "layout_only",
+                "reasons": ["move the edge label away from a crossing"],
+                "finding_ids": ["label-1"],
+                "rollback": {"action": "restore_value", "value": {"cell_xml": ET.tostring(edge, encoding="unicode")}},
+            }
+            patch = canonical_patch(source, [operation])
+            assert_schema(self, patch, "diagram-patch.v1.schema.json")
+            candidate = temp / "candidate.drawio"
+            supervisor.apply_patch_file(source, write_json(temp / "patch.json", patch), candidate)
+            geometry = cell(candidate, "edge").find("mxGeometry")
+            self.assertEqual((geometry.get("x"), geometry.get("y"), geometry.get("relative")), ("0.25", "-0.5", "1"))
+            offset = geometry.find("mxPoint[@as='offset']")
+            self.assertEqual((offset.get("x"), offset.get("y")), ("12.0", "8.0"))
+            after_spec = supervisor.make_spec(candidate)
+            edge_spec = next(item for page in after_spec["pages"] for item in page["cells"] if item["id"] == "edge")
+            self.assertEqual(edge_spec["geometry"]["label_offset"], {"x": 0.25, "y": -0.5, "offset": {"x": 12.0, "y": 8.0}})
+            diff = supervisor.spec_diff(before_spec, after_spec)
+            self.assertEqual(diff["semantic"]["changed"], [])
+            self.assertTrue(any(item["cell_id"] == "edge" and "geometry" in item["changes"] for item in diff["layout"]))
+
+    def test_existing_and_added_groups_round_trip_as_group_kind(self):
+        existing_xml = """<?xml version="1.0"?><mxfile><diagram id="page-1"><mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="group" parent="1" vertex="1" connectable="0" style="group;"><mxGeometry x="1" y="2" width="100" height="80" as="geometry"/></mxCell>
+</root></mxGraphModel></diagram></mxfile>"""
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            source = write_text(temp / "group.drawio", existing_xml)
+            spec = supervisor.make_spec(source)
+            existing = next(item for page in spec["pages"] for item in page["cells"] if item["id"] == "group")
+            self.assertEqual((existing["kind"], existing["semantic_type"]), ("group", "group"))
+            operation = {
+                "operation_id": "add-group", "op": "add_semantic_element", "target_id": "new-group",
+                "precondition": {"target_exists": False},
+                "proposed_value": {"kind": "group", "semantic_type": "group", "label": "New group", "parent_id": "1", "geometry": {"x": 120, "y": 2, "width": 100, "height": 80}},
+                "semantic_effect": "semantic_addition", "reasons": ["approved group"], "finding_ids": [],
+                "rollback": {"action": "remove_added_cell", "value": {}},
+            }
+            patch = canonical_patch(source, [operation], created_by="human")
+            candidate = temp / "candidate.drawio"
+            supervisor.apply_patch_file(source, write_json(temp / "patch.json", patch), candidate, allow_semantic=True)
+            added_cell = cell(candidate, "new-group")
+            self.assertEqual((added_cell.get("vertex"), added_cell.get("connectable")), ("1", "0"))
+            self.assertIn("group", added_cell.get("style"))
+            added = next(item for page in supervisor.make_spec(candidate)["pages"] for item in page["cells"] if item["id"] == "new-group")
+            self.assertEqual((added["kind"], added["semantic_type"]), ("group", "group"))
+
+    def test_resize_container_rejects_plain_vertex(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            source = write_text(temp / "source.drawio", clean_diagram_xml())
+            _, cells = parsed_cells(source)
+            node = cells["node"]
+            operation = {
+                "operation_id": "resize-not-container", "op": "resize_container", "target_id": "node",
+                "precondition": {"target_exists": True, "target_hash": supervisor.cell_hash(node)},
+                "proposed_value": {"width": 200, "height": 100}, "semantic_effect": "layout_only",
+                "reasons": ["negative test"], "finding_ids": [],
+                "rollback": {"action": "restore_value", "value": {"cell_xml": ET.tostring(node, encoding="unicode")}},
+            }
+            with self.assertRaisesRegex(supervisor.SupervisorError, "container semantics"):
+                supervisor.apply_patch_file(
+                    source, write_json(temp / "patch.json", canonical_patch(source, [operation])),
+                    temp / "candidate.drawio",
+                )
+
+    def test_route_patch_conforms_to_diagram_patch_schema(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = write_text(Path(temp) / "source.drawio", diagram_xml(obstacle=True))
+            proposal = supervisor.route_patch(source, "edge", ["finding-through"])
+
+        assert_schema(self, proposal, "diagram-patch.v1.schema.json")
+
+    def test_failed_precondition_does_not_publish_or_replace_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            source = write_text(temp / "source.drawio", diagram_xml())
+            operation = canonical_move_operation(
+                source, "source", 10, 20, target_hash="0" * 64
+            )
+            patch = canonical_patch(source, [operation])
+            assert_schema(self, patch, "diagram-patch.v1.schema.json")
+            patch_path = write_json(temp / "patch.json", patch)
+            output = write_text(temp / "candidate.drawio", "sentinel")
+
+            with self.assertRaisesRegex(supervisor.SupervisorError, "precondition cell_hash failed"):
+                supervisor.apply_patch_file(source, patch_path, output)
+
+            self.assertEqual(output.read_text(encoding="utf-8"), "sentinel")
+
+    def test_diagonal_edge_route_is_rejected_before_publication(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            source = write_text(temp / "source.drawio", diagram_xml())
+            patch = canonical_patch(
+                source, [canonical_route_operation(source, {"x": 190, "y": 90})]
+            )
+            assert_schema(self, patch, "diagram-patch.v1.schema.json")
+            patch_path = write_json(temp / "diagonal-patch.json", patch)
+            output = write_text(temp / "candidate.drawio", "sentinel")
+
+            with self.assertRaisesRegex(supervisor.SupervisorError, "not orthogonal"):
+                supervisor.apply_patch_file(source, patch_path, output)
+
+            self.assertEqual(output.read_text(encoding="utf-8"), "sentinel")
+
+    def test_affected_region_and_expected_value_parent_preconditions_are_enforced(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            source = write_text(temp / "source.drawio", diagram_xml())
+            valid_operation = canonical_move_operation(source, "source", 10, 20)
+            valid_patch = canonical_patch(source, [valid_operation])
+            assert_schema(self, valid_patch, "diagram-patch.v1.schema.json")
+            valid_path = write_json(temp / "valid.json", valid_patch)
+            valid_output = temp / "valid.drawio"
+            supervisor.apply_patch_file(source, valid_path, valid_output)
+            moved = cell(valid_output, "source").find("mxGeometry")
+            self.assertEqual((moved.get("x"), moved.get("y")), ("10.0", "20.0"))
+
+            cases = [
+                (
+                    "parent",
+                    canonical_move_operation(source, "source", 10, 20, expected_parent="wrong"),
+                    ["source"],
+                    "expected_parent_id",
+                ),
+                (
+                    "value",
+                    canonical_move_operation(
+                        source, "source", 10, 20,
+                        expected_value={"attributes": {"value": "stale"}},
+                    ),
+                    ["source"],
+                    "expected_value",
+                ),
+                (
+                    "region",
+                    canonical_move_operation(source, "source", 10, 20),
+                    ["target"],
+                    "outside affected_region",
+                ),
+            ]
+            for name, operation, affected_ids, message in cases:
+                with self.subTest(case=name):
+                    patch = canonical_patch(source, [operation], affected_ids=affected_ids)
+                    assert_schema(self, patch, "diagram-patch.v1.schema.json")
+                    patch_path = write_json(temp / f"{name}.json", patch)
+                    output = temp / f"{name}.drawio"
+                    with self.assertRaisesRegex(supervisor.SupervisorError, message):
+                        supervisor.apply_patch_file(source, patch_path, output)
+                    self.assertFalse(output.exists())
+
+    def test_semantic_patch_requires_explicit_opt_in_then_applies_after_approval(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            source = write_text(temp / "source.drawio", diagram_xml())
+            operation = {
+                "operation_id": "add-approved-node",
+                "op": "add_semantic_element",
+                "target_id": "approved-node",
+                "precondition": {"target_exists": False},
+                "proposed_value": {
+                    "kind": "vertex",
+                    "semantic_type": "process",
+                    "label": "Approved",
+                    "parent_id": "1",
+                    "geometry": {"x": 100, "y": 120, "width": 100, "height": 40},
+                },
+                "semantic_effect": "semantic_addition",
+                "reasons": ["user approved a missing process step"],
+                "finding_ids": [],
+                "rollback": {"action": "remove_added_cell", "value": {}},
+            }
+            patch = semantic_patch(source, operation)
+            patch_path = write_json(temp / "semantic-patch.json", patch)
+            blocked = temp / "blocked.drawio"
+
+            with self.assertRaisesRegex(supervisor.SupervisorError, "--allow-semantic"):
+                supervisor.apply_patch_file(source, patch_path, blocked)
+            self.assertFalse(blocked.exists())
+
+            approved = temp / "approved.drawio"
+            result = supervisor.apply_patch_file(
+                source, patch_path, approved, allow_semantic=True
+            )
+            self.assertTrue(approved.exists())
+            self.assertEqual(cell(approved, "approved-node").get("value"), "Approved")
+            self.assertEqual(cell(approved, "approved-node").get("data-semantic-type"), "process")
+            approved_spec = supervisor.make_spec(approved)
+            approved_element = next(
+                item for page in approved_spec["pages"] for item in page["cells"]
+                if item["id"] == "approved-node"
+            )
+            self.assertEqual(approved_element["semantic_type"], "process")
+            self.assertNotEqual(
+                result["semantic_digest_before"], result["semantic_digest_after"]
+            )
+
+    def test_reserved_root_and_layer_cells_cannot_be_removed_even_with_semantic_opt_in(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            source = write_text(temp / "source.drawio", diagram_xml())
+            by_id = {
+                item.get("id"): item for item in ET.parse(source).findall(".//mxCell")
+            }
+            for reserved_id in ("0", "1"):
+                with self.subTest(reserved_id=reserved_id):
+                    operation = {
+                        "operation_id": f"remove-{reserved_id}",
+                        "op": "remove_semantic_element",
+                        "target_id": reserved_id,
+                        "precondition": {
+                            "target_exists": True,
+                            "target_hash": supervisor.cell_hash(by_id[reserved_id]),
+                        },
+                        "proposed_value": {"remove": True},
+                        "semantic_effect": "semantic_removal",
+                        "reasons": ["negative protection test"],
+                        "finding_ids": [],
+                        "rollback": {
+                            "action": "restore_removed_cell",
+                            "value": {"cell_xml": ET.tostring(by_id[reserved_id], encoding="unicode")},
+                        },
+                    }
+                    patch_path = write_json(
+                        temp / f"remove-{reserved_id}.json",
+                        semantic_patch(source, operation),
+                    )
+                    output = temp / f"removed-{reserved_id}.drawio"
+                    with self.assertRaisesRegex(
+                        supervisor.SupervisorError, "reserved root/layer"
+                    ):
+                        supervisor.apply_patch_file(
+                            source, patch_path, output, allow_semantic=True
+                        )
+                    self.assertFalse(output.exists())
+
+    def test_route_edge_proposes_explicit_waypoints_and_terminal_pins(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            source = write_text(temp / "source.drawio", diagram_xml(obstacle=True))
+            proposal = supervisor.route_patch(source, "edge", ["finding-through"])
+            route_operation = next(op for op in proposal["operations"] if op["op"] == "set_edge_route")
+            pin_operation = next(op for op in proposal["operations"] if op["op"] == "set_edge_pins")
+
+            self.assertTrue(route_operation["proposed_value"]["waypoints"])
+            self.assertEqual(set(pin_operation["proposed_value"]), {"source", "target"})
+            self.assertNotEqual(
+                pin_operation["proposed_value"]["source"],
+                pin_operation["proposed_value"]["target"],
+            )
+            self.assertEqual(route_operation["finding_ids"], ["finding-through"])
+            self.assertEqual(pin_operation["finding_ids"], ["finding-through"])
+
+            patch_path = write_json(temp / "patch.json", proposal)
+            candidate = temp / "candidate.drawio"
+            supervisor.apply_patch_file(source, patch_path, candidate)
+            routed = cell(candidate, "edge")
+            points = routed.findall("mxGeometry/Array[@as='points']/mxPoint")
+            self.assertGreaterEqual(len(points), 1)
+            style = routed.get("style", "")
+            for token in ("edgeStyle=orthogonalEdgeStyle", "exitX=", "exitY=", "entryX=", "entryY="):
+                self.assertIn(token, style)
+
+
+class MonotonicComparisonTests(unittest.TestCase):
+    def test_structural_id_errors_dominate_route_improvements(self):
+        baseline = report(("layout", "error", "artifact.readability.route_through"))
+        candidate = report(("artifact-parse", "error", "artifact.id.duplicate"))
+        rejected = supervisor.compare_reports(baseline, candidate)
+        improved = supervisor.compare_reports(candidate, report())
+        self.assertFalse(rejected["accepted"])
+        self.assertEqual(rejected["reason"], "higher_priority_regression:structural_errors")
+        self.assertTrue(improved["accepted"])
+        self.assertEqual(improved["reason"], "lexicographic_improvement:structural_errors")
+
+    def test_all_validator_structural_codes_map_to_structural_errors(self):
+        codes = (
+            "artifact.id.missing", "artifact.id.duplicate", "artifact.cell.invalid_kind",
+            "artifact.reference.unresolved", "artifact.geometry.invalid", "artifact.page.compressed",
+            "artifact.source.invalid", "artifact.source.required", "artifact.structure.generic",
+            "artifact.xml.parse", "artifact.future.unknown_error",
+        )
+        for code in codes:
+            with self.subTest(code=code):
+                value = supervisor.quality_vector(report(("artifact-parse", "error", code)))
+                self.assertEqual(value["structural_errors"], 1)
+
+    def test_lexicographic_improvement_can_accept_lower_priority_regression(self):
+        baseline = report(
+            ("layout", "error", "artifact.readability.route_through"),
+            ("layout", "error", "artifact.readability.crossing"),
+            route_complexity=4,
+        )
+        improved = report(("layout", "error", "artifact.readability.crossing"), route_complexity=4)
+        lower_priority_regressed = report(
+            ("layout", "error", "artifact.readability.crossing"),
+            ("layout", "error", "artifact.readability.crossing"),
+            route_complexity=4,
+        )
+        higher_priority_regressed = report(
+            ("layout", "error", "artifact.readability.route_through"),
+            ("layout", "error", "artifact.readability.route_through"),
+            route_complexity=0,
+        )
+
+        accepted = supervisor.compare_reports(baseline, improved)
+        partial = supervisor.compare_reports(baseline, lower_priority_regressed)
+        rejected = supervisor.compare_reports(baseline, higher_priority_regressed)
+        semantic_rejected = supervisor.compare_reports(baseline, improved, semantic_equal=False)
+
+        self.assertTrue(accepted["accepted"])
+        self.assertEqual(accepted["reason"], "lexicographic_improvement:route_through")
+        self.assertTrue(partial["accepted"])
+        self.assertEqual(partial["reason"], "lexicographic_improvement:route_through")
+        self.assertFalse(rejected["accepted"])
+        self.assertEqual(rejected["reason"], "higher_priority_regression:route_through")
+        self.assertEqual(semantic_rejected["reason"], "semantic_digest_changed")
+
+
+class EvidenceAndStateTests(unittest.TestCase):
+    def test_reviewer_input_binds_baseline_candidate_diff_context_and_models(self):
+        with tempfile.TemporaryDirectory() as temp:
+            case = prepare_routed_candidate(temp)
+            value = supervisor.make_reviewer_input(
+                case["run_dir"], case["candidate"], case["candidate_report"],
+                case["candidate_receipt"], case["patch"],
+            )
+            assert_schema(self, value, "reviewer-input.v1.schema.json")
+            self.assertEqual(value["baseline"]["artifact"]["sha256"], supervisor.sha256_file(case["baseline"]))
+            self.assertEqual(value["candidate"]["artifact"]["sha256"], supervisor.sha256_file(case["candidate"]))
+            self.assertIn("semantic", value["diff"])
+            self.assertIn("layout", value["diff"])
+            self.assertIn("comparison", value["quality"])
+            self.assertIn("source_refs", value["context"])
+            self.assertIsInstance(value["model_resolutions"], list)
+
+            case["baseline_report"].write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(supervisor.SupervisorError, "baseline receipt failed"):
+                supervisor.make_reviewer_input(
+                    case["run_dir"], case["candidate"], case["candidate_report"],
+                    case["candidate_receipt"], case["patch"],
+                )
+
+    def test_semantic_candidate_requires_exact_human_approval_and_can_reset_baseline(self):
+        with tempfile.TemporaryDirectory() as temp:
+            case = prepare_semantic_candidate(temp)
+            with self.assertRaisesRegex(supervisor.SupervisorError, "semantic approval"):
+                supervisor.record_candidate(
+                    case["run_dir"], case["candidate"], case["baseline_report"], case["candidate_report"],
+                    case["patch"], case["baseline_receipt"], case["candidate_receipt"],
+                    reviewer_verdict_path=case["reviewer"],
+                )
+
+        with tempfile.TemporaryDirectory() as temp:
+            case = prepare_semantic_candidate(temp)
+            approval = supervisor.create_semantic_approval(
+                case["run_dir"], case["baseline"], case["candidate"], case["patch"], "approve",
+            )
+            approval["patch_sha256"] = "0" * 64
+            approval_path = write_json(Path(temp) / "approval.json", approval)
+            with self.assertRaisesRegex(supervisor.SupervisorError, "evidence mismatch"):
+                supervisor.record_candidate(
+                    case["run_dir"], case["candidate"], case["baseline_report"], case["candidate_report"],
+                    case["patch"], case["baseline_receipt"], case["candidate_receipt"],
+                    reviewer_verdict_path=case["reviewer"], semantic_approval_path=approval_path,
+                )
+
+        with tempfile.TemporaryDirectory() as temp:
+            case = prepare_semantic_candidate(temp)
+            approval_path = write_json(
+                Path(temp) / "approval.json",
+                supervisor.create_semantic_approval(
+                    case["run_dir"], case["baseline"], case["candidate"], case["patch"], "reject",
+                ),
+            )
+            result = supervisor.record_candidate(
+                case["run_dir"], case["candidate"], case["baseline_report"], case["candidate_report"],
+                case["patch"], case["baseline_receipt"], case["candidate_receipt"],
+                reviewer_verdict_path=case["reviewer"], semantic_approval_path=approval_path,
+            )
+            self.assertEqual((result["accepted"], result["reason"]), (False, "semantic_approval_rejected"))
+
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            case = prepare_semantic_candidate(temp)
+            approval_path = write_json(
+                temp / "approval.json",
+                supervisor.create_semantic_approval(
+                    case["run_dir"], case["baseline"], case["candidate"], case["patch"], "approve",
+                ),
+            )
+            result = supervisor.record_candidate(
+                case["run_dir"], case["candidate"], case["baseline_report"], case["candidate_report"],
+                case["patch"], case["baseline_receipt"], case["candidate_receipt"],
+                reviewer_verdict_path=case["reviewer"], semantic_approval_path=approval_path,
+            )
+            self.assertEqual((result["accepted"], result["reason"]), (True, "semantic_change_approved"))
+            state = supervisor.load_state(case["run_dir"])
+            self.assertEqual(state["quality_epoch"], 1)
+            new_digest = supervisor.artifact_invariants(case["candidate"])[0]
+            self.assertEqual(state["semantic_baseline_digest"], new_digest)
+
+            supervisor.transition(case["run_dir"], "patching")
+            route_patch = supervisor.route_patch(case["candidate"], "edge", ["follow-on-route"])
+            self.assertEqual(route_patch["baseline"]["semantic_digest"], new_digest)
+            route_path = write_json(temp / "route.patch.json", route_patch)
+            follow_on = temp / "follow-on.drawio"
+            supervisor.apply_patch_file(case["candidate"], route_path, follow_on)
+            supervisor.run_validation(follow_on, case["run_dir"], attempt_id="follow-on")
+            supervisor.transition(case["run_dir"], "validating")
+            follow_report = case["run_dir"] / "attempts/follow-on/validation-report.json"
+            follow_receipt = case["run_dir"] / "attempts/follow-on/validation-receipt.json"
+            follow_result = supervisor.record_candidate(
+                case["run_dir"], follow_on, case["candidate_report"], follow_report,
+                route_path, case["candidate_receipt"], follow_receipt,
+                reviewer_verdict_path=reviewer_verdict(
+                    case["run_dir"], follow_on, follow_report, follow_receipt, suffix="follow-on",
+                ),
+            )
+            self.assertTrue(follow_result["accepted"])
+
+    def test_terminal_and_pause_decisions_are_explicit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            artifact = write_text(temp / "clean.drawio", clean_diagram_xml())
+            run_dir = temp / "run"
+            supervisor.transition(run_dir, "analyzed", artifact=artifact)
+            supervisor.transition(run_dir, "final_review", artifact=artifact)
+            with self.assertRaisesRegex(supervisor.SupervisorError, "approve_with_findings"):
+                supervisor.transition(run_dir, "approved_with_findings", decision="approve")
+            with self.assertRaisesRegex(supervisor.SupervisorError, "pause requires"):
+                supervisor.transition(run_dir, "awaiting_feedback", decision="pause")
+
+    def test_candidate_requires_exact_reviewer_evidence_and_honors_verdict(self):
+        with tempfile.TemporaryDirectory() as temp:
+            case = prepare_routed_candidate(temp)
+            args = (
+                case["run_dir"], case["candidate"], case["baseline_report"],
+                case["candidate_report"], case["patch"], case["baseline_receipt"],
+                case["candidate_receipt"],
+            )
+            with self.assertRaisesRegex(supervisor.SupervisorError, "reviewer verdict"):
+                supervisor.record_candidate(*args)
+
+        with tempfile.TemporaryDirectory() as temp:
+            case = prepare_routed_candidate(temp)
+            verdict_path = reviewer_verdict(
+                case["run_dir"], case["candidate"], case["candidate_report"], case["candidate_receipt"],
+            )
+            verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
+            verdict["candidate_sha256"] = "0" * 64
+            write_json(verdict_path, verdict)
+            with self.assertRaisesRegex(supervisor.SupervisorError, "evidence mismatch"):
+                supervisor.record_candidate(
+                    case["run_dir"], case["candidate"], case["baseline_report"],
+                    case["candidate_report"], case["patch"], case["baseline_receipt"],
+                    case["candidate_receipt"], reviewer_verdict_path=verdict_path,
+                )
+
+        with tempfile.TemporaryDirectory() as temp:
+            case = prepare_routed_candidate(temp)
+            rejected = supervisor.record_candidate(
+                case["run_dir"], case["candidate"], case["baseline_report"],
+                case["candidate_report"], case["patch"], case["baseline_receipt"],
+                case["candidate_receipt"],
+                reviewer_verdict_path=reviewer_verdict(
+                    case["run_dir"], case["candidate"], case["candidate_report"],
+                    case["candidate_receipt"], verdict="reject",
+                ),
+            )
+            self.assertFalse(rejected["accepted"])
+            self.assertEqual(rejected["reason"], "reviewer_rejected")
+
+        with tempfile.TemporaryDirectory() as temp:
+            case = prepare_routed_candidate(temp)
+            approved = supervisor.record_candidate(
+                case["run_dir"], case["candidate"], case["baseline_report"],
+                case["candidate_report"], case["patch"], case["baseline_receipt"],
+                case["candidate_receipt"],
+                reviewer_verdict_path=reviewer_verdict(
+                    case["run_dir"], case["candidate"], case["candidate_report"],
+                    case["candidate_receipt"], verdict="approve",
+                ),
+            )
+            self.assertTrue(approved["accepted"])
+            self.assertEqual(approved["state"], "accepted_candidate")
+
+    def test_manual_handoff_never_promotes_unreviewed_candidate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            case = prepare_routed_candidate(temp)
+            accepted_before = supervisor.load_state(case["run_dir"])["accepted_artifact"]["sha256"]
+            result = supervisor.record_candidate(
+                case["run_dir"], case["candidate"], case["baseline_report"],
+                case["candidate_report"], case["patch"], case["baseline_receipt"],
+                case["candidate_receipt"], review_exception="manual_handoff",
+            )
+            state = supervisor.load_state(case["run_dir"])
+            self.assertEqual(result["state"], "manual_handoff")
+            self.assertFalse(result["accepted"])
+            self.assertEqual(state["accepted_artifact"]["sha256"], accepted_before)
+            self.assertNotEqual(state["accepted_artifact"]["sha256"], supervisor.sha256_file(case["candidate"]))
+
+    def test_candidate_rejects_patch_that_does_not_replay_to_exact_artifact(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            run_dir = temp / "run"
+            baseline = write_text(temp / "baseline.drawio", diagram_xml())
+            supervisor.transition(run_dir, "analyzed", artifact=baseline)
+            supervisor.run_validation(baseline, run_dir, attempt_id="baseline")
+            original = canonical_route_operation(baseline, {"x": 150, "y": 30})
+            original["proposed_value"]["waypoints"] = [
+                {"x": 150, "y": 30}, {"x": 150, "y": 70}, {"x": 340, "y": 70},
+            ]
+            patch_path = write_json(temp / "patch.json", canonical_patch(baseline, [original]))
+            candidate = temp / "candidate.drawio"
+            supervisor.apply_patch_file(baseline, patch_path, candidate)
+            supervisor.run_validation(candidate, run_dir, attempt_id="candidate")
+            patch = json.loads(patch_path.read_text(encoding="utf-8"))
+            patch["operations"][0]["proposed_value"]["waypoints"] = [
+                {"x": 180, "y": 30}, {"x": 180, "y": 90}, {"x": 340, "y": 90},
+            ]
+            write_json(patch_path, patch)
+            supervisor.transition(run_dir, "patching")
+            supervisor.transition(run_dir, "validating")
+            with self.assertRaisesRegex(supervisor.SupervisorError, "patch replay"):
+                supervisor.record_candidate(
+                    run_dir, candidate,
+                    run_dir / "attempts/baseline/validation-report.json",
+                    run_dir / "attempts/candidate/validation-report.json",
+                    patch_path,
+                    run_dir / "attempts/baseline/validation-receipt.json",
+                    run_dir / "attempts/candidate/validation-receipt.json",
+                )
+            event = json.loads((run_dir / "run-manifest.jsonl").read_text().splitlines()[-1])
+            self.assertEqual(event["payload"]["reason"], "patch_replay_mismatch")
+            self.assertEqual(event["payload"]["provided_candidate_sha256"], supervisor.sha256_file(candidate))
+            self.assertIn("patch_sha256", event["payload"])
+    def test_attempt_id_rejects_paths_and_escapes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            artifact = write_text(temp / "clean.drawio", clean_diagram_xml())
+            for attempt_id in ("../escape", "/tmp/escape", "nested/name", "nested\\name", ".."):
+                with self.subTest(attempt_id=attempt_id):
+                    with self.assertRaisesRegex(supervisor.SupervisorError, "opaque slug"):
+                        supervisor.run_validation(artifact, temp / "run", attempt_id=attempt_id)
+
+    def test_pending_state_transaction_recovers_state_and_event_once(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp) / "run"
+            run_dir.mkdir()
+            run_id = supervisor.ensure_run_id(run_dir)
+            state = {
+                "schema_version": 1, "run_id": run_id, "state": "analyzed",
+                "seen_hashes": [], "seen_vectors": [], "attempt_count": 0,
+                "max_attempts": 1, "repair_class_attempts": {}, "updated_at": "now",
+            }
+            supervisor.write_json(run_dir / ".state-transaction.json", {
+                "transaction_id": "recover-me", "state": state,
+                "event_type": "state_transition", "event_state": "analyzed",
+                "payload": {"recovered": True}, "actor": None,
+            })
+            write_text(run_dir / ".state.lock", "999999999\n")
+            self.assertEqual(supervisor.load_state(run_dir)["state"], "analyzed")
+            self.assertFalse((run_dir / ".state-transaction.json").exists())
+            self.assertFalse((run_dir / ".state.lock").exists())
+            supervisor.recover_pending_transaction(run_dir)
+            events = [json.loads(line) for line in (run_dir / "run-manifest.jsonl").read_text().splitlines()]
+            self.assertEqual(sum(event["payload"].get("transaction_id") == "recover-me" for event in events), 1)
+
+    def test_receipt_and_every_manifest_line_conform_to_schemas(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            artifact = write_text(temp / "clean.drawio", clean_diagram_xml())
+            run_dir = temp / "run"
+            receipt = supervisor.run_validation(artifact, run_dir)
+
+            assert_schema(self, receipt, "validation-receipt.v1.schema.json")
+            lines = [
+                json.loads(line)
+                for line in (run_dir / "run-manifest.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertGreaterEqual(len(lines), 1)
+            for index, event in enumerate(lines, start=1):
+                with self.subTest(sequence=index, event_type=event.get("event_type")):
+                    self.assertEqual(event["sequence"], index)
+                    assert_schema(self, event, "run-event.v1.schema.json")
+
+    def test_receipt_detects_artifact_and_report_tampering(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            artifact = write_text(temp / "clean.drawio", clean_diagram_xml())
+            run_dir = temp / "run"
+            receipt = supervisor.run_validation(artifact, run_dir)
+            receipt_path = run_dir / "validation-receipt.json"
+
+            self.assertEqual(receipt["exit_code"], 0)
+            self.assertTrue(supervisor.verify_receipt(receipt_path)["valid"])
+
+            report_path = Path(receipt["outputs"]["report"]["path"])
+            original_report = report_path.read_text(encoding="utf-8")
+            report_path.write_text(original_report + " ", encoding="utf-8")
+            report_check = supervisor.verify_receipt(receipt_path)
+            self.assertFalse(report_check["valid"])
+            self.assertFalse(report_check["checks"]["report_hash"])
+            report_path.write_text(original_report, encoding="utf-8")
+
+            artifact.write_text(clean_diagram_xml() + "\n", encoding="utf-8")
+            artifact_check = supervisor.verify_receipt(receipt_path)
+            self.assertFalse(artifact_check["valid"])
+            self.assertFalse(artifact_check["checks"]["artifact_hash"])
+
+    def test_receipt_rejects_rehashed_content_binding_and_command_tampering(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            artifact = write_text(temp / "clean.drawio", clean_diagram_xml())
+            run_dir = temp / "run"
+            supervisor.run_validation(artifact, run_dir)
+            receipt_path = run_dir / "validation-receipt.json"
+            report_path = run_dir / "validation-report.json"
+
+            report_value = json.loads(report_path.read_text(encoding="utf-8"))
+            report_value["artifact_sha256"] = "0" * 64
+            supervisor.write_json(report_path, report_value)
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt["outputs"]["report"]["sha256"] = supervisor.sha256_file(report_path)
+            receipt["outputs"]["report"]["byte_length"] = report_path.stat().st_size
+            supervisor.write_json(receipt_path, receipt)
+
+            rebound = supervisor.verify_receipt(receipt_path, artifact)
+            self.assertFalse(rebound["valid"])
+            self.assertTrue(rebound["checks"]["report_hash"])
+            self.assertFalse(rebound["checks"]["report_artifact_hash"])
+
+            report_value["artifact_sha256"] = supervisor.sha256_file(artifact)
+            supervisor.write_json(report_path, report_value)
+            receipt["outputs"]["report"]["sha256"] = supervisor.sha256_file(report_path)
+            receipt["outputs"]["report"]["byte_length"] = report_path.stat().st_size
+            receipt["command"] = [part for part in receipt["command"] if part != "--strict"]
+            supervisor.write_json(receipt_path, receipt)
+            command_check = supervisor.verify_receipt(receipt_path, artifact)
+            self.assertFalse(command_check["valid"])
+            self.assertFalse(command_check["checks"]["command_bound"])
+
+    def test_receipt_rejects_metric_tampering_even_after_report_rehash(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            artifact = write_text(temp / "clean.drawio", clean_diagram_xml())
+            run_dir = temp / "run"
+            supervisor.run_validation(artifact, run_dir)
+            report_path = run_dir / "validation-report.json"
+            receipt_path = run_dir / "validation-receipt.json"
+            value = json.loads(report_path.read_text(encoding="utf-8"))
+            value["metrics"]["route_complexity"] += 123
+            supervisor.write_json(report_path, value)
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt["outputs"]["report"]["sha256"] = supervisor.sha256_file(report_path)
+            receipt["outputs"]["report"]["byte_length"] = report_path.stat().st_size
+            supervisor.write_json(receipt_path, receipt)
+            verification = supervisor.verify_receipt(receipt_path, artifact)
+            self.assertFalse(verification["valid"])
+            self.assertTrue(verification["checks"]["report_hash"])
+            self.assertFalse(verification["checks"]["report_stdout_match"])
+
+    def test_completed_state_requires_receipt_for_the_exact_final_artifact(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            artifact = write_text(temp / "clean.drawio", clean_diagram_xml())
+            run_dir = temp / "run"
+            supervisor.transition(run_dir, "analyzed", artifact=artifact)
+            supervisor.run_validation(artifact, run_dir)
+            receipt = run_dir / "validation-receipt.json"
+            supervisor.transition(run_dir, "final_review", artifact=artifact)
+
+            with self.assertRaisesRegex(supervisor.SupervisorError, "approve decision"):
+                supervisor.transition(
+                    run_dir, "completed", artifact=artifact, receipt=receipt
+                )
+            self.assertEqual(supervisor.load_state(run_dir)["state"], "final_review")
+
+            completed = supervisor.transition(
+                run_dir, "completed", artifact=artifact, receipt=receipt,
+                decision="approve",
+            )
+            self.assertEqual(completed["state"], "completed")
+            self.assertEqual(completed["accepted_artifact"]["sha256"], supervisor.sha256_file(artifact))
+
+    def test_final_review_can_pause_resume_and_approve(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            artifact = write_text(temp / "clean.drawio", clean_diagram_xml())
+            run_dir = temp / "run"
+            supervisor.transition(run_dir, "analyzed", artifact=artifact)
+            supervisor.run_validation(artifact, run_dir)
+            receipt = run_dir / "validation-receipt.json"
+            supervisor.transition(run_dir, "final_review", artifact=artifact)
+            paused = supervisor.transition(
+                run_dir, "awaiting_feedback", artifact=artifact, decision="pause",
+                reason="user requested a checkpoint",
+            )
+            self.assertEqual(paused["state"], "awaiting_feedback")
+            resumed = supervisor.transition(
+                run_dir, "final_review", artifact=artifact, decision="continue",
+                reason="user supplied clarification",
+            )
+            self.assertEqual(resumed["state"], "final_review")
+            completed = supervisor.transition(
+                run_dir, "completed", artifact=artifact, receipt=receipt,
+                decision="approve",
+            )
+            self.assertEqual(completed["state"], "completed")
+            self.assertEqual(
+                [item["decision"] for item in completed["decisions"]],
+                ["pause", "continue", "approve"],
+            )
+
+    def test_attempt_limit_moves_rejected_candidate_to_plateau(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            run_dir = temp / "run"
+            baseline = write_text(temp / "baseline.drawio", clean_diagram_xml())
+            supervisor.transition(
+                run_dir, "analyzed", artifact=baseline, max_attempts=1
+            )
+            supervisor.run_validation(baseline, run_dir, attempt_id="baseline")
+            baseline_report = run_dir / "attempts" / "baseline" / "validation-report.json"
+            baseline_receipt = run_dir / "attempts" / "baseline" / "validation-receipt.json"
+            artifact, patch_path, candidate_report, candidate_receipt = create_move_candidate(
+                temp, run_dir, baseline, "candidate", 110, route_complexity=1
+            )
+            supervisor.transition(run_dir, "patching")
+            supervisor.transition(run_dir, "validating")
+
+            result = supervisor.record_candidate(
+                run_dir, artifact, baseline_report, candidate_report, patch_path,
+                baseline_receipt, candidate_receipt,
+                repair_class="edge-route",
+                reviewer_verdict_path=reviewer_verdict(
+                    run_dir, artifact, candidate_report, candidate_receipt,
+                ),
+            )
+            state = supervisor.load_state(run_dir)
+            last_event = json.loads(
+                (run_dir / "run-manifest.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+            )
+
+            self.assertEqual(result["state"], "plateau")
+            self.assertEqual(state["attempt_count"], 1)
+            self.assertEqual(state["max_attempts"], 1)
+            self.assertEqual(state["repair_class_attempts"], {"edge-route": 1})
+            self.assertEqual(last_event["event_type"], "plateau_detected")
+            self.assertEqual(last_event["payload"]["reason"], "iteration_limit_exhausted")
+
+    def test_repair_class_limit_plateaus_after_three_distinct_rejections(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            run_dir = temp / "run"
+            baseline = write_text(temp / "baseline.drawio", clean_diagram_xml())
+            supervisor.transition(
+                run_dir, "analyzed", artifact=baseline, max_attempts=10
+            )
+            supervisor.run_validation(baseline, run_dir, attempt_id="baseline")
+            baseline_report = run_dir / "attempts" / "baseline" / "validation-report.json"
+            baseline_receipt = run_dir / "attempts" / "baseline" / "validation-receipt.json"
+
+            for attempt in range(1, supervisor.DEFAULT_MAX_REPAIR_CLASS_ATTEMPTS + 1):
+                supervisor.transition(run_dir, "patching")
+                supervisor.transition(run_dir, "validating")
+                artifact, patch_path, candidate_report, candidate_receipt = create_move_candidate(
+                    temp, run_dir, baseline, f"candidate-{attempt}", 100 + attempt,
+                    route_complexity=attempt,
+                )
+                result = supervisor.record_candidate(
+                    run_dir, artifact, baseline_report, candidate_report, patch_path,
+                    baseline_receipt, candidate_receipt,
+                    repair_class="edge-route",
+                    reviewer_verdict_path=reviewer_verdict(
+                        run_dir, artifact, candidate_report, candidate_receipt,
+                        suffix=str(attempt),
+                    ),
+                )
+                expected = (
+                    "plateau"
+                    if attempt == supervisor.DEFAULT_MAX_REPAIR_CLASS_ATTEMPTS
+                    else "retrying"
+                )
+                self.assertEqual(result["state"], expected)
+
+            state = supervisor.load_state(run_dir)
+            last_event = json.loads(
+                (run_dir / "run-manifest.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+            )
+            self.assertEqual(
+                state["repair_class_attempts"]["edge-route"],
+                supervisor.DEFAULT_MAX_REPAIR_CLASS_ATTEMPTS,
+            )
+            self.assertEqual(state["attempt_count"], supervisor.DEFAULT_MAX_REPAIR_CLASS_ATTEMPTS)
+            self.assertEqual(last_event["payload"]["reason"], "repair_class_exhausted:edge-route")
+
+    def test_candidate_gate_accepts_partial_lexicographic_improvement_with_failed_strict_receipt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            bad_label = """
+  <mxCell id="bad-label" value="A very long label that cannot fit" style="rhombus;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+    <mxGeometry x="0" y="200" width="24" height="24" as="geometry"/>
+  </mxCell>
+"""
+            baseline_xml = diagram_xml(obstacle=True).replace(
+                "    </root>", bad_label + "    </root>"
+            )
+            baseline = write_text(temp / "baseline.drawio", baseline_xml)
+            run_dir = temp / "run"
+            supervisor.transition(run_dir, "analyzed", artifact=baseline)
+            supervisor.run_validation(baseline, run_dir, attempt_id="baseline")
+            baseline_report = run_dir / "attempts" / "baseline" / "validation-report.json"
+            baseline_receipt = run_dir / "attempts" / "baseline" / "validation-receipt.json"
+
+            patch = supervisor.route_patch(baseline, "edge", ["finding-route-through"])
+            assert_schema(self, patch, "diagram-patch.v1.schema.json")
+            patch_path = write_json(temp / "route-patch.json", patch)
+            candidate = temp / "candidate.drawio"
+            supervisor.apply_patch_file(baseline, patch_path, candidate)
+            receipt_value = supervisor.run_validation(
+                candidate, run_dir, attempt_id="candidate"
+            )
+            candidate_report = run_dir / "attempts" / "candidate" / "validation-report.json"
+            candidate_receipt = run_dir / "attempts" / "candidate" / "validation-receipt.json"
+            receipt_check = supervisor.verify_receipt(candidate_receipt, candidate)
+            self.assertEqual(receipt_value["result"], "failed")
+            self.assertTrue(receipt_check["valid"])
+            self.assertFalse(receipt_check["passed"])
+
+            supervisor.transition(run_dir, "patching")
+            supervisor.transition(run_dir, "validating")
+            result = supervisor.record_candidate(
+                run_dir, candidate, baseline_report, candidate_report, patch_path,
+                baseline_receipt, candidate_receipt, repair_class="edge-route",
+                reviewer_verdict_path=reviewer_verdict(
+                    run_dir, candidate, candidate_report, candidate_receipt,
+                ),
+            )
+
+            self.assertTrue(result["accepted"])
+            self.assertEqual(result["state"], "accepted_candidate")
+            self.assertEqual(result["reason"], "lexicographic_improvement:route_through")
+
+
+class ModelRoutingTests(unittest.TestCase):
+    def test_approved_role_models_and_native_isolated_inherited_fallback_order(self):
+        policy_path = ROOT / "data" / "model-routing.default.json"
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        expected = {
+            "supervisor": "GigaChat-3-Ultra",
+            "reviewer": "DeepSeek-V4-Flash",
+            "repair": "vllm/MiniMax-M3-113k",
+            "semantic_analyst": "vllm/Qwen3.6-35B-262k",
+        }
+        self.assertEqual(
+            {role: config["requested_model"] for role, config in policy["roles"].items()},
+            expected,
+        )
+        self.assertEqual(policy["global_interactive_model"], "preserve")
+
+        results = []
+        for role, requested_model in expected.items():
+            with self.subTest(role=role, mode="native"):
+                native = supervisor.resolve_model(
+                    policy_path, role, native_available=True,
+                    isolated_available=True, current_model="interactive-model",
+                )
+                self.assertEqual(native["resolution_mode"], "native_per_agent")
+                self.assertEqual(native["requested_model"], requested_model)
+                self.assertEqual(native["resolved_model"], requested_model)
+                self.assertFalse(native["fallback_used"])
+                self.assertIsNone(native["degradation_reason"])
+                results.append(native)
+
+        isolated = supervisor.resolve_model(
+            policy_path, "reviewer", isolated_available=True,
+            current_model="interactive-model",
+        )
+        self.assertEqual(isolated["resolution_mode"], "isolated_cli")
+        self.assertEqual(isolated["resolved_model"], expected["reviewer"])
+        self.assertTrue(isolated["fallback_used"])
+        self.assertIsNone(isolated["degradation_reason"])
+        results.append(isolated)
+
+        inherited = supervisor.resolve_model(
+            policy_path, "reviewer", current_model="interactive-model"
+        )
+        self.assertEqual(inherited["resolution_mode"], "inherited_current")
+        self.assertEqual(inherited["requested_model"], expected["reviewer"])
+        self.assertEqual(inherited["resolved_model"], "interactive-model")
+        self.assertEqual(inherited["provider"], "unknown")
+        self.assertTrue(inherited["fallback_used"])
+        self.assertIn("neither native", inherited["degradation_reason"])
+        results.append(inherited)
+
+        serialized = json.dumps(results, ensure_ascii=False, sort_keys=True)
+        self.assertNotIn("/model", serialized)
+
+
+class AgentRuntimeTests(unittest.TestCase):
+    @staticmethod
+    def reviewer_input():
+        digest = "1" * 64
+        return {
+            "run_id": "run-1",
+            "candidate": {"sha256": digest},
+            "validation_report": {"sha256": digest},
+            "validation_receipt": {"sha256": digest},
+        }
+
+    @staticmethod
+    def fake_cli(path, behavior):
+        script = (
+            f"#!{sys.executable}\n"
+            "import json, os, sys\n"
+            "if '--help' in sys.argv:\n"
+            "    print('--model --prompt --output-format --approval-mode')\n"
+            "    raise SystemExit(0)\n"
+            + behavior
+        )
+        write_text(path, script)
+        os.chmod(path, 0o755)
+        return path
+
+    def test_success_uses_minimal_env_and_publishes_after_validation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            cli = self.fake_cli(
+                temp / "safe-cli",
+                "if 'DIAGRAM_TEST_SECRET' in os.environ: raise SystemExit(91)\n"
+                "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
+                "d=payload['candidate']['sha256']\n"
+                "print(json.dumps({'schema_version':1,'verdict_id':'v1','run_id':payload['run_id'],'candidate_sha256':d,'report_sha256':payload['validation_report']['sha256'],'receipt_sha256':payload['validation_receipt']['sha256'],'verdict':'approve','reviewed_at':'2026-07-16T00:00:00Z','findings':[]}))\n",
+            )
+            input_path = write_json(temp / "input.json", self.reviewer_input())
+            output_path = temp / "verdict.json"
+            old = os.environ.get("DIAGRAM_TEST_SECRET")
+            os.environ["DIAGRAM_TEST_SECRET"] = "must-not-leak"
+            try:
+                result = agent_runtime.invoke_role(
+                    "reviewer", input_path, output_path, cli=str(cli), run_dir=temp / "run",
+                )
+            finally:
+                if old is None:
+                    os.environ.pop("DIAGRAM_TEST_SECRET", None)
+                else:
+                    os.environ["DIAGRAM_TEST_SECRET"] = old
+            self.assertEqual(result["exit_code"], 0)
+            self.assertEqual(json.loads(output_path.read_text())["verdict"], "approve")
+            events = [json.loads(line) for line in (temp / "run/run-manifest.jsonl").read_text().splitlines()]
+            self.assertEqual([event["event_type"] for event in events], ["model_resolved", "review_verdict"])
+
+    def test_realistic_gemini_envelope_extracts_inner_verdict_and_keeps_sanitized_stats(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            cli = self.fake_cli(
+                temp / "gemini-envelope-cli",
+                "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
+                "d=payload['candidate']['sha256']\n"
+                "inner={'schema_version':1,'verdict_id':'vg','run_id':payload['run_id'],'candidate_sha256':d,'report_sha256':payload['validation_report']['sha256'],'receipt_sha256':payload['validation_receipt']['sha256'],'verdict':'approve','reviewed_at':'2026-07-16T00:00:00Z','findings':[]}\n"
+                "print(json.dumps({'response':json.dumps(inner),'stats':{'input_tokens':12,'secret':'do-not-record'},'errors':[]}))\n",
+            )
+            result = agent_runtime.invoke_role(
+                "reviewer", write_json(temp / "input.json", self.reviewer_input()),
+                temp / "verdict.json", cli=str(cli), run_dir=temp / "run",
+            )
+            self.assertEqual(json.loads((temp / "verdict.json").read_text())["verdict"], "approve")
+            self.assertEqual(result["runtime_metadata"]["format"], "gemini_json_envelope")
+            self.assertEqual(result["runtime_metadata"]["stats"]["input_tokens"], 12)
+            self.assertEqual(result["runtime_metadata"]["stats"]["secret"], "[REDACTED]")
+            event = json.loads((temp / "run/run-manifest.jsonl").read_text().splitlines()[-1])
+            self.assertEqual(event["payload"]["runtime_metadata"]["format"], "gemini_json_envelope")
+
+    def test_gemini_error_or_malformed_response_is_not_published(self):
+        cases = (
+            ("error", "print(json.dumps({'response':'{}','stats':{},'errors':[{'message':'model failed'}]}))\n", "reports errors"),
+            ("malformed", "print(json.dumps({'response':'not-json','stats':{},'errors':[]}))\n", "not role JSON"),
+        )
+        for name, behavior, message in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as temp:
+                temp = Path(temp)
+                cli = self.fake_cli(temp / "gemini-cli", behavior)
+                output = temp / "verdict.json"
+                with self.assertRaisesRegex(supervisor.SupervisorError, message):
+                    agent_runtime.invoke_role(
+                        "reviewer", write_json(temp / "input.json", self.reviewer_input()),
+                        output, cli=str(cli), run_dir=temp / "run",
+                    )
+                self.assertFalse(output.exists())
+                events = [json.loads(line) for line in (temp / "run/run-manifest.jsonl").read_text().splitlines()]
+                self.assertEqual([event["event_type"] for event in events], ["role_failed"])
+
+    def test_nonzero_or_invalid_output_leaves_no_output_or_success_event(self):
+        for name, behavior, error in (
+            ("exit", "print('nope')\nprint('failed', file=sys.stderr)\nraise SystemExit(42)\n", "exit code 42"),
+            ("invalid", "print('{}')\n", "output schema"),
+        ):
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as temp:
+                temp = Path(temp)
+                cli = self.fake_cli(temp / "fake-cli", behavior)
+                input_path = write_json(temp / "input.json", self.reviewer_input())
+                output_path = temp / "verdict.json"
+                with self.assertRaisesRegex(supervisor.SupervisorError, error):
+                    agent_runtime.invoke_role(
+                        "reviewer", input_path, output_path, cli=str(cli), run_dir=temp / "run",
+                    )
+                self.assertFalse(output_path.exists())
+                events = [json.loads(line) for line in (temp / "run/run-manifest.jsonl").read_text().splitlines()]
+                self.assertEqual([event["event_type"] for event in events], ["role_failed"])
+
+    def test_requested_model_unavailable_falls_back_to_inherited_current(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            cli = self.fake_cli(
+                temp / "fallback-cli",
+                "if '--model' in sys.argv and sys.argv[sys.argv.index('--model')+1] == 'DeepSeek-V4-Flash':\n"
+                "    print('requested model unavailable', file=sys.stderr)\n"
+                "    raise SystemExit(3)\n"
+                "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
+                "d=payload['candidate']['sha256']\n"
+                "print(json.dumps({'schema_version':1,'verdict_id':'vf','run_id':payload['run_id'],'candidate_sha256':d,'report_sha256':payload['validation_report']['sha256'],'receipt_sha256':payload['validation_receipt']['sha256'],'verdict':'approve','reviewed_at':'2026-07-16T00:00:00Z','findings':[]}))\n",
+            )
+            result = agent_runtime.invoke_role(
+                "reviewer", write_json(temp / "input.json", self.reviewer_input()),
+                temp / "verdict.json", cli=str(cli), run_dir=temp / "run",
+                current_model="interactive-model", current_provider="local-provider",
+            )
+            self.assertEqual(result["resolution"]["resolution_mode"], "inherited_current")
+            self.assertEqual(result["resolution"]["resolved_model"], "interactive-model")
+            self.assertEqual(result["resolution"]["provider"], "local-provider")
+            self.assertTrue(result["resolution"]["fallback_used"])
+            self.assertEqual(
+                result["command"][result["command"].index("--model") + 1],
+                "interactive-model",
+            )
+            events = [json.loads(line) for line in (temp / "run/run-manifest.jsonl").read_text().splitlines()]
+            self.assertEqual([event["event_type"] for event in events], ["role_failed", "model_resolved", "review_verdict"])
+
+    def test_dry_run_uses_capability_checked_argument_array_without_global_model_command(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            cli = write_text(
+                temp / "fake-gemini",
+                f"#!{sys.executable}\n"
+                "import sys\n"
+                "if '--help' in sys.argv:\n"
+                "    print('--model --prompt --output-format --approval-mode')\n"
+                "    raise SystemExit(0)\n"
+                "raise SystemExit(99)\n",
+            )
+            os.chmod(cli, 0o755)
+            input_path = write_json(temp / "input.json", {"artifact": "candidate.drawio"})
+            output_path = temp / "output.json"
+
+            result = agent_runtime.invoke_role(
+                "reviewer", input_path, output_path, cli=str(cli), dry_run=True
+            )
+
+            self.assertTrue(result["dry_run"])
+            self.assertTrue(result["capabilities"]["available"])
+            self.assertEqual(result["capabilities"]["missing_flags"], [])
+            self.assertIsInstance(result["command"], list)
+            self.assertEqual(result["command"][0], str(cli))
+            self.assertEqual(
+                result["command"][result["command"].index("--model") + 1],
+                "DeepSeek-V4-Flash",
+            )
+            self.assertIn("--approval-mode", result["command"])
+            self.assertIn("plan", result["command"])
+            self.assertNotIn("sh", result["command"])
+            self.assertNotIn("-c", result["command"])
+            self.assertNotIn("/model", " ".join(result["command"]))
+            self.assertEqual(result["resolution"]["resolution_mode"], "isolated_cli")
+            self.assertFalse(output_path.exists(), "dry-run must not execute or publish model output")
+            policy = json.loads(
+                (ROOT / "data" / "model-routing.default.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(policy["global_interactive_model"], "preserve")
+
+    def test_dry_run_refuses_cli_without_required_capabilities(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            cli = write_text(
+                temp / "limited-cli",
+                f"#!{sys.executable}\nprint('--model only')\n",
+            )
+            os.chmod(cli, 0o755)
+            input_path = write_json(temp / "input.json", {})
+            with self.assertRaisesRegex(supervisor.SupervisorError, "lacks isolated-role capabilities"):
+                agent_runtime.invoke_role(
+                    "reviewer", input_path, temp / "output.json",
+                    cli=str(cli), dry_run=True,
+                )
+
+    def test_cli_end_to_end_supervisor_sequence_creates_all_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            run_dir = temp / "run"
+            source = write_text(temp / "input.drawio", diagram_xml(obstacle=True))
+            supervisor_cli = SCRIPTS / "diagram_supervisor.py"
+            agent_cli = SCRIPTS / "agent_runtime.py"
+
+            def run(*args):
+                return subprocess.run(
+                    [sys.executable, *map(str, args)], text=True, capture_output=True,
+                    check=True, cwd=ROOT,
+                )
+
+            run(supervisor_cli, "inspect", source, "--output", run_dir / "diagram-spec.json")
+            run(supervisor_cli, "state", run_dir, "analyzed", "--artifact", source)
+            run(supervisor_cli, "validate", source, "--run-dir", run_dir, "--attempt-id", "baseline")
+            run(supervisor_cli, "state", run_dir, "patching", "--artifact", source)
+            run(supervisor_cli, "route-edge", source, "edge", "--output", run_dir / "edge.patch.json")
+            run(
+                supervisor_cli, "patch", source, run_dir / "edge.patch.json",
+                "--output", run_dir / "candidate.drawio", "--result", run_dir / "patch-result.json",
+            )
+            run(supervisor_cli, "state", run_dir, "validating", "--artifact", source)
+            run(
+                supervisor_cli, "validate", run_dir / "candidate.drawio",
+                "--run-dir", run_dir, "--attempt-id", "candidate",
+            )
+            run(
+                supervisor_cli, "review-input", run_dir, run_dir / "candidate.drawio",
+                run_dir / "attempts/candidate/validation-report.json",
+                run_dir / "attempts/candidate/validation-receipt.json",
+                run_dir / "edge.patch.json", "--output", run_dir / "reviewer-input.json",
+            )
+            fake = self.fake_cli(
+                temp / "reviewer-cli",
+                "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
+                "print(json.dumps({'schema_version':1,'verdict_id':'e2e','run_id':payload['run_id'],'candidate_sha256':payload['candidate']['artifact']['sha256'],'report_sha256':payload['candidate']['report']['sha256'],'receipt_sha256':payload['candidate']['receipt']['sha256'],'verdict':'approve','reviewed_at':'2026-07-16T00:00:00Z','findings':[]}))\n",
+            )
+            run(
+                agent_cli, "reviewer", run_dir / "reviewer-input.json", "--cli", fake,
+                "--run-dir", run_dir, "--output", run_dir / "reviewer-verdict.json",
+            )
+            run(
+                supervisor_cli, "candidate", run_dir, run_dir / "candidate.drawio",
+                run_dir / "attempts/baseline/validation-report.json",
+                run_dir / "attempts/candidate/validation-report.json",
+                run_dir / "edge.patch.json",
+                run_dir / "attempts/baseline/validation-receipt.json",
+                run_dir / "attempts/candidate/validation-receipt.json",
+                "--reviewer-verdict", run_dir / "reviewer-verdict.json",
+                "--repair-class", "edge-route",
+            )
+            expected = (
+                "diagram-spec.json", "state.json", "run-manifest.jsonl", "edge.patch.json",
+                "patch-result.json", "candidate.drawio", "reviewer-input.json", "reviewer-verdict.json",
+                "attempts/baseline/validation-report.json", "attempts/baseline/validation-receipt.json",
+                "attempts/candidate/validation-report.json", "attempts/candidate/validation-receipt.json",
+            )
+            for relative in expected:
+                self.assertTrue((run_dir / relative).exists(), relative)
+            self.assertEqual(supervisor.load_state(run_dir)["state"], "accepted_candidate")
+
+
+class ValidationReportV2Tests(unittest.TestCase):
+    def test_explicit_route_metrics_include_bends_length_and_complexity(self):
+        raw = b"""<?xml version="1.0" encoding="UTF-8"?>
+<mxfile><diagram id="page-1" name="Page-1"><mxGraphModel><root>
+  <mxCell id="0"/><mxCell id="1" parent="0"/>
+  <mxCell id="a" parent="1" vertex="1"><mxGeometry x="0" y="0" width="20" height="20" as="geometry"/></mxCell>
+  <mxCell id="b" parent="1" vertex="1"><mxGeometry x="100" y="100" width="20" height="20" as="geometry"/></mxCell>
+  <mxCell id="e" parent="1" source="a" target="b" edge="1">
+    <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="10" y="110"/></Array></mxGeometry>
+  </mxCell>
+</root></mxGraphModel></diagram></mxfile>"""
+        report_value = drawio_validator.validate_tree(
+            ET.ElementTree(ET.fromstring(raw)),
+            artifact_sha256=hashlib.sha256(raw).hexdigest(),
+        )
+        metrics = report_value["metrics"]
+
+        self.assertEqual(metrics["bend_count"], 1)
+        self.assertEqual(metrics["route_length"], 200.0)
+        self.assertEqual(metrics["route_complexity"], 1_000_200)
+        self.assertEqual(
+            metrics["route_complexity_encoding"],
+            "bend_count*1000000+rounded_route_length",
+        )
+
+    def test_finding_id_does_not_depend_on_human_readable_message(self):
+        def finding(message):
+            report_value = drawio_validator.ValidationReport(report_version=2)
+            report_value.add(
+                "layout", "warning", "artifact.readability.crossing", "/pages/0",
+                message, "e1", elements=["e1", "e2"],
+                remediation_class="edge-route", reconstructability="deterministic",
+            )
+            return report_value.finish()["findings"][0]
+
+        original = finding("edges 'e1' and 'e2' cross")
+        reworded = finding("connectors 'e1' and 'e2' intersect")
+
+        self.assertNotEqual(original["message"], reworded["message"])
+        self.assertEqual(original["finding_id"], reworded["finding_id"])
+
+    def test_multi_element_geometry_hash_and_finding_identity_survive_strict_promotion(self):
+        raw = diagram_xml(crossing=True).encode("utf-8")
+        artifact_hash = hashlib.sha256(raw).hexdigest()
+
+        def validate(strict):
+            tree = ET.ElementTree(ET.fromstring(raw))
+            return drawio_validator.validate_tree(
+                tree, strict=strict, artifact_sha256=artifact_hash
+            )
+
+        relaxed = validate(False)
+        strict = validate(True)
+        relaxed_crossing = next(
+            finding for finding in relaxed["findings"]
+            if finding["code"] == "artifact.readability.crossing"
+        )
+        strict_crossing = next(
+            finding for finding in strict["findings"]
+            if finding["code"] == "artifact.readability.crossing"
+        )
+
+        self.assertEqual(relaxed["report_version"], 2)
+        self.assertEqual(relaxed["artifact_sha256"], artifact_hash)
+        self.assertEqual(relaxed["validator"]["name"], "publish-drawio-validator")
+        self.assertEqual(relaxed_crossing["element"], "e1")
+        self.assertEqual(relaxed_crossing["elements"], ["e1", "e2"])
+        self.assertEqual(set(relaxed_crossing["geometry"]["elements"]), {"e1", "e2"})
+        self.assertEqual(relaxed_crossing["remediation_class"], "edge-route")
+        self.assertEqual(relaxed_crossing["reconstructability"], "deterministic")
+        self.assertRegex(relaxed_crossing["finding_id"], r"^finding-[0-9a-f]{20}$")
+        self.assertEqual(relaxed_crossing["severity"], "warning")
+        self.assertEqual(strict_crossing["severity"], "error")
+        for stable_field in ("finding_id", "code", "path", "element", "elements"):
+            self.assertEqual(relaxed_crossing[stable_field], strict_crossing[stable_field])
+        self.assertEqual(
+            json.dumps(relaxed_crossing["geometry"], sort_keys=True),
+            json.dumps(strict_crossing["geometry"], sort_keys=True),
+        )
+        serialized = json.dumps(relaxed, ensure_ascii=False, allow_nan=False)
+        self.assertNotIn("NaN", serialized)
+
+    def test_duplicate_findings_receive_stable_distinct_occurrence_ids(self):
+        def render():
+            report = drawio_validator.ValidationReport(report_version=2)
+            for _ in range(2):
+                report.add(
+                    "layout", "warning", "artifact.readability.crossing", "/pages/0",
+                    "edges 'e1' and 'e2' cross", "e1", elements=["e1", "e2"],
+                    geometry={"elements": {"e1": {}, "e2": {}}},
+                    remediation_class="edge-route", reconstructability="deterministic",
+                )
+            return report.finish(strict=True)["findings"]
+
+        first = render()
+        second = render()
+        self.assertEqual([item["finding_id"] for item in first], [item["finding_id"] for item in second])
+        self.assertEqual(len({item["finding_id"] for item in first}), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

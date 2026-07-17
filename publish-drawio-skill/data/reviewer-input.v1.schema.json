@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agents365.local/drawio-skill/schemas/reviewer-input.v1.schema.json",
+  "title": "Hash-bound independent reviewer input v1",
+  "type": "object",
+  "required": [
+    "schema_version", "run_id", "baseline", "candidate", "patch",
+    "baseline_spec", "candidate_spec", "diff", "quality", "context",
+    "model_resolutions"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "baseline": {"$ref": "#/$defs/evidenceSet"},
+    "candidate": {"$ref": "#/$defs/evidenceSet"},
+    "patch": {"$ref": "#/$defs/document"},
+    "baseline_spec": {"type": "object"},
+    "candidate_spec": {"type": "object"},
+    "diff": {"type": "object", "required": ["semantic", "layout", "semantic_digest_equal"]},
+    "quality": {"type": "object", "required": ["baseline", "candidate", "comparison"]},
+    "context": {"type": "object", "required": ["source_refs", "user_openspec_refs"]},
+    "model_resolutions": {"type": "array", "items": {"type": "object"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "file": {
+      "type": "object", "required": ["path", "sha256"], "additionalProperties": false,
+      "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/sha256"}}
+    },
+    "document": {
+      "type": "object", "required": ["path", "sha256", "content"], "additionalProperties": false,
+      "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/sha256"}, "content": {"type": "object"}}
+    },
+    "evidenceSet": {
+      "type": "object", "required": ["artifact", "report", "receipt", "strict_passed"], "additionalProperties": false,
+      "properties": {
+        "artifact": {"$ref": "#/$defs/file"},
+        "report": {"$ref": "#/$defs/document"},
+        "receipt": {"$ref": "#/$defs/document"},
+        "strict_passed": {"type": "boolean"}
+      }
+    }
+  }
+}

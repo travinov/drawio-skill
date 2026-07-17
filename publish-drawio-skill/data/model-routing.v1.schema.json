@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agents365.local/drawio-skill/schemas/model-routing.v1.schema.json",
+  "title": "Diagram agent model routing v1",
+  "type": "object",
+  "required": ["schema_version", "policy_id", "global_interactive_model", "roles"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "policy_id": {"type": "string", "minLength": 1},
+    "global_interactive_model": {"const": "preserve"},
+    "roles": {
+      "type": "object",
+      "required": ["supervisor", "reviewer", "repair", "semantic_analyst"],
+      "additionalProperties": false,
+      "properties": {
+        "supervisor": {"$ref": "#/$defs/role"},
+        "reviewer": {"$ref": "#/$defs/role"},
+        "repair": {"$ref": "#/$defs/role"},
+        "semantic_analyst": {"$ref": "#/$defs/role"}
+      }
+    },
+    "resolutions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/resolution"}
+    }
+  },
+  "$defs": {
+    "roleName": {"enum": ["supervisor", "reviewer", "repair", "semantic_analyst"]},
+    "resolutionMode": {"enum": ["native_per_agent", "isolated_cli", "inherited_current"]},
+    "role": {
+      "type": "object",
+      "required": [
+        "requested_model",
+        "provider",
+        "activation",
+        "prompt",
+        "mutation_policy",
+        "fallback_order"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "requested_model": {"type": "string", "minLength": 1},
+        "provider": {"type": "string", "minLength": 1},
+        "activation": {"enum": ["permanent", "on_demand"]},
+        "prompt": {"type": "string", "minLength": 1},
+        "mutation_policy": {"enum": ["orchestration_only", "read_only", "patch_proposal_only"]},
+        "fallback_order": {
+          "const": ["native_per_agent", "isolated_cli", "inherited_current"]
+        }
+      }
+    },
+    "resolution": {
+      "type": "object",
+      "required": [
+        "role",
+        "requested_model",
+        "resolved_model",
+        "provider",
+        "resolution_mode",
+        "fallback_used"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "role": {"$ref": "#/$defs/roleName"},
+        "requested_model": {"type": "string", "minLength": 1},
+        "resolved_model": {"type": "string", "minLength": 1},
+        "provider": {"type": "string", "minLength": 1},
+        "resolution_mode": {"$ref": "#/$defs/resolutionMode"},
+        "fallback_used": {"type": "boolean"},
+        "degradation_reason": {"type": ["string", "null"]},
+        "resolved_at": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}

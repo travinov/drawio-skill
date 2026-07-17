@@ -2,14 +2,14 @@
 
 Builds two independent installable artifacts:
 
-- `dist/drawio-skill-corporate.zip`
+- `dist/drawio-skill-agent-extension.zip`
 - `dist/bpmn-architect-skill.zip`
 
 Install either archive independently for GigaCode CLI:
 
 ```bash
 mkdir -p ~/.gigacode/skills
-unzip dist/drawio-skill-corporate.zip -d ~/.gigacode/skills
+unzip dist/drawio-skill-agent-extension.zip -d ~/.gigacode/skills
 unzip dist/bpmn-architect-skill.zip -d ~/.gigacode/skills
 ```
 

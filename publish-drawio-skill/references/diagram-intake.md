@@ -24,6 +24,14 @@ Assumptions: no dates supplied, so use step order
 If key details are missing, ask first. For simple explicit requests, skip
 questions and proceed with assumptions.
 
+When an existing `.drawio` is supplied, the brief must also state whether the
+request is layout-only or changes process semantics. Compare the user's process
+description with the represented nodes and relationships and name missing
+decision branches, failure/return loops, actors, or transitions. If relevant
+OpenSpec material exists in the repository, cite it as a source for the brief;
+if it conflicts with current user intent, defer to the consolidated decision
+rule in `references/diagram-supervisor.md`.
+
 ## Question limits
 
 Ask at most 3 questions for ordinary requests and at most 5 questions for
@@ -84,6 +92,11 @@ Type-specific prompts:
 | git-flow/custom flow | workflow type, branch names, timeline mode, merge/tag/PR events |
 | roadmap | time scale, lane dimension, input format, milestone ids, baseline version, material shift threshold |
 | process | swimlanes by role/team/system, decision points, start/end states |
+
+For process diagrams, explicitly check failure and rejection paths: what
+happens when a day/stage/check does not pass, where control returns, and what
+terminates the loop. Missing return behavior is a semantic gap, not a routing
+preference.
 
 ## Defaults
 

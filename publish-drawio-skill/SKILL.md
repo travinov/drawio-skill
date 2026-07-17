@@ -1,12 +1,8 @@
 ---
 name: drawio-skill
-version: 1.21.0-corporate.1
 description: Use when the user requests diagrams, flowcharts, roadmap diagrams, git-flow / branching strategy timelines, architecture diagrams, ER diagrams, UML / sequence / class diagrams, network topology, cloud architecture from Terraform or Kubernetes manifests, ML/DL model figures (Transformer/CNN/LSTM), mind maps, or any visualization. Also use proactively when explaining systems with 3+ components, complex data flows, or relationships that benefit from visual representation. Best suited when the diagram needs custom styling, rich shape vocabulary, swimlanes, precise timeline/lane placement, intake clarification, canonical XLSX/CSV roadmap intake, full milestone revision history, baseline comparison, milestone shift markers, or exportable images (PNG/SVG/PDF/JPG). Generates .drawio XML and exports locally via the native draw.io desktop CLI.
 license: MIT
-homepage: https://github.com/Agents365-ai/drawio-skill
-compatibility: Requires draw.io desktop app CLI on PATH or configured via DRAWIO_BIN / ~/.drawio-skill/config.json / %USERPROFILE%\.drawio-skill\config.json (macOS/Linux/Windows). Self-check step requires a vision-enabled model (e.g., Claude Sonnet/Opus); gracefully skipped if unavailable. Optional auto-layout (scripts/autolayout.py) needs Graphviz (dot).
-platforms: [macos, linux, windows]
-metadata: {"openclaw":{"requires":{"anyBins":["draw.io","drawio"]},"emoji":"📐","os":["darwin","linux","win32"],"install":[{"id":"marketplace-drawio","kind":"manual","label":"Install draw.io Desktop from the corporate application marketplace / SberUserSoft","os":["darwin","win32"]},{"id":"graphviz","kind":"manual","label":"Install Graphviz for optional autolayout.py / gitflow.py edge routing if approved in your environment","optional":true}]},"hermes":{"tags":["drawio","diagram","flowchart","git-flow","architecture","visualization","uml"],"category":"design","requires_tools":["drawio","draw.io"],"related_skills":["mermaid","excalidraw","plantuml"]},"author":"Agents365-ai","version":"1.21.0-corporate.1"}
+metadata: {"openclaw":{"requires":{"anyBins":["draw.io","drawio"]},"emoji":"📐","os":["darwin","linux","win32"],"install":[{"id":"marketplace-drawio","kind":"manual","label":"Install draw.io Desktop from the corporate application marketplace / SberUserSoft","os":["darwin","win32"]},{"id":"graphviz","kind":"manual","label":"Install Graphviz for optional autolayout.py / gitflow.py edge routing if approved in your environment","optional":true}]},"hermes":{"tags":["drawio","diagram","flowchart","git-flow","architecture","visualization","uml"],"category":"design","requires_tools":["drawio","draw.io"],"related_skills":["mermaid","excalidraw","plantuml"]},"author":"Agents365-ai","version":"1.22.0-corporate.1"}
 ---
 
 # Draw.io Diagrams
@@ -35,6 +31,8 @@ When the workflow references one of these, read it on demand — none of them ne
 | File | Read it when |
 |---|---|
 | `references/diagram-intake.md` | The user's request is broad, ambiguous, or non-trivial and you need a **Diagram Intake Agent** pass to classify the diagram type, ask only material questions, and produce a confirmed diagram brief before generation |
+| `references/diagram-supervisor.md` + `scripts/diagram_supervisor.py` | The user supplies an existing `.drawio`, asks for iterative repair/independent review, wants proof that validation ran, or requests the agent/tool/human feedback loop. Import and patch the existing XML; do not regenerate it |
+| `references/model-routing.md` + `scripts/agent_runtime.py` | A role needs a different model. Prefer native per-agent configuration; use the capability-probed isolated CLI adapter when native overrides are unavailable; otherwise record inherited-model degradation |
 | `references/xml-authoring.md` | You're about to **hand-write `.drawio` XML** (workflow step 3) — file skeleton, shape/edge cells, containers, connection distribution, palette, spacing/grid rules. Not needed when a bundled generator writes the XML |
 | `references/mermaid-authoring.md` | The diagram is a **standard type with no custom styling/icon needs** (flowchart, state, gantt, mindmap, timeline, journey, pie, …) and the CLI is **≥ v30** — author it as Mermaid text and let the CLI convert to native `.drawio` (structure only, layout free). Also documents the CLI's ELK `--layout` pass for XML |
 | `references/diagram-types.md` | The user names a specific diagram type (ERD, UML class, sequence, C4, architecture, ML/DL, flowchart) |
@@ -55,7 +53,7 @@ When the workflow references one of these, read it on demand — none of them ne
 | `scripts/sqlerd.py` | The user wants an **ER diagram from SQL DDL** — parses `CREATE TABLE` statements into per-table nodes (columns with PK/FK markers) and crow's-foot FK edges for autolayout |
 | `scripts/seqlayout.py` | The user wants a **sequence diagram** — describe participants + messages as JSON and the script computes all lifeline/activation/arrow geometry deterministically (no hand-placed coordinates, no Graphviz needed) |
 | `scripts/c4.py` | The user wants a **C4 model** (System Context / Container / Component) — levels JSON in, one multi-page `.drawio` out with official C4 shapes/colors and **click-to-drill-down** links between levels |
-| `scripts/validate.py` | Structural lint for `.drawio`. For roadmap/git-flow also pass `--profile roadmap|gitflow --source <model>` to verify exact labels, semantic coordinates, lanes, and required relationships. `--json` emits stable finding codes |
+| `scripts/validate.py` | Structural and layout lint for `.drawio`: geometry, container/swimlane containment, sibling lane overlap, text fit, straight/waypoint connector collisions, terminal arrow clearance, and missing/shared pins in high-degree auto-routing. For roadmap/git-flow also pass `--profile roadmap|gitflow --source <model>`. `--json` emits stable finding codes |
 | `scripts/self_check.py` | Before first use, verify declared Python dependencies, compile versioned schemas, and run minimal local source/generation/artifact pipelines. Add `--check-registry` to query only pip's configured source |
 | `scripts/verify_determinism.py` + `scripts/export_smoke.py` | Verify byte-identical generator output and perform a real local PNG export with signature and terminal-IEND integrity checks |
 
@@ -102,6 +100,37 @@ python3 scripts/verify_determinism.py roadmap roadmap.yaml
 python3 scripts/validate.py git-flow.drawio --profile gitflow --source flow.json --strict
 python3 scripts/verify_determinism.py gitflow flow.json --route builtin
 ```
+
+Generic layout findings are warnings in relaxed mode and become errors under
+`--strict`. Explicit waypoint routes and plain straight connectors are checked
+deterministically. Draw.io-managed orthogonal/ELK routes are not guessed; a
+high-degree endpoint with missing or shared entry/exit pins is reported as routing
+uncertainty. Always follow strict XML validation with `export_smoke.py` and a
+PNG visual review because automatic router bends and edge-label placement are
+not fully represented in the source XML.
+
+## Diagram Supervisor extension gate
+
+When the request is to repair, improve, validate, iterate on, or independently
+review an existing `.drawio`, read `references/diagram-supervisor.md` and use
+`scripts/diagram_supervisor.py`. Inspect the artifact first and keep the source
+unchanged. Search for a relevant OpenSpec and compare it with both the user's
+process description and the current diagram. Tell the user when that comparison
+implies semantic changes; a user/OpenSpec conflict requires one consolidated
+decision. Absence of a relevant spec is not a blocker.
+
+Use patch-only candidates with stable `mxCell` IDs and preconditions. Validate
+each candidate strictly, compare it with the last accepted report, and accept it
+only as a monotonic improvement. Never use a rejected candidate as the next
+baseline. Persist state and evidence so user feedback resumes the same run.
+Request human input only for source conflicts, semantic changes, a plateau, or
+final review. The user can continue, approve, stop, pause/resume, accept with
+findings, or take the last accepted artifact for manual completion.
+
+Logical roles are Supervisor and read-only Independent Reviewer during a normal
+run, plus on-demand Repair and Semantic Analyst roles. Resolve models per role;
+never silently execute a global `/model` switch. A run may report `completed`
+only when the strict validation receipt hash matches the exact final `.drawio`.
 
 Run `python3 scripts/self_check.py --check-registry` before first use. Runtime
 requirements are declared in `requirements.txt`; no checker may add or replace a

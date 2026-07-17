@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agents365.local/drawio-skill/schemas/agent-role-output.v1.schema.json",
+  "title": "Portable agent role output envelope v1",
+  "type": "object",
+  "required": ["schema_version", "role", "status", "result"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "role": {"enum": ["supervisor", "semantic_analyst"]},
+    "status": {"enum": ["ok", "needs_human"]},
+    "result": {"type": "object"}
+  }
+}

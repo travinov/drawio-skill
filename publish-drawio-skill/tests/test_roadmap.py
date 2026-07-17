@@ -77,6 +77,28 @@ class RoadmapGeneratorTests(unittest.TestCase):
             self.assertIn("milestone_m-wallet-pilot", ids)
             self.assertIn("shift_m-wallet-pilot", ids)
             self.assertIn("dep_dep-billing-wallet", ids)
+            for edge in tree.findall(".//mxCell[@edge='1']"):
+                edge_style = edge.get("style", "")
+                self.assertIn("edgeStyle=orthogonalEdgeStyle", edge_style, edge.get("id"))
+                self.assertIn("exitX=", edge_style, edge.get("id"))
+                self.assertIn("exitY=", edge_style, edge.get("id"))
+                self.assertIn("entryX=", edge_style, edge.get("id"))
+                self.assertIn("entryY=", edge_style, edge.get("id"))
+            endpoint_pins = {}
+            for edge in tree.findall(".//mxCell[@edge='1']"):
+                values = {
+                    part.split("=", 1)[0]: part.split("=", 1)[1]
+                    for part in edge.get("style", "").split(";") if "=" in part
+                }
+                endpoint_pins.setdefault(edge.get("source"), []).append(
+                    (values["exitX"], values["exitY"])
+                )
+                endpoint_pins.setdefault(edge.get("target"), []).append(
+                    (values["entryX"], values["entryY"])
+                )
+            for vertex_id, pins in endpoint_pins.items():
+                if len(pins) > 1:
+                    self.assertEqual(len(pins), len(set(pins)), vertex_id)
 
     def test_dense_roadmap_generates_without_overlap_warnings(self):
         with tempfile.TemporaryDirectory() as tmp:

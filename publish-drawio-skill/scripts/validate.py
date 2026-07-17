@@ -3,9 +3,9 @@
 
 Catches the class of mistakes a vision self-check is slow and unreliable at:
 dangling edge endpoints, duplicate or reserved ids, broken parent references,
-and (as warnings) off-grid geometry, overlapping sibling nodes, and edge
-routing defects. Runs without launching draw.io, so it is a fast pre-check
-before the visual review step.
+and (as warnings) invalid layout geometry, children outside containers,
+overlapping lanes, and edge routing defects. Runs without launching draw.io,
+so it is a fast pre-check before the visual review step.
 
   python3 validate.py diagram.drawio
 
@@ -14,11 +14,11 @@ vertex ("routes through vertex"), and two edges crossing each other ("edges X
 and Y cross") — the two defects the SKILL.md step-5 self-check looks for
 ("Edge-shape overlap", "Stacked edges"), but caught here deterministically.
 
-Routing is only knowable from the XML when an edge carries explicit waypoints
-(``<Array as="points">``) — exactly the hand-routed case the SKILL.md tells
-authors to use to route around shapes. Edges with no waypoints are auto-routed
-by draw.io at render time (the path is not stored), so they are NOT geometry-
-checked here, keeping these warnings free of false positives. Endpoints honour
+Explicit waypoint routes (``<Array as="points">``) are checked exactly. A
+waypoint-free edge is checked as a straight segment only when its style does
+not request an automatic router. Router-managed edges are not guessed; a
+targeted uncertainty warning is emitted only when multiply connected endpoints
+have missing or shared pins and stacked routing cannot be assured. Endpoints honour
 ``exitX/exitY``/``entryX/entryY`` when present, else the node centre, and
 absolute positions are resolved through parent containers.
 
@@ -29,6 +29,7 @@ skipped with a warning — this skill always writes uncompressed XML.
 Usage: python3 validate.py <file.drawio> [--strict]
 """
 import argparse
+import hashlib
 import html
 import importlib.util
 import json
@@ -41,6 +42,8 @@ import xml.etree.ElementTree as ET
 from validation_common import ValidationReport, print_report
 
 RESERVED = {"0", "1"}
+MIN_TERMINAL_SEGMENT = 20.0
+VALIDATOR_VERSION = "2.0.0"
 
 
 def rect(cell):
@@ -80,11 +83,143 @@ def overlap(a, b):
     return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
 
 
+def is_lane(cell):
+    """True for a swimlane or a generator lane container."""
+    style = cell.get("style") or ""
+    cid = cell.get("id") or ""
+    return (
+        "swimlane" in style.split(";")
+        or style_value(style, "swimlane") == "1"
+        or (cid.startswith("lane_") and style_value(style, "container") == "1")
+    )
+
+
+def is_explicit_container(cell):
+    """True when draw.io style explicitly declares container semantics."""
+    style = cell.get("style") or ""
+    tokens = set(style.split(";"))
+    return (
+        is_lane(cell)
+        or style_value(style, "container") == "1"
+        or "group" in tokens
+        or style_value(style, "group") == "1"
+        or style_value(style, "childLayout") is not None
+        or "tableLayout" in tokens
+        or "stackLayout" in tokens
+    )
+
+
+def is_annotation(cell):
+    """True for unboxed text annotations that may intentionally cross a lane."""
+    style = cell.get("style") or ""
+    tokens = set(style.split(";"))
+    return (
+        "text" in tokens
+        or (
+            style_value(style, "strokeColor") == "none"
+            and style_value(style, "fillColor") == "none"
+        )
+    )
+
+
+def container_layout_warnings(cells, ids, parents):
+    """Return conservative containment, swimlane sizing, and lane warnings.
+
+    Child coordinates are relative to a vertex parent. The check deliberately
+    ignores edge labels and invalid/non-positive geometry, which are handled by
+    their existing checks and cannot be reasoned about safely here.
+    """
+    warns = []
+    eps = 0.1
+    containers = [
+        cell for cell in cells
+        if (
+            cell.get("vertex") == "1"
+            and cell.get("id") in parents
+            and is_explicit_container(cell)
+        )
+    ]
+
+    for parent in containers:
+        parent_box = rect(parent)
+        if (
+            parent_box is None
+            or any(not math.isfinite(value) for value in parent_box)
+            or parent_box[2] <= 0
+            or parent_box[3] <= 0
+        ):
+            continue
+        pid = parent.get("id")
+        _, _, parent_w, parent_h = parent_box
+        style = parent.get("style") or ""
+        start_size = style_num(style, "startSize") if is_lane(parent) else None
+        horizontal = style_value(style, "horizontal") != "0"
+        if start_size is not None:
+            lane_extent = parent_h if horizontal else parent_w
+            if not math.isfinite(start_size) or start_size < 0 or lane_extent <= start_size + eps:
+                warns.append(
+                    f"lane {pid!r} has unusable startSize {start_size:g} "
+                    f"for {'height' if horizontal else 'width'} {lane_extent:g}"
+                )
+
+        for child in cells:
+            if (
+                child.get("vertex") != "1"
+                or child.get("parent") != pid
+                or is_edge_label(child)
+                or is_annotation(child)
+            ):
+                continue
+            child_box = rect(child)
+            if (
+                child_box is None
+                or any(not math.isfinite(value) for value in child_box)
+                or child_box[2] <= 0
+                or child_box[3] <= 0
+            ):
+                continue
+            x, y, width, height = child_box
+            if (
+                x < -eps
+                or y < -eps
+                or x + width > parent_w + eps
+                or y + height > parent_h + eps
+            ):
+                warns.append(f"vertex {child.get('id')!r} lies outside container {pid!r}")
+            if start_size is not None and math.isfinite(start_size) and start_size >= 0:
+                offset = y if horizontal else x
+                if offset < start_size - eps:
+                    warns.append(
+                        f"lane {pid!r} header overlaps child {child.get('id')!r}"
+                    )
+
+    containers = [
+        (cell.get("id"), cell.get("parent"), rect(cell))
+        for cell in cells
+        if (
+            cell.get("vertex") == "1"
+            and is_explicit_container(cell)
+            and rect(cell) is not None
+        )
+    ]
+    containers = [
+        item for item in containers
+        if all(math.isfinite(value) for value in item[2])
+        and item[2][2] > 0
+        and item[2][3] > 0
+    ]
+    for index, (left_id, left_parent, left_box) in enumerate(containers):
+        for right_id, right_parent, right_box in containers[index + 1:]:
+            if left_parent == right_parent and overlap(left_box, right_box):
+                warns.append(f"containers {left_id!r} and {right_id!r} overlap")
+    return warns
+
+
 # --- Edge routing geometry -------------------------------------------------
 #
-# These helpers reason about edge paths. They only apply to edges with explicit
-# waypoints (the route is otherwise computed by draw.io at render time and not
-# stored in the XML), so the checks never guess an auto-routed path.
+# These helpers reason about explicit waypoint paths and waypoint-free straight
+# connectors. Router-managed paths are not guessed because draw.io does not
+# store their rendered bends in the XML.
 
 def style_num(style, key):
     """Return float value of ``key=`` in a draw.io style string, or None."""
@@ -285,6 +420,29 @@ def edge_route(edge, by_id):
     return [s] + waypoints + [t]
 
 
+def implicit_straight_route(edge, by_id):
+    """Return a conservative straight route for a waypoint-free connector.
+
+    The absence of ``edgeStyle`` is draw.io's plain connector representation.
+    Curved, elbow, orthogonal, entity-relation, and other named routers are
+    excluded because their rendered route is computed outside the XML.
+    """
+    if edge_waypoints(edge):
+        return None
+    style = edge.get("style") or ""
+    edge_style = style_value(style, "edgeStyle")
+    curved = (style_value(style, "curved") or "0").lower()
+    if edge_style not in (None, "", "none") or curved in {"1", "true"}:
+        return None
+    if style_value(style, "elbow") is not None:
+        return None
+    source = endpoint(edge, "source", by_id)
+    target = endpoint(edge, "target", by_id)
+    if source is None or target is None:
+        return None
+    return [source, target]
+
+
 def _orient(a, b, c):
     v = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
     return 0 if abs(v) < 1e-9 else (1 if v > 0 else -1)
@@ -328,16 +486,135 @@ def routes_cross(pa, pb):
     return False
 
 
+def point_distance(left, right):
+    return math.hypot(right[0] - left[0], right[1] - left[1])
+
+
+def _segment_entry_distance(start, end, box):
+    """Distance from start to the first intersection with a target rectangle."""
+    if _point_in_rect(start, box):
+        return 0.0
+    x, y, width, height = box
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    candidates = []
+    if abs(dx) > 1e-9:
+        for border_x in (x, x + width):
+            t = (border_x - start[0]) / dx
+            hit_y = start[1] + t * dy
+            if 0 <= t <= 1 and y - 1e-6 <= hit_y <= y + height + 1e-6:
+                candidates.append(t)
+    if abs(dy) > 1e-9:
+        for border_y in (y, y + height):
+            t = (border_y - start[1]) / dy
+            hit_x = start[0] + t * dx
+            if 0 <= t <= 1 and x - 1e-6 <= hit_x <= x + width + 1e-6:
+                candidates.append(t)
+    if not candidates:
+        return point_distance(start, end)
+    return point_distance(start, end) * min(candidates)
+
+
+def terminal_segment_warning(edge, route, by_id):
+    """Warning for an explicit route whose final non-zero segment is too short."""
+    if not edge_waypoints(edge):
+        return None
+    normalized = []
+    for point in route:
+        if not normalized or point_distance(normalized[-1], point) > 1e-6:
+            normalized.append(point)
+    if len(normalized) < 2:
+        return f"edge {edge.get('id')!r} has no usable terminal segment"
+    length = point_distance(normalized[-2], normalized[-1])
+    target = by_id.get(edge.get("target"))
+    target_box = abs_rect(target, by_id) if target is not None else None
+    if target_box is not None:
+        length = _segment_entry_distance(normalized[-2], normalized[-1], target_box)
+    if length < MIN_TERMINAL_SEGMENT:
+        return (
+            f"edge {edge.get('id')!r} terminal segment is too short "
+            f"({length:g}px < {MIN_TERMINAL_SEGMENT:g}px)"
+        )
+    return None
+
+
+def endpoint_pin(edge, end):
+    """Return an explicit pin, applying draw.io's implicit 0.5 coordinate."""
+    style = edge.get("style") or ""
+    prefix = "exit" if end == "source" else "entry"
+    x = style_num(style, prefix + "X")
+    y = style_num(style, prefix + "Y")
+    if x is None and y is None:
+        return None
+    return (0.5 if x is None else x, 0.5 if y is None else y)
+
+
+def is_router_managed(edge):
+    """True when edge style requests a rendered route unavailable in XML."""
+    if edge_waypoints(edge):
+        return False
+    style = edge.get("style") or ""
+    edge_style = style_value(style, "edgeStyle")
+    curved = (style_value(style, "curved") or "0").lower()
+    return (
+        edge_style not in (None, "", "none")
+        or curved in {"1", "true"}
+        or style_value(style, "elbow") is not None
+    )
+
+
 def geometry_warnings(cells, ids, parents):
-    """Edge-through-vertex and edge-crossing warnings for waypointed edges."""
+    """Edge-through-vertex, crossing, and unverifiable-route warnings."""
     warns = []
     routed = []          # (edge_id, polyline, {source, target})
-    for c in cells:
-        if c.get("edge") == "1":
-            pts = edge_route(c, ids)
-            if pts:
-                routed.append((c.get("id"), pts,
-                               {c.get("source"), c.get("target")}))
+    edges = [cell for cell in cells if cell.get("edge") == "1"]
+    degree = {}
+    for edge in edges:
+        for end in ("source", "target"):
+            vertex_id = edge.get(end)
+            if vertex_id in ids:
+                degree[vertex_id] = degree.get(vertex_id, 0) + 1
+    pin_uses = {}
+    for edge in edges:
+        if not is_router_managed(edge):
+            continue
+        for end in ("source", "target"):
+            vertex_id = edge.get(end)
+            if degree.get(vertex_id, 0) <= 1:
+                continue
+            pin = endpoint_pin(edge, end)
+            if pin is not None:
+                key = (vertex_id, round(pin[0], 6), round(pin[1], 6))
+                pin_uses[key] = pin_uses.get(key, 0) + 1
+    for edge in edges:
+        pts = edge_route(edge, ids) or implicit_straight_route(edge, ids)
+        if pts:
+            routed.append((edge.get("id"), pts,
+                           {edge.get("source"), edge.get("target")}))
+            terminal_warning = terminal_segment_warning(edge, pts, ids)
+            if terminal_warning:
+                warns.append(terminal_warning)
+        elif is_router_managed(edge):
+            uncertain_hubs = []
+            for end in ("source", "target"):
+                vertex_id = edge.get(end)
+                if degree.get(vertex_id, 0) <= 1:
+                    continue
+                pin = endpoint_pin(edge, end)
+                if pin is None:
+                    uncertain_hubs.append(f"{vertex_id!r} (unpinned)")
+                    continue
+                key = (vertex_id, round(pin[0], 6), round(pin[1], 6))
+                if pin_uses.get(key, 0) > 1:
+                    uncertain_hubs.append(
+                        f"{vertex_id!r} (shared pin {pin[0]:g},{pin[1]:g})"
+                    )
+            if uncertain_hubs:
+                router = style_value(edge.get("style") or "", "edgeStyle") or "automatic"
+                hubs = ", ".join(uncertain_hubs)
+                warns.append(
+                    f"edge {edge.get('id')!r} auto-route is uncertain at "
+                    f"high-degree endpoint(s) {hubs} (edgeStyle={router!r})"
+                )
     # Edge routes through an unrelated leaf vertex (containers wrap children, so
     # an edge legitimately traverses them — restrict to leaves, as overlap does).
     leaves = [(c.get("id"), abs_rect(c, ids)) for c in cells
@@ -426,6 +703,7 @@ def check_page(diagram):
             if pa == pb and overlap(ra, rb):
                 warns.append(f"vertices {ia!r} and {ib!r} overlap")
     warns += text_fit_warnings(cells)
+    warns += container_layout_warnings(cells, ids, parents)
     warns += geometry_warnings(cells, ids, parents)
     return errors, warns
 
@@ -619,8 +897,14 @@ def _code(message, severity):
         return "artifact.cell.invalid_kind"
     if " parent " in message or " source " in message or " target " in message:
         return "artifact.reference.unresolved"
-    if "geometry" in message or "size" in message or "position" in message:
-        return "artifact.geometry.invalid"
+    if "lies outside container" in message:
+        return "artifact.layout.container_overflow"
+    if "header overlaps child" in message:
+        return "artifact.layout.lane_title_collision"
+    if "startSize" in message:
+        return "artifact.layout.lane_size"
+    if message.startswith("containers ") and " overlap" in message:
+        return "artifact.layout.container_overlap"
     if "overlap" in message:
         return "artifact.readability.overlap"
     if "label" in message and "overflow" in message:
@@ -629,29 +913,140 @@ def _code(message, severity):
         return "artifact.readability.crossing"
     if "routes through" in message:
         return "artifact.readability.route_through"
+    if "terminal segment" in message:
+        return "artifact.layout.terminal_segment"
+    if "auto-route is uncertain" in message:
+        return "artifact.layout.routing_uncertain"
+    if "geometry" in message or "size" in message or "position" in message:
+        return "artifact.geometry.invalid"
     if "compressed" in message:
         return "artifact.page.compressed"
     return f"artifact.{'structure' if severity == 'error' else 'readability'}.generic"
 
 
-def validate_tree(tree, strict=False, profile=None, source=None):
-    report = ValidationReport()
+def _element(message):
+    """Return the primary quoted cell id from a deterministic finding message."""
+    match = re.search(r"\b(?:vertex|edge|lane|container)s?\s+'([^']+)'", message)
+    return match.group(1) if match else None
+
+
+def _elements(message):
+    """Return every quoted cell id involved in a deterministic finding."""
+    values = re.findall(r"'([^']+)'", message)
+    result = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def _remediation(code):
+    if code in {
+        "artifact.readability.crossing",
+        "artifact.readability.route_through",
+        "artifact.layout.terminal_segment",
+        "artifact.layout.routing_uncertain",
+    }:
+        return "edge-route", "deterministic"
+    if code in {
+        "artifact.layout.container_overflow",
+        "artifact.layout.container_overlap",
+        "artifact.readability.overlap",
+    }:
+        return "geometry", "candidate"
+    if code == "artifact.readability.text_overflow":
+        return "label-layout", "candidate"
+    if code.startswith("artifact.reference") or code.startswith("artifact.structure"):
+        return "structural", "manual"
+    return "manual-review", "unknown"
+
+
+def _geometry_evidence(page, element_ids):
+    by_id = {cell.get("id"): cell for cell in page.findall(".//mxCell") if cell.get("id")}
+    evidence = {}
+    for element_id in element_ids:
+        cell = by_id.get(element_id)
+        if cell is None:
+            continue
+        item = {"kind": "edge" if cell.get("edge") == "1" else "vertex" if cell.get("vertex") == "1" else "cell"}
+        box = rect(cell)
+        if box is not None and all(math.isfinite(value) for value in box):
+            item["rect"] = {"x": box[0], "y": box[1], "width": box[2], "height": box[3]}
+        points = edge_waypoints(cell) if cell.get("edge") == "1" else []
+        if points:
+            item["waypoints"] = [{"x": x, "y": y} for x, y in points]
+        if cell.get("source"):
+            item["source"] = cell.get("source")
+        if cell.get("target"):
+            item["target"] = cell.get("target")
+        evidence[element_id] = item
+    return {"elements": evidence} if evidence else None
+
+
+def _route_metrics(page):
+    cells = page.findall(".//mxCell")
+    by_id = {cell.get("id"): cell for cell in cells if cell.get("id")}
+    bend_count = 0
+    route_length = 0.0
+    for edge in cells:
+        if edge.get("edge") != "1":
+            continue
+        waypoints = edge_waypoints(edge)
+        bend_count += len(waypoints)
+        route = edge_route(edge, by_id)
+        if route:
+            route_length += sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(route, route[1:]))
+    return bend_count, route_length
+
+
+def validate_tree(tree, strict=False, profile=None, source=None, artifact_sha256=None):
+    report = ValidationReport(report_version=2)
+    report.details["validator"] = {"name": "publish-drawio-validator", "version": VALIDATOR_VERSION}
+    if artifact_sha256:
+        report.details["artifact_sha256"] = artifact_sha256
     pages = tree.getroot().findall("diagram") or [tree.getroot()]
     if pages:
         version = pages[0].get("data-schema-version")
         report.schema_version = int(version) if version and version.isdigit() else None
+    total_bends = 0
+    total_route_length = 0.0
     for page_index, page in enumerate(pages):
+        bends, length = _route_metrics(page)
+        total_bends += bends
+        total_route_length += length
         errors, warnings = check_page(page)
         for message in errors:
-            report.add("artifact-parse", "error", _code(message, "error"), f"/pages/{page_index}", message)
+            code = _code(message, "error")
+            remediation_class, reconstructability = _remediation(code)
+            elements = _elements(message)
+            report.add(
+                "artifact-parse", "error", code,
+                f"/pages/{page_index}", message, _element(message),
+                elements=elements, geometry=_geometry_evidence(page, elements), remediation_class=remediation_class,
+                reconstructability=reconstructability,
+            )
         for message in warnings:
-            report.add("layout", "warning", _code(message, "warning"), f"/pages/{page_index}", message)
+            code = _code(message, "warning")
+            remediation_class, reconstructability = _remediation(code)
+            elements = _elements(message)
+            report.add(
+                "layout", "warning", code,
+                f"/pages/{page_index}", message, _element(message),
+                elements=elements, geometry=_geometry_evidence(page, elements), remediation_class=remediation_class,
+                reconstructability=reconstructability,
+            )
     if profile and not source:
         report.add("artifact-parse", "error", "artifact.source.required", "", "--source is required with --profile")
     elif profile == "roadmap":
         _profile_roadmap(tree, source, report)
     elif profile == "gitflow":
         _profile_gitflow(tree, source, report)
+    report.details["metrics"] = {
+        "bend_count": total_bends,
+        "route_length": round(total_route_length, 3),
+        "route_complexity": total_bends * 1_000_000 + int(round(total_route_length)),
+        "route_complexity_encoding": "bend_count*1000000+rounded_route_length",
+    }
     return report.finish(strict=strict)
 
 
@@ -667,13 +1062,22 @@ def main():
     ap.add_argument("--source", help="source roadmap YAML or git-flow JSON for profile checks")
     args = ap.parse_args()
     try:
-        tree = ET.parse(args.file)
+        with open(args.file, "rb") as artifact_file:
+            artifact_bytes = artifact_file.read()
+        artifact_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
+        tree = ET.ElementTree(ET.fromstring(artifact_bytes))
     except (ET.ParseError, OSError) as exc:
-        report = ValidationReport()
+        report = ValidationReport(report_version=2)
+        report.details["validator"] = {"name": "publish-drawio-validator", "version": VALIDATOR_VERSION}
+        if "artifact_bytes" in locals():
+            report.details["artifact_sha256"] = hashlib.sha256(artifact_bytes).hexdigest()
         report.add("artifact-parse", "error", "artifact.xml.parse", "", f"cannot parse {args.file}: {exc}")
         print_report(report.finish(strict=args.strict), as_json=args.json)
         sys.exit(1)
-    report = validate_tree(tree, strict=args.strict, profile=args.profile, source=args.source)
+    report = validate_tree(
+        tree, strict=args.strict, profile=args.profile, source=args.source,
+        artifact_sha256=artifact_sha256,
+    )
     errors = [f["message"] for f in report["findings"] if f["severity"] == "error"]
     warns = [f["message"] for f in report["findings"] if f["severity"] == "warning"]
     print_report(report, as_json=args.json)

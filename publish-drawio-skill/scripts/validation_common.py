@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 from dataclasses import dataclass, field
@@ -22,10 +23,15 @@ def pointer(parts):
 @dataclass
 class ValidationReport:
     schema_version: int | None = None
+    report_version: int = 1
     findings: list[dict] = field(default_factory=list)
     details: dict = field(default_factory=dict)
 
-    def add(self, layer, severity, code, path="", message="", element=None):
+    def add(
+        self, layer, severity, code, path="", message="", element=None, *,
+        elements=None, geometry=None, remediation_class=None,
+        reconstructability=None,
+    ):
         item = {
             "layer": str(layer),
             "severity": str(severity),
@@ -35,6 +41,36 @@ class ValidationReport:
         }
         if element is not None:
             item["element"] = str(element)
+        if self.report_version >= 2:
+            related = [str(value) for value in (elements or []) if value is not None]
+            if element is not None and str(element) not in related:
+                related.insert(0, str(element))
+            item["elements"] = related
+            identity = {
+                "layer": item["layer"],
+                "code": item["code"],
+                "path": item["path"],
+                "elements": related,
+            }
+            occurrence = sum(
+                existing.get("_identity_hash") == canonical
+                for existing in self.findings
+                for canonical in [hashlib.sha256(
+                    json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest()]
+            )
+            identity["occurrence"] = occurrence
+            canonical = hashlib.sha256(
+                json.dumps({key: value for key, value in identity.items() if key != "occurrence"}, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            item["_identity_hash"] = canonical
+            item["finding_id"] = "finding-" + hashlib.sha256(
+                json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()[:20]
+            item["remediation_class"] = remediation_class or "manual-review"
+            item["reconstructability"] = reconstructability or "unknown"
+            if geometry is not None:
+                item["geometry"] = geometry
         self.findings.append(item)
 
     def extend_schema_errors(self, errors):
@@ -46,6 +82,7 @@ class ValidationReport:
         findings = []
         for item in self.findings:
             rendered = dict(item)
+            rendered.pop("_identity_hash", None)
             if strict and rendered["severity"] == "warning":
                 rendered["severity"] = "error"
             findings.append(rendered)
@@ -56,7 +93,7 @@ class ValidationReport:
         errors = sum(f["severity"] == "error" for f in findings)
         warnings = sum(f["severity"] == "warning" for f in findings)
         result = {
-            "report_version": 1,
+            "report_version": self.report_version,
             "schema_version": self.schema_version,
             "summary": {
                 "status": "failed" if errors else "passed",

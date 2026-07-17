@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agents365.local/drawio-skill/schemas/run-event.v1.schema.json",
+  "title": "Diagram supervisor append-only run event v1",
+  "description": "Schema for one line of run-manifest.jsonl.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "event_id",
+    "sequence",
+    "timestamp",
+    "event_type",
+    "actor",
+    "payload"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_id": {"$ref": "#/$defs/nonEmptyString"},
+    "event_id": {"$ref": "#/$defs/nonEmptyString"},
+    "sequence": {"type": "integer", "minimum": 0},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "event_type": {
+      "enum": [
+        "run_created",
+        "source_selected",
+        "source_conflict",
+        "model_resolved",
+        "state_transition",
+        "patch_proposed",
+        "patch_applied",
+        "candidate_accepted",
+        "candidate_rejected",
+        "cycle_detected",
+        "plateau_detected",
+        "user_decision",
+        "validation_receipt",
+        "review_verdict",
+        "role_failed",
+        "run_resumed",
+        "terminal_state"
+      ]
+    },
+    "state": {"$ref": "#/$defs/state"},
+    "actor": {"$ref": "#/$defs/actor"},
+    "baseline_sha256": {"$ref": "#/$defs/sha256"},
+    "candidate_sha256": {"$ref": "#/$defs/sha256"},
+    "report_sha256": {"$ref": "#/$defs/sha256"},
+    "receipt_sha256": {"$ref": "#/$defs/sha256"},
+    "previous_event_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+    "payload": {"type": "object"}
+  },
+  "$defs": {
+    "nonEmptyString": {"type": "string", "minLength": 1},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "state": {
+      "enum": [
+        "analyzed",
+        "awaiting_decision",
+        "patching",
+        "validating",
+        "accepted_candidate",
+        "accepted_candidate",
+        "retrying",
+        "plateau",
+        "awaiting_feedback",
+        "final_review",
+        "completed",
+        "manual_handoff",
+        "stopped",
+        "approved_with_findings"
+      ]
+    },
+    "actor": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"enum": ["agent", "tool", "human", "system"]},
+        "id": {"$ref": "#/$defs/nonEmptyString"},
+        "model": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

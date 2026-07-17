@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agents365.local/drawio-skill/schemas/semantic-approval.v1.schema.json",
+  "title": "Hash-bound human semantic approval v1",
+  "type": "object",
+  "required": [
+    "schema_version", "approval_id", "run_id", "patch_sha256",
+    "candidate_sha256", "semantic_diff", "semantic_diff_sha256",
+    "decision", "decided_at", "approver"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "approval_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "patch_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "candidate_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "semantic_diff": {"type": "object"},
+    "semantic_diff_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "decision": {"enum": ["approve", "reject"]},
+    "decided_at": {"type": "string", "format": "date-time"},
+    "approver": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"const": "human"},
+        "id": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

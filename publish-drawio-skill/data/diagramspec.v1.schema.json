@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agents365.local/drawio-skill/schemas/diagramspec.v1.schema.json",
+  "title": "DiagramSpec v1",
+  "description": "Semantic and geometry sidecar for a preserved draw.io artifact. It is not a replacement XML format.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "diagram_id",
+    "artifact",
+    "source_refs",
+    "pages",
+    "semantic_digest",
+    "source_priority"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "diagram_id": {"$ref": "#/$defs/nonEmptyString"},
+    "title": {"type": "string"},
+    "artifact": {"$ref": "#/$defs/artifact"},
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/sourceRef"}
+    },
+    "source_priority": {
+      "const": [
+        "explicit_user_decision",
+        "confirmed_clarification",
+        "openspec",
+        "existing_diagram",
+        "agent_assumption"
+      ]
+    },
+    "pages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/page"}
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/assumption"}
+    },
+    "reconciliation": {"$ref": "#/$defs/reconciliation"},
+    "semantic_digest": {"$ref": "#/$defs/digest"},
+    "limits_applied": {"$ref": "#/$defs/limits"}
+  },
+  "$defs": {
+    "nonEmptyString": {"type": "string", "minLength": 1},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "nullableString": {"type": ["string", "null"]},
+    "point": {
+      "type": "object",
+      "required": ["x", "y"],
+      "additionalProperties": false,
+      "properties": {
+        "x": {"type": "number"},
+        "y": {"type": "number"}
+      }
+    },
+    "bounds": {
+      "type": "object",
+      "required": ["x", "y", "width", "height"],
+      "additionalProperties": false,
+      "properties": {
+        "x": {"type": "number"},
+        "y": {"type": "number"},
+        "width": {"type": "number", "minimum": 0},
+        "height": {"type": "number", "minimum": 0}
+      }
+    },
+    "digest": {
+      "type": "object",
+      "required": ["algorithm", "value", "canonicalization"],
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": {"const": "sha256"},
+        "value": {"$ref": "#/$defs/sha256"},
+        "canonicalization": {"const": "diagramspec-semantic-v1"}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "required": [
+        "uri",
+        "format",
+        "sha256",
+        "byte_length",
+        "imported_at",
+        "preservation_policy"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "uri": {"$ref": "#/$defs/nonEmptyString"},
+        "format": {"enum": ["drawio-xml", "drawio-compressed"]},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "byte_length": {"type": "integer", "minimum": 0},
+        "imported_at": {"type": "string", "format": "date-time"},
+        "preservation_policy": {"const": "patch-original-xml"},
+        "source_byte_identical": {"type": "boolean"}
+      }
+    },
+    "sourceRef": {
+      "type": "object",
+      "required": ["kind", "uri", "revision", "fragment", "content_hash", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "source_id": {"$ref": "#/$defs/nonEmptyString"},
+        "kind": {
+          "enum": [
+            "explicit_user_decision",
+            "confirmed_clarification",
+            "openspec",
+            "existing_diagram",
+            "agent_assumption"
+          ]
+        },
+        "uri": {"$ref": "#/$defs/nonEmptyString"},
+        "revision": {"$ref": "#/$defs/nullableString"},
+        "fragment": {"$ref": "#/$defs/nullableString"},
+        "content_hash": {"$ref": "#/$defs/sha256"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "selected": {"type": "boolean"},
+        "notes": {"type": "string"}
+      }
+    },
+    "page": {
+      "type": "object",
+      "required": ["id", "name", "cells"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/nonEmptyString"},
+        "name": {"type": "string"},
+        "layer_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/nonEmptyString"},
+          "uniqueItems": true
+        },
+        "cells": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/cell"}
+        }
+      }
+    },
+    "cell": {
+      "type": "object",
+      "required": ["id", "kind", "semantic_type", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/nonEmptyString"},
+        "kind": {"enum": ["vertex", "edge", "layer", "group", "other"]},
+        "semantic_type": {"$ref": "#/$defs/nonEmptyString"},
+        "label": {"type": "string"},
+        "parent_id": {"$ref": "#/$defs/nullableString"},
+        "source_id": {"$ref": "#/$defs/nullableString"},
+        "target_id": {"$ref": "#/$defs/nullableString"},
+        "relationship": {"$ref": "#/$defs/nullableString"},
+        "geometry": {"$ref": "#/$defs/geometry"},
+        "style": {"type": "string"},
+        "stable_identity": {"$ref": "#/$defs/nonEmptyString"},
+        "source_ref_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/nonEmptyString"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bounds": {"$ref": "#/$defs/bounds"},
+        "source_point": {"$ref": "#/$defs/point"},
+        "target_point": {"$ref": "#/$defs/point"},
+        "waypoints": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/point"}
+        },
+        "label_offset": {
+          "type": "object",
+          "required": ["x", "y", "offset"],
+          "additionalProperties": false,
+          "properties": {
+            "x": {"type": "number"},
+            "y": {"type": "number"},
+            "offset": {"$ref": "#/$defs/point"}
+          }
+        },
+        "relative": {"type": "boolean"}
+      }
+    },
+    "assumption": {
+      "type": "object",
+      "required": ["id", "text", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"$ref": "#/$defs/nonEmptyString"},
+        "text": {"$ref": "#/$defs/nonEmptyString"},
+        "status": {"enum": ["unconfirmed", "confirmed", "rejected"]},
+        "source_ref_id": {"$ref": "#/$defs/nullableString"}
+      }
+    },
+    "semanticChange": {
+      "type": "object",
+      "required": ["change_type", "summary", "element_ids", "approval_required"],
+      "additionalProperties": false,
+      "properties": {
+        "change_type": {"enum": ["add", "remove", "modify", "conflict"]},
+        "summary": {"$ref": "#/$defs/nonEmptyString"},
+        "element_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/nonEmptyString"},
+          "uniqueItems": true
+        },
+        "source_ref_ids": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/nonEmptyString"},
+          "uniqueItems": true
+        },
+        "approval_required": {"type": "boolean"}
+      }
+    },
+    "reconciliation": {
+      "type": "object",
+      "required": ["openspec_status", "semantic_changes"],
+      "additionalProperties": false,
+      "properties": {
+        "openspec_status": {"enum": ["selected", "not_found", "not_applicable", "conflict"]},
+        "selected_openspec_uri": {"$ref": "#/$defs/nullableString"},
+        "semantic_changes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/semanticChange"}
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "required": ["max_bytes", "max_pages", "max_cells", "max_xml_depth"],
+      "additionalProperties": false,
+      "properties": {
+        "max_bytes": {"type": "integer", "minimum": 1},
+        "max_pages": {"type": "integer", "minimum": 1},
+        "max_cells": {"type": "integer", "minimum": 1},
+        "max_xml_depth": {"type": "integer", "minimum": 1},
+        "max_decompressed_bytes": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}

@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agents365.local/drawio-skill/schemas/diagram-patch.v1.schema.json",
+  "title": "Diagram patch transaction v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "patch_id",
+    "baseline",
+    "affected_region",
+    "operations",
+    "created_by"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "patch_id": {"$ref": "#/$defs/nonEmptyString"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "created_by": {"enum": ["supervisor", "repair", "semantic_analyst", "tool", "human"]},
+    "baseline": {"$ref": "#/$defs/baseline"},
+    "affected_region": {"$ref": "#/$defs/affectedRegion"},
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/operation"}
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {"type": "string", "minLength": 1},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "point": {
+      "type": "object",
+      "required": ["x", "y"],
+      "additionalProperties": false,
+      "properties": {"x": {"type": "number"}, "y": {"type": "number"}}
+    },
+    "normalizedPoint": {
+      "type": "object",
+      "required": ["x", "y"],
+      "additionalProperties": false,
+      "properties": {
+        "x": {"type": "number", "minimum": 0, "maximum": 1},
+        "y": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "bounds": {
+      "type": "object",
+      "required": ["x", "y", "width", "height"],
+      "additionalProperties": false,
+      "properties": {
+        "x": {"type": "number"},
+        "y": {"type": "number"},
+        "width": {"type": "number", "minimum": 0},
+        "height": {"type": "number", "minimum": 0}
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "required": ["artifact_sha256", "semantic_digest"],
+      "additionalProperties": false,
+      "properties": {
+        "artifact_sha256": {"$ref": "#/$defs/sha256"},
+        "semantic_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "affectedRegion": {
+      "type": "object",
+      "required": ["page_id", "cell_ids"],
+      "additionalProperties": false,
+      "properties": {
+        "page_id": {"$ref": "#/$defs/nonEmptyString"},
+        "cell_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonEmptyString"}
+        },
+        "bounds": {"$ref": "#/$defs/bounds"}
+      }
+    },
+    "precondition": {
+      "type": "object",
+      "required": ["target_exists"],
+      "additionalProperties": false,
+      "properties": {
+        "target_exists": {"type": "boolean"},
+        "target_hash": {"$ref": "#/$defs/sha256"},
+        "expected_value": {},
+        "expected_parent_id": {"type": ["string", "null"]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"target_exists": {"const": true}}, "required": ["target_exists"]},
+          "then": {
+            "anyOf": [
+              {"required": ["target_hash"]},
+              {"required": ["expected_value"]},
+              {"required": ["expected_parent_id"]}
+            ]
+          }
+        }
+      ]
+    },
+    "rollback": {
+      "type": "object",
+      "required": ["action", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "action": {"enum": ["restore_value", "remove_added_cell", "restore_removed_cell"]},
+        "value": {}
+      }
+    },
+    "common": {
+      "type": "object",
+      "required": [
+        "operation_id",
+        "op",
+        "target_id",
+        "precondition",
+        "proposed_value",
+        "semantic_effect",
+        "reasons",
+        "finding_ids",
+        "rollback"
+      ],
+      "properties": {
+        "operation_id": {"$ref": "#/$defs/nonEmptyString"},
+        "op": {"$ref": "#/$defs/nonEmptyString"},
+        "target_id": {"$ref": "#/$defs/nonEmptyString"},
+        "precondition": {"$ref": "#/$defs/precondition"},
+        "proposed_value": {},
+        "semantic_effect": {"enum": ["layout_only", "semantic_addition", "semantic_removal", "semantic_change"]},
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/nonEmptyString"}
+        },
+        "finding_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonEmptyString"}
+        },
+        "rollback": {"$ref": "#/$defs/rollback"}
+      }
+    },
+    "routeValue": {
+      "type": "object",
+      "required": ["waypoints", "orthogonal"],
+      "additionalProperties": false,
+      "properties": {
+        "waypoints": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/point"}},
+        "orthogonal": {"const": true}
+      }
+    },
+    "pinsValue": {
+      "type": "object",
+      "required": ["source", "target"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {"$ref": "#/$defs/normalizedPoint"},
+        "target": {"$ref": "#/$defs/normalizedPoint"}
+      }
+    },
+    "labelOffsetValue": {
+      "type": "object",
+      "required": ["x", "y"],
+      "additionalProperties": false,
+      "properties": {
+        "x": {"type": "number"},
+        "y": {"type": "number"},
+        "offset": {"$ref": "#/$defs/point"}
+      }
+    },
+    "moveValue": {"$ref": "#/$defs/point"},
+    "resizeValue": {
+      "type": "object",
+      "required": ["width", "height"],
+      "additionalProperties": false,
+      "properties": {
+        "width": {"type": "number", "minimum": 0},
+        "height": {"type": "number", "minimum": 0}
+      }
+    },
+    "semanticElementValue": {
+      "type": "object",
+      "required": ["kind", "semantic_type", "label"],
+      "additionalProperties": true,
+      "properties": {
+        "kind": {"enum": ["vertex", "edge", "group"]},
+        "semantic_type": {"$ref": "#/$defs/nonEmptyString"},
+        "label": {"type": "string"},
+        "parent_id": {"type": ["string", "null"]},
+        "source_id": {"type": ["string", "null"]},
+        "target_id": {"type": ["string", "null"]},
+        "relationship": {"type": ["string", "null"]}
+      }
+    },
+    "removeValue": {
+      "type": "object",
+      "required": ["remove"],
+      "additionalProperties": false,
+      "properties": {"remove": {"const": true}}
+    },
+    "operation": {
+      "oneOf": [
+        {"$ref": "#/$defs/setEdgeRoute"},
+        {"$ref": "#/$defs/setEdgePins"},
+        {"$ref": "#/$defs/setLabelOffset"},
+        {"$ref": "#/$defs/moveVertex"},
+        {"$ref": "#/$defs/resizeVertex"},
+        {"$ref": "#/$defs/resizeContainer"},
+        {"$ref": "#/$defs/addSemanticElement"},
+        {"$ref": "#/$defs/removeSemanticElement"}
+      ]
+    },
+    "setEdgeRoute": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"type": "object", "additionalProperties": false, "properties": {
+          "operation_id": {}, "op": {"const": "set_edge_route"}, "target_id": {}, "precondition": {},
+          "proposed_value": {"$ref": "#/$defs/routeValue"}, "semantic_effect": {"const": "layout_only"},
+          "reasons": {}, "finding_ids": {}, "rollback": {}
+        }}
+      ]
+    },
+    "setEdgePins": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"type": "object", "additionalProperties": false, "properties": {
+          "operation_id": {}, "op": {"const": "set_edge_pins"}, "target_id": {}, "precondition": {},
+          "proposed_value": {"$ref": "#/$defs/pinsValue"}, "semantic_effect": {"const": "layout_only"},
+          "reasons": {}, "finding_ids": {}, "rollback": {}
+        }}
+      ]
+    },
+    "setLabelOffset": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"type": "object", "additionalProperties": false, "properties": {
+          "operation_id": {}, "op": {"const": "set_label_offset"}, "target_id": {}, "precondition": {},
+          "proposed_value": {"$ref": "#/$defs/labelOffsetValue"}, "semantic_effect": {"const": "layout_only"},
+          "reasons": {}, "finding_ids": {}, "rollback": {}
+        }}
+      ]
+    },
+    "moveVertex": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"type": "object", "additionalProperties": false, "properties": {
+          "operation_id": {}, "op": {"const": "move_vertex"}, "target_id": {}, "precondition": {},
+          "proposed_value": {"$ref": "#/$defs/moveValue"}, "semantic_effect": {"const": "layout_only"},
+          "reasons": {}, "finding_ids": {}, "rollback": {}
+        }}
+      ]
+    },
+    "resizeVertex": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"type": "object", "additionalProperties": false, "properties": {
+          "operation_id": {}, "op": {"const": "resize_vertex"}, "target_id": {}, "precondition": {},
+          "proposed_value": {"$ref": "#/$defs/resizeValue"}, "semantic_effect": {"const": "layout_only"},
+          "reasons": {}, "finding_ids": {}, "rollback": {}
+        }}
+      ]
+    },
+    "resizeContainer": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"type": "object", "additionalProperties": false, "properties": {
+          "operation_id": {}, "op": {"const": "resize_container"}, "target_id": {}, "precondition": {},
+          "proposed_value": {"$ref": "#/$defs/resizeValue"}, "semantic_effect": {"const": "layout_only"},
+          "reasons": {}, "finding_ids": {}, "rollback": {}
+        }}
+      ]
+    },
+    "addSemanticElement": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"type": "object", "additionalProperties": false, "properties": {
+          "operation_id": {}, "op": {"const": "add_semantic_element"}, "target_id": {}, "precondition": {},
+          "proposed_value": {"$ref": "#/$defs/semanticElementValue"}, "semantic_effect": {"const": "semantic_addition"},
+          "reasons": {}, "finding_ids": {}, "rollback": {}
+        }}
+      ]
+    },
+    "removeSemanticElement": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"type": "object", "additionalProperties": false, "properties": {
+          "operation_id": {}, "op": {"const": "remove_semantic_element"}, "target_id": {}, "precondition": {},
+          "proposed_value": {"$ref": "#/$defs/removeValue"}, "semantic_effect": {"const": "semantic_removal"},
+          "reasons": {}, "finding_ids": {}, "rollback": {}
+        }}
+      ]
+    }
+  }
+}

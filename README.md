@@ -4,16 +4,20 @@
 
 | Extension | Версия | Назначение |
 |---|---:|---|
-| [`drawio-skill`](publish-drawio-skill/) | `1.21.0-corporate.1` | Редактируемые draw.io-диаграммы, roadmap, git-flow, архитектурные и специализированные схемы |
+| [`drawio-skill`](publish-drawio-skill/) | `1.22.0-corporate.1` | Редактируемые draw.io-диаграммы с Supervisor/Reviewer/Repair/Semantic Analyst, roadmap, git-flow и архитектурными схемами |
 | [`bpmn-architect`](publish-bpmn-skill/) | `0.3.0` | Семантические BPMN 2.0 модели с многоуровневой раскладкой collaboration, spatial validation и round-trip проверкой |
 
 Extension не вложены друг в друга и могут устанавливаться отдельно.
 
 ## Готовые архивы
 
-- [`dist/drawio-skill-corporate.zip`](dist/drawio-skill-corporate.zip)
+- [`dist/drawio-skill-agent-extension.zip`](dist/drawio-skill-agent-extension.zip)
 - [`dist/bpmn-architect-skill.zip`](dist/bpmn-architect-skill.zip)
 - [`dist/SHA256SUMS.txt`](dist/SHA256SUMS.txt)
+
+Предыдущая версия draw.io skill без агентного контура остаётся в ветке
+[`main`](https://github.com/travinov/corporate-agent-skills/tree/main) и доступна
+как [`drawio-skill-corporate.zip`](https://raw.githubusercontent.com/travinov/corporate-agent-skills/main/dist/drawio-skill-corporate.zip).
 
 Проверка архивов:
 
@@ -26,7 +30,7 @@ shasum -a 256 -c SHA256SUMS.txt
 
 ```bash
 mkdir -p ~/.gigacode/skills
-unzip dist/drawio-skill-corporate.zip -d ~/.gigacode/skills
+unzip dist/drawio-skill-agent-extension.zip -d ~/.gigacode/skills
 unzip dist/bpmn-architect-skill.zip -d ~/.gigacode/skills
 ```
 

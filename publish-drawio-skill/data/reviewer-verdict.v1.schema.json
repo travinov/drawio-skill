@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agents365.local/drawio-skill/schemas/reviewer-verdict.v1.schema.json",
+  "title": "Independent reviewer evidence verdict v1",
+  "type": "object",
+  "required": [
+    "schema_version", "verdict_id", "run_id", "candidate_sha256",
+    "report_sha256", "receipt_sha256", "verdict", "reviewed_at", "findings"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "verdict_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "candidate_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "report_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "receipt_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "verdict": {"enum": ["approve", "reject"]},
+    "reviewed_at": {"type": "string", "format": "date-time"},
+    "reviewer": {
+      "type": "object",
+      "required": ["resolved_model", "provider", "resolution_mode"],
+      "additionalProperties": false,
+      "properties": {
+        "resolved_model": {"type": "string", "minLength": 1},
+        "provider": {"type": "string", "minLength": 1},
+        "resolution_mode": {"enum": ["native_per_agent", "isolated_cli", "inherited_current"]}
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["finding_id", "severity", "reason"],
+        "additionalProperties": true,
+        "properties": {
+          "finding_id": {"type": "string", "minLength": 1},
+          "severity": {"enum": ["info", "warning", "error"]},
+          "reason": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

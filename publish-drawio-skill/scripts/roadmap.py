@@ -35,6 +35,62 @@ def style(**parts):
     return ";".join(f"{key}={value}" for key, value in parts.items() if value is not None) + ";"
 
 
+def routed_style(direction="right", **parts):
+    """Draw.io-managed orthogonal route with deterministic perimeter pins."""
+    if direction == "left":
+        exit_x, entry_x = 0, 1
+    else:
+        exit_x, entry_x = 1, 0
+    routed = {
+        "edgeStyle": "orthogonalEdgeStyle",
+        "rounded": 1,
+        "orthogonalLoop": 1,
+        "jettySize": "auto",
+        "exitX": exit_x,
+        "exitY": 0.5,
+        "exitDx": 0,
+        "exitDy": 0,
+        "entryX": entry_x,
+        "entryY": 0.5,
+        "entryDx": 0,
+        "entryDy": 0,
+    }
+    routed.update(parts)
+    return style(**routed)
+
+
+def _set_style_value(style_text, key, value):
+    parts = [part for part in (style_text or "").split(";") if part]
+    replacement = f"{key}={value}"
+    for index, part in enumerate(parts):
+        if part.startswith(key + "="):
+            parts[index] = replacement
+            break
+    else:
+        parts.append(replacement)
+    return ";".join(parts) + ";"
+
+
+def distribute_routed_pins(root):
+    """Give all incident routed edges deterministic distinct endpoint pins."""
+    groups = {}
+    for edge in root.findall("mxCell"):
+        if edge.get("edge") != "1" or "edgeStyle=orthogonalEdgeStyle" not in edge.get("style", ""):
+            continue
+        for end in ("source", "target"):
+            vertex_id = edge.get(end)
+            if vertex_id:
+                groups.setdefault(vertex_id, []).append((edge, end))
+    for incident in groups.values():
+        if len(incident) <= 1:
+            continue
+        ordered = sorted(incident, key=lambda item: (item[0].get("id", ""), item[1]))
+        for index, (edge, end) in enumerate(ordered):
+            key = "exitY" if end == "source" else "entryY"
+            pin = (index + 1) / (len(ordered) + 1)
+            edge.set("style", _set_style_value(edge.get("style", ""), key, f"{pin:.6f}"))
+
+
 def cell(parent, cid, value="", style_value="", vertex=False, edge=False, source=None, target=None):
     attrs = {"id": cid, "value": str(value), "style": style_value, "parent": parent}
     if vertex:
@@ -246,7 +302,11 @@ def build_drawio(model):
                 edge = cell(
                     "1", f"history_shift_{milestone['id']}_{previous['revision_id']}_{current_revision['revision_id']}",
                     f"{delta['delta']:+d}{suffix}",
-                    style(endArrow="block", strokeColor=color, dashed=1, html=1, labelBackgroundColor="#ffffff"),
+                    routed_style(
+                        "left" if delta["delta"] < 0 else "right",
+                        endArrow="block", strokeColor=color, dashed=1, html=1,
+                        labelBackgroundColor="#ffffff",
+                    ),
                     edge=True, source=source_id, target=target_id,
                 )
                 edge.set("data-cumulative-delta", str(delta["cumulative_delta"]))
@@ -276,7 +336,15 @@ def build_drawio(model):
             continue
         color = "#b85450" if delta["state"] == "delayed" else "#82b366"
         suffix = "" if model.get("time_scale") == "order" else "d"
-        edge = cell("1", f"shift_{delta['id']}", f"{delta['delta']:+d}{suffix}", style(endArrow="block", strokeColor=color, dashed=1, html=1, labelBackgroundColor="#ffffff"), edge=True, source=f"baseline_{delta['id']}", target=f"milestone_{delta['id']}")
+        edge = cell(
+            "1", f"shift_{delta['id']}", f"{delta['delta']:+d}{suffix}",
+            routed_style(
+                "left" if delta["delta"] < 0 else "right",
+                endArrow="block", strokeColor=color, dashed=1, html=1,
+                labelBackgroundColor="#ffffff",
+            ),
+            edge=True, source=f"baseline_{delta['id']}", target=f"milestone_{delta['id']}",
+        )
         geometry(edge, relative=1)
         root.append(edge)
 
@@ -284,7 +352,17 @@ def build_drawio(model):
         dep_type = dep.get("type", "relates_to")
         influence = dep_type == "influences"
         label = dep_type + (f": {dep['impact']}" if dep.get("impact") else "")
-        edge = cell("1", f"dep_{dep['id']}", label, style(endArrow="open" if influence else "block", dashed=1 if influence else 0, strokeColor="#9673a6" if influence else "#666666", html=1, labelBackgroundColor="#ffffff"), edge=True, source=id_to_cell[dep["from"]], target=id_to_cell[dep["to"]])
+        edge = cell(
+            "1", f"dep_{dep['id']}", label,
+            routed_style(
+                endArrow="open" if influence else "block",
+                dashed=1 if influence else 0,
+                strokeColor="#9673a6" if influence else "#666666",
+                html=1,
+                labelBackgroundColor="#ffffff",
+            ),
+            edge=True, source=id_to_cell[dep["from"]], target=id_to_cell[dep["to"]],
+        )
         _source_metadata(edge, dep, ("type", "impact", "rationale"))
         geometry(edge, relative=1)
         root.append(edge)
@@ -304,9 +382,14 @@ def build_drawio(model):
                 geometry(out, width - 250, lane_y[lane] + lane_heights[lane] - 58 - index * (OUTCOME_H + OUTCOME_GAP), 190, OUTCOME_H)
                 root.append(out)
                 outcome_cells[key] = out.get("id")
-            edge = cell("1", f"outcome_edge_{oid}_{item['id']}", "", style(endArrow="open", dashed=1, strokeColor="#d6b656", html=1), edge=True, source=id_to_cell[item["id"]], target=outcome_cells[key])
+            edge = cell(
+                "1", f"outcome_edge_{oid}_{item['id']}", "",
+                routed_style(endArrow="open", dashed=1, strokeColor="#d6b656", html=1),
+                edge=True, source=id_to_cell[item["id"]], target=outcome_cells[key],
+            )
             geometry(edge, relative=1)
             root.append(edge)
+    distribute_routed_pins(root)
     return ET.ElementTree(mxfile), report
 
 

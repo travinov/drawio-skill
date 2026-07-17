@@ -1,0 +1,674 @@
+{
+  "archive": "drawio-skill-agent-extension.zip",
+  "archive_root": "drawio-skill",
+  "archive_sha256": "f14b64d1546a543159bcc985b46a9fbf419ba623b30bcc12b0b7a67a63eed3c4",
+  "files": [
+    {
+      "path": "DEPENDENCIES.md",
+      "sha256": "ba647d7a34e5963c6ddd5c80f6314617c883db50d1c688ef45309c777e34e1a4",
+      "size": 654
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "0d43b46456eda48a9054fbfa915ac80e150f5db5cf90714eda710c02e1df461a",
+      "size": 1069
+    },
+    {
+      "path": "ORIGIN.md",
+      "sha256": "dfacec8ae459292e172c53ae80032da880af9e9cd1da4351676a6da9d5f916d0",
+      "size": 1037
+    },
+    {
+      "path": "README.md",
+      "sha256": "a1ce092b8f00d89827a6c429418886eee1f2b8a4f7ff3edfdfe166bf52507809",
+      "size": 14145
+    },
+    {
+      "path": "SKILL.md",
+      "sha256": "b04814fe58f901d47e0bf76e304bae90e7944e16979ed2f4b04e8464b8eb62b2",
+      "size": 41723
+    },
+    {
+      "path": "agents/diagram-repair.md",
+      "sha256": "b18590d34291d83fc76b02fbeae7dfe4415bf20b4dfa6535a8a744e0a5a8115a",
+      "size": 2172
+    },
+    {
+      "path": "agents/diagram-reviewer.md",
+      "sha256": "604043673d49a9decd81efb209ed55ac835c88f44691a4c069395a858e125041",
+      "size": 2533
+    },
+    {
+      "path": "agents/diagram-semantic-analyst.md",
+      "sha256": "75c40ef390647fbd8de19a6070b0e662ef907e85d10e4fb4472bc61dcbdc539c",
+      "size": 2306
+    },
+    {
+      "path": "agents/diagram-supervisor.md",
+      "sha256": "03e029a0a5d65a6cb18deff5070214cdb55ea8f5f55dbc2375af77139ff9ff08",
+      "size": 4678
+    },
+    {
+      "path": "assets/roadmap/roadmap-template.csv",
+      "sha256": "b74f7cf97ebfc52818d6f9428e320b6b9a25558182a1670a652322735f48bed4",
+      "size": 2032
+    },
+    {
+      "path": "assets/roadmap/roadmap-template.xlsx",
+      "sha256": "2516ccc0130b7e155cfb009cbb2668913da9cbde6becca18124b212d16eea8b1",
+      "size": 126730
+    },
+    {
+      "path": "config.example.json",
+      "sha256": "c207d17a4cf3523cdb312b9c853c82117ecc5428cc163e23a213df87e363c1f6",
+      "size": 62
+    },
+    {
+      "path": "data/SHAPE-INDEX-NOTICE.md",
+      "sha256": "dc6e070b9fd905c6a574614dd0c4403253ad8b7111e2f2f3892996b2729e26ab",
+      "size": 880
+    },
+    {
+      "path": "data/agent-role-output.v1.schema.json",
+      "sha256": "236095ac2c22eb61469a6109466fe8edddf1200ef418ca85abbc94bae8288532",
+      "size": 519
+    },
+    {
+      "path": "data/diagram-patch.v1.schema.json",
+      "sha256": "ed86be6cb4097e2391b450d04d5e65272c2ab8b3ad9f4d08daf241e2174ab0c6",
+      "size": 10307
+    },
+    {
+      "path": "data/diagramspec.v1.schema.json",
+      "sha256": "2b3d1d11e964fe0af1e28584cdb8c0a6073c3153cf946d0e95f83469300ed199",
+      "size": 8114
+    },
+    {
+      "path": "data/gitflow.v1.schema.json",
+      "sha256": "19d16315180d583a8362b8608f4b6d3ddfd7313e8de76ad11bc16bbdc92f19ed",
+      "size": 3532
+    },
+    {
+      "path": "data/lobe-icons.json",
+      "sha256": "9d658e183417cc7f55b3bcd5a45fe17e50a019c3cd80a19e224e23df6985f3b5",
+      "size": 12852
+    },
+    {
+      "path": "data/model-routing.default.json",
+      "sha256": "b6369cf156c819b80261a0104f549dcecb7b0d28fd3165c5d2c50bb0dd6f2002",
+      "size": 1376
+    },
+    {
+      "path": "data/model-routing.v1.schema.json",
+      "sha256": "a228978237742ea9c74281744d1815eebf64da4149f1bcb8c17cc176a81514d4",
+      "size": 2640
+    },
+    {
+      "path": "data/reviewer-input.v1.schema.json",
+      "sha256": "96a0ecb511fd130fa366c6b8a671de17c5db17c43db89859de4752a3e59f6d99",
+      "size": 2025
+    },
+    {
+      "path": "data/reviewer-verdict.v1.schema.json",
+      "sha256": "5414d60ee698043205733187d6dbe81d6c297955bd48669ef9cc445978591090",
+      "size": 1714
+    },
+    {
+      "path": "data/roadmap.v1.schema.json",
+      "sha256": "ced5f222019a421f1adc4e162dcc98fa3e979ea23711896eff946396fd5630b0",
+      "size": 6729
+    },
+    {
+      "path": "data/roadmap.v2.schema.json",
+      "sha256": "260aef134e2f696823ce468957cec0271be7e98807b0aebfcab8d56a7b512dd3",
+      "size": 7650
+    },
+    {
+      "path": "data/run-event.v1.schema.json",
+      "sha256": "1584242585f4c879bc9f69bf9f542d8b1484130a29c46c8b98ade7a2a1ee87df",
+      "size": 2479
+    },
+    {
+      "path": "data/semantic-approval.v1.schema.json",
+      "sha256": "f2f2248ab12834b134b7772ddb5bd802a89617c9a41c8e156e3fd6b4f4827f7e",
+      "size": 1217
+    },
+    {
+      "path": "data/shape-index.json.gz",
+      "sha256": "f19d9f794775d91e196b0a8d1fce32d6dbbf9828f094bedc53e843c8131ee8ea",
+      "size": 436148
+    },
+    {
+      "path": "data/validation-receipt.v1.schema.json",
+      "sha256": "38750162022dcb6b7fbca44b73b2cd25545ec296b033f8de4001e66fbfb9adfb",
+      "size": 3308
+    },
+    {
+      "path": "examples/roadmap/table-source.md",
+      "sha256": "77ffedb42478a128102eb486b1d832ca66775733f25a16e233ac28c0f7f7f1d6",
+      "size": 729
+    },
+    {
+      "path": "examples/roadmap/xml-source.xml",
+      "sha256": "5feaf880cc511defb7847399940445f4d4d112aa47972546f0bc5b5eea2c9386",
+      "size": 656
+    },
+    {
+      "path": "gemini-extension.json",
+      "sha256": "bd678d8a27c4c52fd7c23a93139d014d5e9128d1f7b348555704ac39b881183a",
+      "size": 258
+    },
+    {
+      "path": "metadata.md",
+      "sha256": "b24117400c6d10b76434162ea54f6698462f39017df531c75c4eb5ef100e271b",
+      "size": 3482
+    },
+    {
+      "path": "references/autolayout.md",
+      "sha256": "26302dff13b34ce2c2fa8020f35d2d2202a55fdba5dafbb95bb6b803f955a321",
+      "size": 13695
+    },
+    {
+      "path": "references/diagram-intake.md",
+      "sha256": "10cbc30133be7613878f17d913b6b44d5bbf5fd416a1e7fadde3c7a9ebfc4b3b",
+      "size": 7333
+    },
+    {
+      "path": "references/diagram-supervisor.md",
+      "sha256": "908dc54e9875356631cd51d4c5844f134341381239c3fab2cdfad58422975ef0",
+      "size": 10307
+    },
+    {
+      "path": "references/diagram-types.md",
+      "sha256": "dfd920f4f5033bf9dafe1532619231798eb48cebd3c5ade05552813654fe7f84",
+      "size": 9913
+    },
+    {
+      "path": "references/git-flow.md",
+      "sha256": "11f08bae0ae48bb3405071eb6ce50eb3f5d457b18bc423de6e813d3667d38725",
+      "size": 4442
+    },
+    {
+      "path": "references/mermaid-authoring.md",
+      "sha256": "10f31ab514235483a2f8aff7cfe00467a7b974d3cb579a3e557c85bb2df62235",
+      "size": 4841
+    },
+    {
+      "path": "references/model-routing.md",
+      "sha256": "f9b2c3bed356597e71d4280b11aacb1936658758c93fd169e5ab6827d925e585",
+      "size": 7159
+    },
+    {
+      "path": "references/roadmap.md",
+      "sha256": "a0ae24addd0eff72285a2e4413180f9f8c493aeffae02fd0da379148fb96bc8b",
+      "size": 9999
+    },
+    {
+      "path": "references/shapes.md",
+      "sha256": "e6c37e460ed2758c3be1daf4b06201420666c874efe7ae13258c34861b6a5476",
+      "size": 6517
+    },
+    {
+      "path": "references/style-extraction.md",
+      "sha256": "9dfba198a0e0f610e2fdaecff29aa380984ba03c67d5a02c86b75106c95de2a0",
+      "size": 17575
+    },
+    {
+      "path": "references/style-presets.md",
+      "sha256": "12adbea677372cd1ba5b2f4301c55dddf193b3c1480236034d35ab2f827c53e6",
+      "size": 10807
+    },
+    {
+      "path": "references/troubleshooting.md",
+      "sha256": "ca414927950abd92ba942e18d7ada4ae4fc8c62d5dd142ceb6841fea530073c2",
+      "size": 5641
+    },
+    {
+      "path": "references/xml-authoring.md",
+      "sha256": "22b4d55ad0cc4068bb0be575577a95521452234911c7c6563860a57bb2d62e7a",
+      "size": 11416
+    },
+    {
+      "path": "requirements.lock.txt",
+      "sha256": "047ea4aa1a907a4ef20f2b41f00d8c7be3b557ddadb820c275f46cf7421d1e99",
+      "size": 161
+    },
+    {
+      "path": "requirements.txt",
+      "sha256": "435c986f87025efa7bf97ece9d272158a280676e5da14323762c9fcca4de31f8",
+      "size": 52
+    },
+    {
+      "path": "scripts/agent_runtime.py",
+      "sha256": "68e1d334a7eaca1f36c646970e3fdd4fd04630b41bcbc33b2df56e0b1879e1ff",
+      "size": 13943
+    },
+    {
+      "path": "scripts/aiicons.py",
+      "sha256": "e1260d890c4416f778884c7929ee5ca2bfe929b5080d9592623e6da5e5ea12af",
+      "size": 5704
+    },
+    {
+      "path": "scripts/autolayout.py",
+      "sha256": "d72e15eb0cfa356e9722c9824037d2fbd65840ee686324e87070d195d973a162",
+      "size": 18286
+    },
+    {
+      "path": "scripts/c4.py",
+      "sha256": "82f349e1a5240984275f1fc9cfe21a91dd4124fbf42a61903439eaf90ceadd22",
+      "size": 6670
+    },
+    {
+      "path": "scripts/composeimports.py",
+      "sha256": "ae9c96282daa3f35ddba65a443456034ca9e7e6920a3db5b646ed8fe0a17909d",
+      "size": 4738
+    },
+    {
+      "path": "scripts/diagram_supervisor.py",
+      "sha256": "3fd5d3f05ccce7155847218723b307c9f8b168253f10656a05b67e07e9cdc33e",
+      "size": 92361
+    },
+    {
+      "path": "scripts/encode_drawio_url.py",
+      "sha256": "47b77e4bc46226cc1a1cea29e93988877796d0a60706a2a38c7fd7910af3dfef",
+      "size": 2250
+    },
+    {
+      "path": "scripts/export_smoke.py",
+      "sha256": "4fd9a3730c5e65e1ff5f816e69ee267306d3091d97a5aff3537d31fc4a900234",
+      "size": 7153
+    },
+    {
+      "path": "scripts/gitflow.py",
+      "sha256": "c5f1f932cdf9cc5ddcfbf38f40f60fc194657f3d6a8fbc91a753438bccdbf6be",
+      "size": 13982
+    },
+    {
+      "path": "scripts/gitflow_validate.py",
+      "sha256": "f0efe08c5c2bea252edd543e6c9fefe291d2de9bca1f16b905c6121b465bbf31",
+      "size": 9058
+    },
+    {
+      "path": "scripts/goimports.py",
+      "sha256": "de0f376117db385bdf502f8f498979f1c4b18107cceae9e16013d7f66319f555",
+      "size": 5557
+    },
+    {
+      "path": "scripts/jsimports.py",
+      "sha256": "edce79ff352558d9539ab96942c2762ea60c313e58bac14b647cf195e459dc50",
+      "size": 6314
+    },
+    {
+      "path": "scripts/k8simports.py",
+      "sha256": "ebe329193db0d6016dc68e16e95b658a72ae6e7cbf12f8ff57d25612c8010f01",
+      "size": 9464
+    },
+    {
+      "path": "scripts/pyclasses.py",
+      "sha256": "a7810d9dbc981bba82726e122d119fb0366e027a08e9cfb1dd03926b2aef3e02",
+      "size": 6221
+    },
+    {
+      "path": "scripts/pyimports.py",
+      "sha256": "39f8b2a8732bf3b2ec62a99b8d82c7652b40dd0287307af7482a7de6214df683",
+      "size": 6353
+    },
+    {
+      "path": "scripts/repair_png.py",
+      "sha256": "1a453cb88231813dcb5631456b0c7431eb59acd21570c7e749c1cce89ae31c4c",
+      "size": 1097
+    },
+    {
+      "path": "scripts/roadmap.py",
+      "sha256": "b924e23c73dc8858bd302dd25eca9c8694c2a2dcac2babd9569d92b1580f3ed1",
+      "size": 19861
+    },
+    {
+      "path": "scripts/roadmap_table.py",
+      "sha256": "cf12b749be38a7ec733882881e6e76ac3d599a733011b58cd00ca2a073120862",
+      "size": 15756
+    },
+    {
+      "path": "scripts/roadmap_template.py",
+      "sha256": "3afb5509afc4935d38b11258ef606f059ea83f875d88529ca75811a6b1cbab1a",
+      "size": 3672
+    },
+    {
+      "path": "scripts/roadmap_timeline.py",
+      "sha256": "f60c72e738cccbc40c94d6ec22851b86251c5208cde8e1705a2a23a47b810518",
+      "size": 4139
+    },
+    {
+      "path": "scripts/roadmap_validate.py",
+      "sha256": "776cb11ac7ca1086e752f4f8224ced786d6e549a7ff134045f7dd0221ab8d707",
+      "size": 17675
+    },
+    {
+      "path": "scripts/rustimports.py",
+      "sha256": "de08f1a9e29e0f71616e3ae9ad93e2b4c00a0ebc8213538c5a386b0ec9e1b52b",
+      "size": 7610
+    },
+    {
+      "path": "scripts/self_check.py",
+      "sha256": "68bbfe2b8a494c33bc651450f1edfda6709f6455800c50057940b14016549a0f",
+      "size": 11747
+    },
+    {
+      "path": "scripts/seqlayout.py",
+      "sha256": "527c522dfd1ccff1c252bb146f250710d0033385444ac3cc2a33ede11ee09fc4",
+      "size": 9917
+    },
+    {
+      "path": "scripts/shapesearch.py",
+      "sha256": "ac624fa2d532c1a72cc77ec0b2fd94a71e0baf4cd03ba339b60eb7a784e511b3",
+      "size": 5967
+    },
+    {
+      "path": "scripts/sqlerd.py",
+      "sha256": "f3896f9c17bb0933676de048cad3da6a3c17d853f0ef9dffb11d1e4ecacdff09",
+      "size": 6745
+    },
+    {
+      "path": "scripts/tfimports.py",
+      "sha256": "66636c6b73b41d485560a90e0b4a13a4b30d4ecb03910f66cd3519d40406b007",
+      "size": 11910
+    },
+    {
+      "path": "scripts/validate.py",
+      "sha256": "85975dca1df352cdc35eec120bc1682c5a5a7ac9b6b027057d0d2c3effb1d132",
+      "size": 48843
+    },
+    {
+      "path": "scripts/validation_common.py",
+      "sha256": "d4b656f4c53a1de925f471accb9ef0a69283b0e3f5acc3b647b1ad17f280b45a",
+      "size": 6474
+    },
+    {
+      "path": "scripts/verify_determinism.py",
+      "sha256": "395a97582d9a35179ceca3937c51f262c772788daec33b880ed0be009670369a",
+      "size": 6138
+    },
+    {
+      "path": "styles/built-in/colorblind-safe.json",
+      "sha256": "3b836988e6533c07bf0e6676cc35731e750f0fa659ab25e80bfef7087436f3eb",
+      "size": 1472
+    },
+    {
+      "path": "styles/built-in/corporate.json",
+      "sha256": "0cb0ba05b44e5938ce775bb917b6ffaa3a0501ceedbd610975cc6e909fe5e60b",
+      "size": 1471
+    },
+    {
+      "path": "styles/built-in/dark.json",
+      "sha256": "2a78d4da3b6bc747da7943597bb1d58e9ff12f5188192ecc09589570d6873fae",
+      "size": 1546
+    },
+    {
+      "path": "styles/built-in/default.json",
+      "sha256": "5340c1f80ab983f412e895d58d5dffb4949c246acc516702fd565675fec140e1",
+      "size": 1454
+    },
+    {
+      "path": "styles/built-in/handdrawn.json",
+      "sha256": "92a1fdca1bbb95e5239fca62b2da81d4035936a11ca690e026419a5c2508e541",
+      "size": 1474
+    },
+    {
+      "path": "styles/schema.json",
+      "sha256": "4886d76481285d584eaa7963053c1ec6786eb335b4f75e1093b66788dce148c0",
+      "size": 5362
+    },
+    {
+      "path": "tests/__init__.py",
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "size": 1
+    },
+    {
+      "path": "tests/fixtures/artifact/compressed_page.drawio",
+      "sha256": "08e9c479ff577b31dcbac39c98c95552d11727d69a399c0aa44a00d1f76c694e",
+      "size": 153
+    },
+    {
+      "path": "tests/fixtures/artifact/export_cases.json",
+      "sha256": "dee4d3c8bfc8024dc52e865e2a3d4cde519ba8d9eae1e2b55b890af28403f72e",
+      "size": 1163
+    },
+    {
+      "path": "tests/fixtures/artifact/layout_issues.drawio",
+      "sha256": "c7a175fc207ccaafde966fe5d3bedda7a1f079678afdc03fa24566175b44b87c",
+      "size": 4808
+    },
+    {
+      "path": "tests/fixtures/artifact/layout_valid.drawio",
+      "sha256": "0c7972e4d375838b7b32f1eb31e3ea9aa56fe409e1ed68fe5b9498ca88924011",
+      "size": 4057
+    },
+    {
+      "path": "tests/fixtures/artifact/malformed_xml.drawio",
+      "sha256": "221a336177cebb07ec4d6cbc0502b12c445164e83445ffa77b5e465ac6938734",
+      "size": 94
+    },
+    {
+      "path": "tests/fixtures/artifact/readability_routes.drawio",
+      "sha256": "ca9855f18f93b4c5f5d41ace4a2af40b3d18ea5cb09582113e6c4a114f3a8d11",
+      "size": 1316
+    },
+    {
+      "path": "tests/fixtures/artifact/semantic_mismatch_cases.json",
+      "sha256": "3f0ebec1f34cf0228b34c274904e56bff8b58268e1fa35b389feb6bd9b9e17b5",
+      "size": 5834
+    },
+    {
+      "path": "tests/fixtures/artifact/structural_errors.drawio",
+      "sha256": "ebb8d70e962a1556298b96a6f5d9671a26e5aa944b5664dc76cfc18dc9e482c4",
+      "size": 2313
+    },
+    {
+      "path": "tests/fixtures/gitflow/classic.json",
+      "sha256": "b9a9e5d0352f896e107db96fd1ed77adec26512811348671006094f02ebe4573",
+      "size": 1326
+    },
+    {
+      "path": "tests/fixtures/gitflow/hotfix.json",
+      "sha256": "f2e5fc7220e36ad052d689ac1901e2b8acdd0600443acdbd410719e99ce1d037",
+      "size": 935
+    },
+    {
+      "path": "tests/fixtures/gitflow/invalid_merge_self.json",
+      "sha256": "61c141396ae4f897d518d01840207db206d8e6d93a33b225631fa72f00facb5c",
+      "size": 360
+    },
+    {
+      "path": "tests/fixtures/gitflow/invalid_strict_rules.json",
+      "sha256": "41021dd8852e03095072d805d89d8b9106add4d565c7718af6c2aa7b0adf6645",
+      "size": 587
+    },
+    {
+      "path": "tests/fixtures/gitflow/invalid_unknown_branch.json",
+      "sha256": "68cec1f240cad3c211e15c6bae9236eb7a0169f623eadc68465eafe2b6712324",
+      "size": 357
+    },
+    {
+      "path": "tests/fixtures/gitflow/negative_cases.json",
+      "sha256": "9921b3c3b02b85c5619121982b34abb1cacf24985497519f189d597afd9ad767",
+      "size": 11597
+    },
+    {
+      "path": "tests/fixtures/gitflow/openspec_custom.json",
+      "sha256": "944d03b44abf5fff490a2a2d891c4393aef07d75e89339b6fee971f12359f9d2",
+      "size": 2173
+    },
+    {
+      "path": "tests/fixtures/gitflow/out_of_order.json",
+      "sha256": "31ac48746c972016c5cfb93e68ff6f65e55dd9ad06c70fc88a9de072efbeed2f",
+      "size": 568
+    },
+    {
+      "path": "tests/fixtures/gitflow/positive/custom.json",
+      "sha256": "ef19097dfe56c5e172c03f2daf1bcb5e4da03ea508556533665395c1bf955723",
+      "size": 647
+    },
+    {
+      "path": "tests/fixtures/gitflow/positive/date.json",
+      "sha256": "207467d503ee64ca8a157c01a9d4669a00ebe0e52c93d784af392af73029eae3",
+      "size": 565
+    },
+    {
+      "path": "tests/fixtures/gitflow/positive/order.json",
+      "sha256": "3b280ccbfc0fcbd97ccb06d3f789241e60012a3d2b34310d4b6a46651338241c",
+      "size": 780
+    },
+    {
+      "path": "tests/fixtures/roadmap/baseline_shift.yaml",
+      "sha256": "8cef1f752f5b30cba693b8eff0d69cb07c9fdef6af78bd758122e3dd63a2822e",
+      "size": 1591
+    },
+    {
+      "path": "tests/fixtures/roadmap/basic.yaml",
+      "sha256": "2e821effb54aee245533c280530e9a79aa889535e97609d87e459ce195ecd890",
+      "size": 1095
+    },
+    {
+      "path": "tests/fixtures/roadmap/date.yaml",
+      "sha256": "8dc773ca643db60c1c9f1fb9fd2642e0a876bcc263ee9d0dd71b1a7e34c7104c",
+      "size": 222
+    },
+    {
+      "path": "tests/fixtures/roadmap/dense_overlap.yaml",
+      "sha256": "58827aa6201d1b5e1229e947913fd0cf93c531362c98633809f6e85419f8675e",
+      "size": 3277
+    },
+    {
+      "path": "tests/fixtures/roadmap/full_history.yaml",
+      "sha256": "eecec271064ec49dac88fd5faab8c7f25d45c85cda6b8fdd272bf18418f981f5",
+      "size": 1164
+    },
+    {
+      "path": "tests/fixtures/roadmap/invalid_unknown_ref.yaml",
+      "sha256": "b6b9c2a98a5da2c40c4e10d7351a19338ca87ae34d194f9ec8d21178977f19b5",
+      "size": 200
+    },
+    {
+      "path": "tests/fixtures/roadmap/negative_cases.json",
+      "sha256": "708397d96b355305a33f85749a015128398608678446cf78eaca5d15b7c9b1da",
+      "size": 7575
+    },
+    {
+      "path": "tests/fixtures/roadmap/order.yaml",
+      "sha256": "6b4cd1b4cdc1b8924d5f96c42d4a81705b2d07b43ba941526e837a45daa85a91",
+      "size": 1065
+    },
+    {
+      "path": "tests/fixtures/roadmap/positive/date_with_baseline.yaml",
+      "sha256": "faeb1e811cbc12c7cad4215d4c515e10c1a039974628204e56fbab3dd0b998b8",
+      "size": 608
+    },
+    {
+      "path": "tests/fixtures/roadmap/positive/month_with_baseline.yaml",
+      "sha256": "6a164adc0d3bde8bff56838f31d31f7a11f1b2b03b9567234f926b74f83440ee",
+      "size": 601
+    },
+    {
+      "path": "tests/fixtures/roadmap/positive/order_with_baseline.yaml",
+      "sha256": "135933699a3e5a0225beb2bbccd5afe9148c28cf3d9c69b7b996e9555a8ead60",
+      "size": 586
+    },
+    {
+      "path": "tests/fixtures/roadmap/positive/order_without_baseline.yaml",
+      "sha256": "e05d18f7d095d920c639fae6cc24b67c763592b1ffc37f99774a4cb98a7761db",
+      "size": 327
+    },
+    {
+      "path": "tests/fixtures/roadmap/positive/quarter_with_baseline.yaml",
+      "sha256": "a936909c216443579e9d13f5b30eea65eb4f4de5914b11c5d75eb8eb3b9e9a74",
+      "size": 615
+    },
+    {
+      "path": "tests/fixtures/roadmap/positive/week_with_baseline.yaml",
+      "sha256": "aae45b4948f7ecf7fd575caf62017e3587a0e6b1e7a0ff49a14d36d15d26d85c",
+      "size": 617
+    },
+    {
+      "path": "tests/fixtures/roadmap/quarter.yaml",
+      "sha256": "46f1af671d3890dd3116646517dfdad9dbc922bb4896ffdb2413cc8250fda5fb",
+      "size": 137
+    },
+    {
+      "path": "tests/fixtures/roadmap/week.yaml",
+      "sha256": "dfd48a11f63b12e6235f034612d66c5b4aa569f25aa5656a9d2bd52ed46379f2",
+      "size": 309
+    },
+    {
+      "path": "tests/test_artifact_tools.py",
+      "sha256": "e3853175015611d24a14f72cfdbee076ef862429946fa73c4557fad386074988",
+      "size": 9644
+    },
+    {
+      "path": "tests/test_contract_docs.py",
+      "sha256": "106d3db589b8ee9e764be291b521ef20b9eaf96805216ccd43216f01300b7cbc",
+      "size": 2095
+    },
+    {
+      "path": "tests/test_contracts.py",
+      "sha256": "708cbe5a653bfebc375b2cf5d81906fd08e5c9a44e1560f1b85c3abdff8de568",
+      "size": 11862
+    },
+    {
+      "path": "tests/test_diagram_supervisor.py",
+      "sha256": "b47216df9b8efdaf8c43c05131905f075656bb72a67f13c029bb01e4fc20a3b0",
+      "size": 95217
+    },
+    {
+      "path": "tests/test_finding_fixtures.py",
+      "sha256": "a5fe9b47c6af15e0c00b68dc961ac8b1891c16b8f2540907dfd3a62d7c4c1461",
+      "size": 17734
+    },
+    {
+      "path": "tests/test_gitflow.py",
+      "sha256": "a9e91a4523cd60c22d5d9651f029e42190a1486d85c7cfeeec6382a5616ca531",
+      "size": 5363
+    },
+    {
+      "path": "tests/test_intake_docs.py",
+      "sha256": "e97a9972805c076f1b2338909af73097f959339c3d7b411896b9c997e441ac4b",
+      "size": 1447
+    },
+    {
+      "path": "tests/test_readme_docs.py",
+      "sha256": "d4bb50f168e3c3e592019146a8d4d2f71f4852cff36a35d9d6097e09c3a74703",
+      "size": 1225
+    },
+    {
+      "path": "tests/test_roadmap.py",
+      "sha256": "59f3978c1b28c9acc097cf5891a7cb0a2c2345e84e4e6609c3964d7ba5827f84",
+      "size": 4960
+    },
+    {
+      "path": "tests/test_roadmap_template.py",
+      "sha256": "428fe8a5b0643b3f9bfe9e778b4129bb1d791d0af6bb83df14506e62d6c2e466",
+      "size": 21093
+    },
+    {
+      "path": "tests/test_validate.py",
+      "sha256": "985faa7a90cfa147cfeef9e67ed6e3122ff1d7078f54860d88c405c88690ea94",
+      "size": 1562
+    }
+  ],
+  "format_version": 1,
+  "skill": "drawio",
+  "version": "1.22.0-corporate.1",
+  "version_sources": [
+    {
+      "path": "SKILL.md",
+      "value": "1.22.0-corporate.1"
+    },
+    {
+      "path": "metadata.md",
+      "value": "1.22.0-corporate.1"
+    },
+    {
+      "path": "gemini-extension.json",
+      "value": "1.22.0-corporate.1"
+    }
+  ]
+}

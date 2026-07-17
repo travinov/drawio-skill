@@ -240,6 +240,16 @@ class ArtifactFindingFixtureTests(unittest.TestCase):
                 "artifact.readability.crossing",
                 "artifact.readability.route_through",
             },
+            "layout_issues.drawio": {
+                "artifact.geometry.invalid",
+                "artifact.layout.container_overflow",
+                "artifact.layout.lane_title_collision",
+                "artifact.layout.lane_size",
+                "artifact.layout.container_overlap",
+                "artifact.layout.terminal_segment",
+                "artifact.layout.routing_uncertain",
+                "artifact.readability.route_through",
+            },
         }
         observed = set()
         for filename, expected in cases.items():
@@ -251,6 +261,32 @@ class ArtifactFindingFixtureTests(unittest.TestCase):
                 observed.update(codes)
                 self.assertTrue(expected.issubset(codes), report)
         self.assertEqual(set().union(*cases.values()), observed)
+
+    def test_valid_layout_accepts_touching_lanes_and_simple_auto_route(self):
+        proc = run_script("validate.py", ARTIFACT / "layout_valid.drawio", "--strict", "--json")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        report = json.loads(proc.stdout)
+        self.assertEqual(report["findings"], [])
+
+    def test_layout_codes_are_identical_when_strict_promotes_severity(self):
+        source = ARTIFACT / "layout_issues.drawio"
+        relaxed = run_script("validate.py", source, "--json")
+        strict = run_script("validate.py", source, "--strict", "--json")
+        self.assertEqual(relaxed.returncode, 0, relaxed.stderr + relaxed.stdout)
+        self.assertNotEqual(strict.returncode, 0, strict.stderr + strict.stdout)
+        relaxed_report = json.loads(relaxed.stdout)
+        strict_report = json.loads(strict.stdout)
+        relaxed_identity = {
+            (item["code"], item["path"], item.get("element"), item["message"])
+            for item in relaxed_report["findings"]
+        }
+        strict_identity = {
+            (item["code"], item["path"], item.get("element"), item["message"])
+            for item in strict_report["findings"]
+        }
+        self.assertEqual(relaxed_identity, strict_identity)
+        self.assertTrue(all(item["severity"] == "warning" for item in relaxed_report["findings"]))
+        self.assertTrue(all(item["severity"] == "error" for item in strict_report["findings"]))
 
     def test_generic_code_fallbacks_remain_stable(self):
         validator = load_script("validate")
