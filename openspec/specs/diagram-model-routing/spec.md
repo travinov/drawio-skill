@@ -11,7 +11,7 @@ The extension SHALL resolve Supervisor, Reviewer, Repair, and Semantic Analyst m
 - **THEN** each role uses its configured model and records requested and resolved model identifiers
 
 ### Requirement: Use the approved default role mapping
-The default routing policy SHALL request `GigaChat-3-Ultra` for Supervisor, `DeepSeek-V4-Flash` for Reviewer, `vllm/MiniMax-M3-113k` for Repair, and `vllm/Qwen3.6-35B-262k` for Semantic Analyst/Arbiter.
+The default routing policy SHALL request `GigaChat-3-Ultra` for Supervisor, `vllm/DeepSeek-V4-Flash-262k` for Reviewer, `vllm/MiniMax-M3-113k` for Repair, and `vllm/Qwen3.6-35B-262k` for Semantic Analyst/Arbiter.
 
 #### Scenario: Normal layout run has no semantic ambiguity
 - **WHEN** a run needs supervision and independent review but no repair or arbitration
@@ -30,4 +30,3 @@ The Reviewer role SHALL be unable to publish or mutate candidate artifacts and S
 #### Scenario: Reviewer recommends a repair
 - **WHEN** the Reviewer detects a problem
 - **THEN** it emits a finding for the Supervisor or Repair role and does not edit the diagram itself
-

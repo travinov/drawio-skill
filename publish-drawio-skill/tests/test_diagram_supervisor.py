@@ -233,8 +233,8 @@ def reviewer_verdict(run_dir, candidate, report_path, receipt_path, *, verdict="
         "verdict": verdict,
         "reviewed_at": "2026-07-16T12:00:00+00:00",
         "reviewer": {
-            "resolved_model": "DeepSeek-V4-Flash",
-            "provider": "deepseek",
+            "resolved_model": "vllm/DeepSeek-V4-Flash-262k",
+            "provider": "vllm",
             "resolution_mode": "isolated_cli",
         },
         "findings": [],
@@ -1372,7 +1372,7 @@ class ModelRoutingTests(unittest.TestCase):
         policy = json.loads(policy_path.read_text(encoding="utf-8"))
         expected = {
             "supervisor": "GigaChat-3-Ultra",
-            "reviewer": "DeepSeek-V4-Flash",
+            "reviewer": "vllm/DeepSeek-V4-Flash-262k",
             "repair": "vllm/MiniMax-M3-113k",
             "semantic_analyst": "vllm/Qwen3.6-35B-262k",
         }
@@ -1380,6 +1380,16 @@ class ModelRoutingTests(unittest.TestCase):
             {role: config["requested_model"] for role, config in policy["roles"].items()},
             expected,
         )
+        self.assertEqual(policy["roles"]["reviewer"]["provider"], "vllm")
+        agent_files = {
+            "supervisor": "diagram-supervisor.md",
+            "reviewer": "diagram-reviewer.md",
+            "repair": "diagram-repair.md",
+            "semantic_analyst": "diagram-semantic-analyst.md",
+        }
+        for role, agent_file in agent_files.items():
+            agent_definition = (ROOT / "agents" / agent_file).read_text(encoding="utf-8")
+            self.assertIn(f"model: {expected[role]}\n", agent_definition)
         self.assertEqual(policy["global_interactive_model"], "preserve")
 
         results = []
@@ -1537,7 +1547,7 @@ class AgentRuntimeTests(unittest.TestCase):
             temp = Path(temp)
             cli = self.fake_cli(
                 temp / "fallback-cli",
-                "if '--model' in sys.argv and sys.argv[sys.argv.index('--model')+1] == 'DeepSeek-V4-Flash':\n"
+                "if '--model' in sys.argv and sys.argv[sys.argv.index('--model')+1] == 'vllm/DeepSeek-V4-Flash-262k':\n"
                 "    print('requested model unavailable', file=sys.stderr)\n"
                 "    raise SystemExit(3)\n"
                 "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
@@ -1587,7 +1597,7 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertEqual(result["command"][0], str(cli))
             self.assertEqual(
                 result["command"][result["command"].index("--model") + 1],
-                "DeepSeek-V4-Flash",
+                "vllm/DeepSeek-V4-Flash-262k",
             )
             self.assertIn("--approval-mode", result["command"])
             self.assertIn("plan", result["command"])

@@ -5,7 +5,7 @@ Use this workflow when the user asks to improve, repair, validate, iterate on, o
 ## Roles
 
 - **Supervisor** owns the run state and user communication. Default model: `GigaChat-3-Ultra`.
-- **Independent Reviewer** is read-only and returns findings/verdicts. Default model: `DeepSeek-V4-Flash`.
+- **Independent Reviewer** is read-only and returns findings/verdicts. Default model: `vllm/DeepSeek-V4-Flash-262k`.
 - **Repair** is on demand and proposes patch intent, never raw XML. Default model: `vllm/MiniMax-M3-113k`.
 - **Semantic Analyst / Arbiter** is on demand for OpenSpec reconciliation and semantic conflicts. Default model: `vllm/Qwen3.6-35B-262k`.
 

@@ -12,8 +12,8 @@
       "fallback_order": ["native_per_agent", "isolated_cli", "inherited_current"]
     },
     "reviewer": {
-      "requested_model": "DeepSeek-V4-Flash",
-      "provider": "deepseek",
+      "requested_model": "vllm/DeepSeek-V4-Flash-262k",
+      "provider": "vllm",
       "activation": "permanent",
       "prompt": "agents/diagram-reviewer.md",
       "mutation_policy": "read_only",

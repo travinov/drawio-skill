@@ -12,7 +12,7 @@ Use `data/model-routing.default.json` as the default policy and validate custom 
 | Role | Requested model | Activation | Mutation policy |
 | --- | --- | --- | --- |
 | Supervisor | `GigaChat-3-Ultra` | permanent | orchestration only |
-| Reviewer | `DeepSeek-V4-Flash` | permanent | read-only |
+| Reviewer | `vllm/DeepSeek-V4-Flash-262k` | permanent | read-only |
 | Repair | `vllm/MiniMax-M3-113k` | on demand | patch proposal only |
 | Semantic Analyst | `vllm/Qwen3.6-35B-262k` | on demand | patch proposal only |
 
@@ -88,7 +88,7 @@ Append one `model_resolved` event per activated role to `run-manifest.jsonl`. Th
 ```json
 {
   "role": "reviewer",
-  "requested_model": "DeepSeek-V4-Flash",
+  "requested_model": "vllm/DeepSeek-V4-Flash-262k",
   "resolved_model": "<runtime-returned-model-id>",
   "provider": "<resolved-provider>",
   "resolution_mode": "native_per_agent",

@@ -1,7 +1,7 @@
 {
   "archive": "drawio-skill-agent-extension.zip",
   "archive_root": "drawio-skill",
-  "archive_sha256": "d01e1f51c42059deaab2cc4166b76df7039f7b8f63bc5a44cabf85972c8dfc5e",
+  "archive_sha256": "9671c705960080eb077490ed5bc9e77ab1e543e246612f1c23099086a17225f4",
   "files": [
     {
       "path": "DEPENDENCIES.md",
@@ -35,8 +35,8 @@
     },
     {
       "path": "agents/diagram-reviewer.md",
-      "sha256": "604043673d49a9decd81efb209ed55ac835c88f44691a4c069395a858e125041",
-      "size": 2533
+      "sha256": "d8fffdd78082bd3084405c52af5c03c507363aad778a91277eed058584dd6e51",
+      "size": 2543
     },
     {
       "path": "agents/diagram-semantic-analyst.md",
@@ -95,8 +95,8 @@
     },
     {
       "path": "data/model-routing.default.json",
-      "sha256": "b6369cf156c819b80261a0104f549dcecb7b0d28fd3165c5d2c50bb0dd6f2002",
-      "size": 1376
+      "sha256": "252cfc13f8dab0aa37dc18204bd78e150b91f89d1962b0e4ed96ceab27b469dd",
+      "size": 1382
     },
     {
       "path": "data/model-routing.v1.schema.json",
@@ -195,8 +195,8 @@
     },
     {
       "path": "references/diagram-supervisor.md",
-      "sha256": "908dc54e9875356631cd51d4c5844f134341381239c3fab2cdfad58422975ef0",
-      "size": 10307
+      "sha256": "fc237773a1a745a19f3b1bef51c7c58e305784f7e100ca9581f5dcadf344d042",
+      "size": 10317
     },
     {
       "path": "references/diagram-types.md",
@@ -215,8 +215,8 @@
     },
     {
       "path": "references/model-routing.md",
-      "sha256": "f9b2c3bed356597e71d4280b11aacb1936658758c93fd169e5ab6827d925e585",
-      "size": 7159
+      "sha256": "5fb230c589fb0976a0f09201e5605d02b2e124725bd12c4bd3fdbf465a457d03",
+      "size": 7179
     },
     {
       "path": "references/roadmap.md",
@@ -635,8 +635,8 @@
     },
     {
       "path": "tests/test_diagram_supervisor.py",
-      "sha256": "b47216df9b8efdaf8c43c05131905f075656bb72a67f13c029bb01e4fc20a3b0",
-      "size": 95217
+      "sha256": "14d085f96e9db709abcf06215f10a8dd1f250ea9c6c49a06c34daee5dbdf99e3",
+      "size": 95782
     },
     {
       "path": "tests/test_finding_fixtures.py",
