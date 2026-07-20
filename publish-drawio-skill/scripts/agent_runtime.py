@@ -68,7 +68,11 @@ def role_schema_name(role):
         return "reviewer-verdict.v1.schema.json"
     if role == "repair":
         return "diagram-patch.v1.schema.json"
-    return "agent-role-output.v1.schema.json"
+    if role == "supervisor":
+        return "supervisor-decision.v1.schema.json"
+    if role == "semantic_analyst":
+        return "semantic-plan.v1.schema.json"
+    raise SupervisorError(f"unknown role {role!r}")
 
 
 def reviewer_evidence_bindings(payload):
@@ -428,6 +432,22 @@ def invoke_role(
     }
     if dry_run:
         return result
+    if run_dir:
+        append_event(
+            run_dir,
+            "role_started",
+            {
+                "role": role,
+                "input": str(Path(input_path).resolve()),
+                "input_sha256": hashlib.sha256(
+                    Path(input_path).read_bytes()
+                ).hexdigest(),
+                "requested_model": config["requested_model"],
+                "resolution_mode": resolution["resolution_mode"],
+                "fallback_used": resolution["fallback_used"],
+            },
+            actor={"kind": "system", "id": "diagram-orchestrator", "model": None},
+        )
     output_path = Path(output_path)
     output_path.unlink(missing_ok=True)
     try:
@@ -471,6 +491,15 @@ def invoke_role(
             f"isolated {role} process failed with exit code {completed.returncode}: "
             f"{redact(failure_diagnostic[-1000:])}"
         )
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_capture_path = output_path.with_name("runtime-output.json")
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=output_path.parent, delete=False) as tmp:
+        tmp.write(completed.stdout)
+        tmp.flush()
+        os.fsync(tmp.fileno())
+        runtime_capture_temp = tmp.name
+    os.replace(runtime_capture_temp, runtime_capture_path)
     parsed_output = None
     runtime_metadata = None
     try:
@@ -518,7 +547,6 @@ def invoke_role(
             invalid_output_sha256=getattr(exc, "invalid_output_sha256", None),
         )
         raise
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=output_path.parent, delete=False) as tmp:
         json.dump(parsed_output, tmp, ensure_ascii=False, indent=2, sort_keys=True)
         tmp.write("\n")
@@ -530,6 +558,7 @@ def invoke_role(
         "finished_at": utc_now(),
         "exit_code": completed.returncode,
         "output": str(output_path.resolve()),
+        "runtime_capture": str(runtime_capture_path.resolve()),
         "stderr": redact(completed.stderr[-4000:]),
         "runtime_metadata": runtime_metadata,
     })
@@ -540,7 +569,26 @@ def invoke_role(
         )
         append_event(
             run_dir,
-            "review_verdict" if role == "reviewer" else "patch_proposed" if role in {"repair", "semantic_analyst"} else "state_transition",
+            "role_finished",
+            {
+                "role": role,
+                "requested_model": resolution["requested_model"],
+                "resolved_model": resolution["resolved_model"],
+                "resolution_mode": resolution["resolution_mode"],
+                "fallback_used": resolution["fallback_used"],
+                "output": result["output"],
+                "output_sha256": hashlib.sha256(output_path.read_bytes()).hexdigest(),
+                "runtime_capture": result["runtime_capture"],
+                "runtime_capture_sha256": hashlib.sha256(runtime_capture_path.read_bytes()).hexdigest(),
+                "model_proof": runtime_metadata["model_proof"],
+                "runtime_version": runtime_metadata.get("runtime_version"),
+                "exit_code": completed.returncode,
+            },
+            actor={"kind": "agent", "id": role, "model": resolution["resolved_model"]},
+        )
+        append_event(
+            run_dir,
+            "review_verdict" if role == "reviewer" else "patch_proposed" if role == "repair" else "source_selected" if role == "semantic_analyst" else "state_transition",
             {
                 "role": role, "exit_code": completed.returncode,
                 "output": result["output"], "runtime_metadata": runtime_metadata,

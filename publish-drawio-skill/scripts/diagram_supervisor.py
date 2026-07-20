@@ -1216,13 +1216,18 @@ def append_event(run_dir, event_type, payload, state=None, actor=None):
     run_dir.mkdir(parents=True, exist_ok=True)
     manifest = run_dir / "run-manifest.jsonl"
     sequence = 1
+    previous_event_sha256 = None
     if manifest.exists():
         with open(manifest, encoding="utf-8") as handle:
-            sequence += sum(1 for line in handle if line.strip())
+            lines = [line.rstrip("\n") for line in handle if line.strip()]
+        sequence += len(lines)
+        if lines:
+            previous_event_sha256 = sha256_bytes(lines[-1].encode("utf-8"))
     event = {
         "schema_version": 1, "run_id": ensure_run_id(run_dir), "sequence": sequence,
         "event_id": str(uuid.uuid4()), "timestamp": utc_now(), "event_type": event_type,
         "actor": actor or {"kind": "tool", "id": "diagram-supervisor", "model": None},
+        "previous_event_sha256": previous_event_sha256,
         "payload": payload,
     }
     if state is not None:

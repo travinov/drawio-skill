@@ -61,14 +61,18 @@ Then open the diagram project as the GigaCode working directory and run:
 
 ```text
 /drawio:review "/absolute/path/to/project/diagram.drawio"
+/drawio:create --diagram "/absolute/path/to/project/new.drawio" --request "what to show"
+/drawio:improve --diagram "/absolute/path/to/project/diagram.drawio" --request "what to change"
+/drawio:resume --run "<run-id>" --decision continue --feedback "additional requirement"
+/drawio:trace --run "<run-id>"
 ```
 
 The command creates `.diagram-runs/<run-id>` itself. Do not create that
 directory manually and do not ask the chat model to execute the workflow step
 by step.
 
-The package uses Qwen Code's canonical Markdown command format at
-`commands/drawio/review.md`. The active command therefore remains covered by
+The package uses Qwen Code's canonical Markdown command format under
+`commands/drawio/`. Every active command therefore remains covered by
 the package manifest's exact checksum instead of relying on a TOML migration.
 The installer invokes the bundled verifier through `/bin/bash`, so Finder/ZIP
 executable-bit loss does not skip verification.

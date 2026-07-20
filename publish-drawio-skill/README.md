@@ -32,6 +32,26 @@ SHA-256 receipt, доказывающий запуск строгой прове
 моделью из `data/model-routing.default.json`. Подбирать в чате формулировку для
 запуска инструментов не требуется. Исходный `.drawio` эта команда не изменяет.
 
+Полный агентный цикл запускается командами:
+
+```text
+/drawio:create --diagram "/абсолютный/путь/new.drawio" --request "описание процесса"
+/drawio:improve --diagram "/абсолютный/путь/existing.drawio" --request "требования и замечания"
+/drawio:resume --run "<run-id>" --decision continue --feedback "уточнение"
+/drawio:trace --run "<run-id>"
+```
+
+`create` и `improve` действительно запускают изолированные Supervisor,
+Semantic Analyst, Repair и Reviewer по состоянию процесса. Каждая следующая
+итерация строится от последнего принятого кандидата; отклонённый файл остаётся
+только evidence. На semantic conflict, plateau и final acceptance создаётся
+один resumable checkpoint. `trace` показывает цепочку ролей, фактические модели,
+инструменты, validation receipts и решения пользователя. Он заново выводит
+фактическую модель из сохранённого raw runtime output и сверяет её с локальной
+routing policy, а не доверяет полям manifest. Это локальная проверка evidence,
+не внешняя криптографическая аттестация против пользователя, способного
+переписать все файлы run целиком.
+
 Roadmap использует v1 для baseline comparison и v2 для полной истории
 переносов; git-flow остается v1. Оба профиля имеют дополнительный
 source-aware gate: итоговый XML сверяется с исходной моделью по тексту,
@@ -102,11 +122,12 @@ chmod +x install/*.sh
 `diagram-reviewer`, `diagram-repair` и `diagram-semantic-analyst`. В GigaCode
 используйте эквивалентные команды extension/agents конкретной сборки. Проверенная
 корпоративная сборка GigaCode 26.5.17 (Qwen Code 0.13.1) запускает extension
-agents, но наследует модель основной сессии. Поэтому роли с отдельными моделями
-запускаются через isolated `gigacode --model ...`; глобальный `/model` не
-переключается. Подробности и доказательство модели: `references/model-routing.md`.
+agents, но их видимость сама по себе не доказывает модель. Поэтому все четыре
+роли lifecycle-команд запускаются через isolated `gigacode --model ...`;
+глобальный `/model` не переключается. Подробности и доказательство модели:
+`references/model-routing.md`.
 
-В этой корпоративной сборке основной интерактивный GigaChat является хостом и
+В этой корпоративной сборке deterministic command host является хостом и
 исполнителем Supervisor-процесса. Он не передаёт весь цикл native
 `diagram-supervisor`: сначала сам выполняет `host-preflight`, затем запускает
 детерминированные проверки и только отдельные Reviewer/Repair/Semantic Analyst

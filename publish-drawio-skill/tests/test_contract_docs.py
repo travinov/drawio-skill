@@ -43,6 +43,8 @@ class ContractDocumentationTests(unittest.TestCase):
         for requirement in ("PyYAML>=6.0,<7", "jsonschema>=4.18,<5"):
             self.assertIn(requirement, requirements)
             self.assertIn(f"`{requirement}`", readme)
+        for command in ("/drawio:create", "/drawio:improve", "/drawio:resume", "/drawio:trace"):
+            self.assertIn(command, readme)
         self.assertIn("--profile roadmap --source", readme)
         self.assertIn("--profile gitflow --source", readme)
 
@@ -51,16 +53,16 @@ class ContractDocumentationTests(unittest.TestCase):
         routing = self.read("references/model-routing.md")
         workflow = self.read("references/diagram-supervisor.md")
         for text in (
-            "main interactive session is the extension",
-            "MUST NOT delegate the whole workflow",
+            "main interactive session only",
+            "presents the structured result",
             "host-preflight",
             "host-preflight.json",
             "run-manifest.jsonl",
         ):
             self.assertIn(text, skill)
-        self.assertIn("whole workflow to native `diagram-supervisor`", routing)
-        self.assertIn("successful native `agent` tool status does not provide that proof", routing)
-        self.assertIn("main interactive GigaChat session", workflow)
+        self.assertIn("The lifecycle command host invokes Supervisor itself in an isolated process", routing)
+        self.assertIn("A successful native `agent` tool status does not provide that proof.", routing)
+        self.assertIn("interactive session only invokes the command and presents its result.", workflow)
         self.assertIn("Stop before analysis if preflight fails", workflow)
 
     def test_review_slash_command_is_the_normal_corporate_entrypoint(self):

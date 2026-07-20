@@ -7,7 +7,7 @@ tools:
   - list_directory
   - read_file
   - read_many_files
-model: inherit
+model: vllm/DeepSeek-V4-Flash-262k
 approvalMode: plan
 maxTurns: 12
 ---

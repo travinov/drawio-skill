@@ -4,7 +4,7 @@ description: Proposes small preconditioned diagram patch transactions from struc
 tools:
   - read_file
   - read_many_files
-model: inherit
+model: vllm/MiniMax-M3-113k
 approvalMode: plan
 maxTurns: 12
 ---
@@ -47,4 +47,7 @@ Return only a JSON document conforming to `data/diagram-patch.v1.schema.json`. S
 
 Use semantic operations only when the Supervisor supplies an explicit approved semantic change. Otherwise every operation must have `semantic_effect: layout_only`.
 
-If no safe monotonic proposal can be formed from available geometry, return no patch and explain the missing evidence to the Supervisor; do not invent coordinates randomly.
+If no safe monotonic proposal can be formed, do not invent coordinates or
+regenerate the diagram. The host will treat failure to produce a schema-valid
+patch as a plateau/confusion checkpoint. Return exactly one JSON object and no
+Markdown or commentary.

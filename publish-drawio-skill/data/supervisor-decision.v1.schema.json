@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agents365.local/drawio-skill/schemas/supervisor-decision.v1.schema.json",
+  "title": "Diagram supervisor decision v1",
+  "type": "object",
+  "required": ["schema_version", "role", "status", "result"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "role": {"const": "supervisor"},
+    "status": {"enum": ["ok", "needs_human"]},
+    "result": {
+      "type": "object",
+      "required": ["action", "reason", "required_roles"],
+      "additionalProperties": false,
+      "properties": {
+        "action": {"enum": ["analyze", "create", "repair", "review", "checkpoint", "finalize", "stop"]},
+        "reason": {"type": "string", "minLength": 1},
+        "required_roles": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"enum": ["supervisor", "semantic_analyst", "repair", "reviewer"]}
+        },
+        "max_iterations": {"type": "integer", "minimum": 1, "maximum": 12},
+        "checkpoint_kind": {"enum": ["semantic_approval", "plateau", "final_acceptance"]},
+        "findings": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

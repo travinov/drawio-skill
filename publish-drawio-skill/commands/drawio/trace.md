@@ -1,0 +1,14 @@
+---
+description: Verify and show the complete local role, model, tool, validation, and decision chain of a draw.io run
+---
+
+The deterministic trace verifier has already read the run. Do not call tools, agents,
+shell, directory search, or file-reading operations. Present every role and effective
+model plus any broken event or artifact binding. Never call an incomplete or tampered
+trace verified.
+
+Arguments: `--run "run-id-or-directory"`.
+
+```json
+!{PYTHON=python3; if [ -n "$PYTHON_BIN" ]; then PYTHON="$PYTHON_BIN"; fi; GC_HOME="$HOME/.gigacode"; if [ -n "$GIGACODE_HOME" ]; then GC_HOME="$GIGACODE_HOME"; fi; EXTENSIONS="$GC_HOME/extensions"; if [ -n "$GIGACODE_EXTENSIONS_DIR" ]; then EXTENSIONS="$GIGACODE_EXTENSIONS_DIR"; fi; "$PYTHON" "$EXTENSIONS/publish-drawio-skill/scripts/diagram_orchestrator.py" trace --workspace "$PWD" {{args}} 2>&1}
+```

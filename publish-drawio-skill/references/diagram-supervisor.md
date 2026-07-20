@@ -11,13 +11,11 @@ Use this workflow when the user asks to improve, repair, validate, iterate on, o
 
 Model output is advisory. `scripts/diagram_supervisor.py` and `scripts/validate.py` own parsing, mutation, comparison, evidence, and state transitions.
 
-## Main-host ownership on corporate GigaCode
+## Deterministic command-host ownership on corporate GigaCode
 
-On GigaCode 26.5.17 / Qwen Code 0.13.1, the main interactive GigaChat session is
-the extension host and Supervisor executor. Do not send the whole request to
-native `diagram-supervisor` through the `agent` tool. That native role is
-planning-only because its successful status neither proves shell execution nor
-model isolation.
+On GigaCode 26.5.17 / Qwen Code 0.13.1, `diagram_orchestrator.py` owns the
+lifecycle. It invokes Supervisor as a separate proven-model process; the main
+interactive session only invokes the command and presents its result.
 
 For a normal read-only audit, use the extension command as the only supported
 entry point:
@@ -33,6 +31,26 @@ CLI adapter, verifies hash bindings and model proof, then supplies a structured
 result to the interactive model for presentation only. Do not replace this with
 prompt instructions asking the model to call `list_directory`, `grep_search`, a
 shell tool, or the native supervisor agent.
+
+For stateful work, use the lifecycle commands:
+
+```text
+/drawio:create --diagram "/absolute/path/to/new.drawio" --request "description"
+/drawio:improve --diagram "/absolute/path/to/existing.drawio" --request "requirements"
+/drawio:resume --run "<run-id>" --decision continue --feedback "correction"
+/drawio:trace --run "<run-id>"
+```
+
+Create and improve invoke isolated Supervisor and Semantic Analyst, then
+deterministic rendering/import and strict validation. Repair is invoked only
+for findings, and Reviewer independently gates candidates. Resume continues
+the same persisted run from the last accepted candidate. Trace invokes no model.
+The host consumes Supervisor `action`, `required_roles`, and `max_iterations`;
+an incomplete or phase-incompatible plan fails closed before an unrequested
+role runs. At semantic approval, the checkpoint, semantic-plan file, exact
+change list, and user decision are hash-bound and supplied unchanged to Repair.
+Trace re-parses each saved raw CLI result to derive the effective model and
+role output independently of manifest claims.
 
 The command honors `PYTHON_BIN`, `GIGACODE_HOME`, `GIGACODE_EXTENSIONS_DIR`, and
 `GIGACODE_BIN` when those installer-supported overrides are present. Its
@@ -74,8 +92,13 @@ Create a run directory outside the skill installation, for example `.diagram-run
 - `diagram-spec.json` — semantic working model and source references;
 - `state.json` — resumable state and last accepted artifact;
 - `run-manifest.jsonl` — append-only event ledger;
+- `roles/*/runtime-output.json` — raw isolated CLI evidence used to re-derive model proof;
 - patch proposals and candidate `.drawio` files;
 - `validation-report.json`, captured stdout/stderr, and `validation-receipt.json`.
+
+The hash chain detects inconsistent local evidence and manifest-only rewriting.
+It is not an external signature or remote attestation: an actor able to replace
+the routing policy and every run artifact remains outside this trust boundary.
 
 In an installed extension, resolve the extension root first and substitute the
 absolute `<extension-root>/scripts/diagram_supervisor.py` path in the examples

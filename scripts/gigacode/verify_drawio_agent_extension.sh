@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 EXTENSION_NAME="publish-drawio-skill"
-EXPECTED_VERSION="${DRAWIO_EXTENSION_VERSION:-1.22.0-corporate.6}"
+EXPECTED_VERSION="${DRAWIO_EXTENSION_VERSION:-1.23.0-corporate.1}"
 GIGACODE_HOME="${GIGACODE_HOME:-$HOME/.gigacode}"
 GIGACODE_BIN="${GIGACODE_BIN:-$GIGACODE_HOME/bin/gigacode}"
 GIGACODE_SKILLS_DIR="${GIGACODE_SKILLS_DIR:-$GIGACODE_HOME/skills}"
@@ -115,18 +115,28 @@ def frontmatter(path):
     return values
 
 
-COMMAND_FILE = "commands/drawio/review.md"
+COMMAND_FILES = (
+    "commands/drawio/create.md",
+    "commands/drawio/improve.md",
+    "commands/drawio/review.md",
+    "commands/drawio/resume.md",
+    "commands/drawio/trace.md",
+)
 
 
 def verify_tree(root, label):
     for relative in (
         "scripts/diagram_host.py",
+        "scripts/diagram_orchestrator.py",
         "data/reviewer-audit-input.v1.schema.json",
+        "data/supervisor-decision.v1.schema.json",
+        "data/semantic-plan.v1.schema.json",
     ):
         if not (root / relative).is_file():
             fail(f"Missing {label} command host file: {relative}")
-    if not (root / COMMAND_FILE).is_file():
-        fail(f"Missing {label} command host file: {COMMAND_FILE}")
+    for command_file in COMMAND_FILES:
+        if not (root / command_file).is_file():
+            fail(f"Missing {label} command host file: {command_file}")
     manifest = load_json(root / "gemini-extension.json")
     if manifest.get("name") != "publish-drawio-skill":
         fail(f"Unexpected {label} manifest name: {manifest.get('name')!r}")
@@ -155,8 +165,8 @@ def verify_tree(root, label):
         values = frontmatter(root / "agents" / filename)
         if values.get("name") != f"diagram-{role.replace('_', '-')}":
             fail(f"Unexpected {label} agent name in {filename}: {values.get('name')!r}")
-        if values.get("model") != "inherit":
-            fail(f"{label} {filename} must use model: inherit; exact routing belongs in policy")
+        if values.get("model") != expected_models[role]:
+            fail(f"{label} {filename} model {values.get('model')!r} does not match routing policy")
         if not re.fullmatch(r"[1-9][0-9]*", values.get("maxTurns", "")):
             fail(f"{label} {filename} must declare positive maxTurns")
         for forbidden in ("max_turns", "kind", "temperature"):

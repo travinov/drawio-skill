@@ -38,15 +38,19 @@ unzip dist/bpmn-architect-skill.zip -d ~/.gigacode/skills
 The archive roots are `drawio-skill/` and `bpmn-architect/`; there is no
 umbrella extension and neither skill requires the other.
 
-In corporate GigaCode 26.5.17 the main interactive session is the Draw.io
-extension host. It performs deterministic `host-preflight` and invokes isolated
-Reviewer/Repair/Semantic Analyst roles itself; native `diagram-supervisor` is
-planning-only and is not validation evidence.
+In corporate GigaCode 26.5.17 the deterministic Draw.io command host performs
+`host-preflight` and invokes isolated Supervisor, Semantic Analyst, Repair, and
+Reviewer roles itself. Native agent visibility and parent `/stats model` are not
+execution evidence.
 
-The packaged `commands/drawio/review.md` exposes the deterministic entry point:
+The package exposes these deterministic entry points:
 
 ```text
 /drawio:review "/absolute/path/to/diagram.drawio"
+/drawio:create --diagram "/absolute/path/to/new.drawio" --request "process description"
+/drawio:improve --diagram "/absolute/path/to/existing.drawio" --request "required changes"
+/drawio:resume --run "<run-id>" --decision continue --feedback "correction"
+/drawio:trace --run "<run-id>"
 ```
 
 Run from the repository root:

@@ -2,10 +2,10 @@
 
 The bundled `gemini-extension.json` is converted by corporate GigaCode into an
 active `gigacode-extension.json`. GigaCode 26.5.17 identifies its engine as Qwen
-Code 0.13.1. It discovers `agents/*.md`, but its agent wizard exposes no model
-selection and observed native agents inherit the interactive model. Exact role
-models therefore live in the routing policy; native agent frontmatter uses
-`model: inherit` and is not model-resolution evidence.
+Code 0.13.1. It discovers `agents/*.md`, but its agent wizard may not expose the
+effective model. Exact role models are declared consistently in the routing
+policy and agent frontmatter, while runtime system/assistant/stats proof remains
+the only execution evidence.
 
 The Diagram Supervisor uses portable role prompts and a runtime-neutral routing policy instead of assuming one GigaCode agent-manifest format. GigaCode builds can inherit different agent and model interfaces from Qwen CLI or Gemini CLI, so an adapter must detect capabilities before starting a role.
 
@@ -20,13 +20,10 @@ Use `data/model-routing.default.json` as the default policy and validate custom 
 
 A normal layout run starts Supervisor and Reviewer. Start Repair only when structured findings need a patch proposal. Start Semantic Analyst only for process reconciliation, semantic ambiguity, or a conflict involving user input or OpenSpec.
 
-On corporate GigaCode 26.5.17 the top-level `diagram-supervisor` itself inherits
-the interactive model. To use GigaChat Ultra for that role, select
-`GigaChat-3-Ultra` once before starting the diagram task. The Supervisor then
-keeps that session model unchanged while Reviewer, Repair, and Semantic Analyst
-run in isolated processes with their policy models. If the task starts under a
-different main model, report the Supervisor as inherited-model degradation;
-never claim it ran on GigaChat merely because the policy requested it.
+The lifecycle command host invokes Supervisor itself in an isolated process,
+just like Reviewer, Repair, and Semantic Analyst. The selected interactive
+`/model` controls only the parent presentation session. It is neither the
+Supervisor model nor evidence for any child role.
 
 ## Resolution order
 
@@ -77,7 +74,7 @@ without changing the interactive session.
 
 Use a bounded timeout, explicit working directory, captured stdout/stderr, and a minimal allowlisted environment. Do not inherit arbitrary API keys, tokens, passwords, or unrelated process secrets. The Reviewer process must receive read-only inputs and no artifact-publication capability. A model response is data for the Supervisor or deterministic tools; it is not permission to run response text as a command.
 
-Publish role output atomically only after the process exits successfully and its JSON conforms to the role schema: Reviewer uses `reviewer-verdict.v1.schema.json`, Repair uses `diagram-patch.v1.schema.json`, and Supervisor/Semantic Analyst use `agent-role-output.v1.schema.json`. GigaCode JSON output is an event array: require one consistent primary model in the `system` init event, every assistant message, and `result.stats.models`; extract and JSON-decode the final result payload. Stock Gemini JSON output is an outer envelope: reject non-empty `error`/`errors`, extract and JSON-decode `response`, then validate only that inner role payload. Preserve redacted runtime stats/errors as evidence, not as the verdict. Direct top-level role JSON may be parsed for compatibility but cannot publish a successful isolated role because it lacks model proof. On timeout, non-zero exit, invalid output, missing proof, or model mismatch, append `role_failed`; do not create the output file, `model_resolved`, `review_verdict`, or `patch_proposed` success events.
+Publish role output atomically only after the process exits successfully and its JSON conforms to the role schema: Reviewer uses `reviewer-verdict.v1.schema.json`, Repair uses `diagram-patch.v1.schema.json`, Supervisor uses `supervisor-decision.v1.schema.json`, and Semantic Analyst uses `semantic-plan.v1.schema.json`. GigaCode JSON output is an event array: require one consistent primary model in the `system` init event, every assistant message, and `result.stats.models`; extract and JSON-decode the final result payload. Stock Gemini JSON output is an outer envelope: reject non-empty `error`/`errors`, extract and JSON-decode `response`, then validate only that inner role payload. Preserve redacted runtime stats/errors as evidence, not as the verdict. Direct top-level role JSON may be parsed for compatibility but cannot publish a successful isolated role because it lacks model proof. On timeout, non-zero exit, invalid output, missing proof, or model mismatch, append `role_failed`; do not create the output file or any role-success event.
 
 Some approved models wrap an otherwise valid role object in exactly one
 Markdown `json` fence. The adapter may unwrap that single fence only when the
@@ -94,34 +91,34 @@ in `role_failed` and the host result while keeping Reviewer status `failed`.
 This proves which model executed, but it does not make the invalid verdict
 usable and must not emit `model_resolved` or `review_verdict` success events.
 
-### Inherited-model degradation
+### Inherited-model degradation outside lifecycle commands
 
-If neither native override nor isolated invocation is available, or the requested isolated model is explicitly reported unavailable, run the role with the current session model without changing it. Set `resolution_mode` to `inherited_current`, set `fallback_used` to `true`, and record why the requested model was unavailable. Record the actual current model and provider; use provider `unknown` when the runtime cannot report it, never the requested provider.
+Diagnostic adapter callers may explicitly permit inherited degradation and must
+record it. `/drawio:create`, `/drawio:improve`, and `/drawio:resume` do not:
+when an exact isolated requested model is unavailable, that role step fails
+closed and the accepted artifact is preserved.
 
-The user-visible result must state that model diversity was degraded. This is especially important when Reviewer resolves to the same model as Supervisor. Deterministic validation is still authoritative, but the run must not describe the review as model-independent.
+Any diagnostic degraded result must state that model diversity was degraded and
+must not describe the review as independent.
 
 ## Host and recursion boundary
 
 Corporate Qwen Code 0.13.1 cannot be trusted to provide nested native agents or
-native model diversity. On corporate GigaCode 26.5.17, the main interactive
-session is the extension host and Supervisor executor. It must not delegate the
-whole workflow to native `diagram-supervisor`; that role is planning-only. The
-main host invokes Reviewer, Repair, and Semantic Analyst through
-`agent_runtime.py` using the trusted absolute extension path. Stock Gemini uses
-the same host boundary. Unsupported models must resolve to an explicit
-fallback/degradation record.
+native model diversity. On corporate GigaCode 26.5.17,
+`diagram_orchestrator.py` is the extension host. It invokes Supervisor,
+Reviewer, Repair, and Semantic Analyst through `agent_runtime.py` using the
+trusted absolute extension path. Unsupported lifecycle models fail the role
+step rather than being replaced by the interactive model.
 
 The main host must run `diagram_supervisor.py host-preflight` before analysis.
 The resulting `host-preflight.json` and `host_preflight` manifest event prove
 that the parent session could access the installed scripts and corporate CLI.
 A successful native `agent` tool status does not provide that proof.
 
-The corporate `/drawio:review` command enforces this boundary mechanically:
-Qwen's custom-command processor runs `scripts/diagram_host.py`, and that host
-invokes `agent_runtime.py reviewer` with the requested model. The interactive
-session receives the completed structured result only after the isolated
-process exits. Therefore a global `/model` choice affects presentation but does
-not select the Reviewer model.
+The corporate commands enforce this boundary mechanically. `/drawio:review`
+uses `diagram_host.py`; create/improve/resume use `diagram_orchestrator.py`.
+The interactive session receives a completed structured result only after the
+deterministic host exits. A global `/model` choice affects presentation only.
 
 ## Resolution record
 
@@ -140,6 +137,13 @@ Append one `model_resolved` event per activated role to `run-manifest.jsonl`. Th
 ```
 
 Do not infer success from the requested value. A resolution is complete only after the role process succeeds, its output validates, and the runtime reports or the adapter can otherwise prove which model was used. Append `model_resolved` only at that point.
+
+Persist the successful CLI stdout as `runtime-output.json` and bind its SHA-256
+in `role_finished`. `/drawio:trace` must re-parse that capture, re-derive the
+reported model/proof, validate the typed role output and compare the model with
+`model-routing.default.json`. It must not accept edited `resolved_model` or
+`model_proof` manifest fields as independent evidence. This is a local evidence
+check, not a remote signature or hardware-backed attestation.
 
 `/stats model` in the parent session describes the parent process and is not
 proof for an isolated role. Inspect `run-manifest.jsonl` instead: a successful

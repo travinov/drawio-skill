@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agents365.local/drawio-skill/schemas/semantic-plan.v1.schema.json",
+  "title": "Semantic diagram plan v1",
+  "type": "object",
+  "required": ["schema_version", "role", "status", "result"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "role": {"const": "semantic_analyst"},
+    "status": {"enum": ["ok", "needs_human"]},
+    "result": {
+      "type": "object",
+      "required": ["mode", "diagram_type", "title", "direction", "nodes", "edges", "source_refs", "assumptions", "semantic_changes", "requires_human"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {"enum": ["create", "improve"]},
+        "diagram_type": {"type": "string", "minLength": 1},
+        "title": {"type": "string", "minLength": 1},
+        "direction": {"enum": ["TB", "LR"]},
+        "nodes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "label", "semantic_type"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {"type": "string", "minLength": 1, "pattern": "^(?!0$|1$)[A-Za-z0-9_.:-]+$"},
+              "label": {"type": "string"},
+              "semantic_type": {"type": "string", "minLength": 1},
+              "parent_id": {"type": ["string", "null"]},
+              "style_hint": {"type": ["string", "null"]}
+            }
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "source_id", "target_id", "label", "relationship"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {"type": "string", "minLength": 1, "pattern": "^(?!0$|1$)[A-Za-z0-9_.:-]+$"},
+              "source_id": {"type": "string", "minLength": 1},
+              "target_id": {"type": "string", "minLength": 1},
+              "label": {"type": "string"},
+              "relationship": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        "source_refs": {"type": "array", "items": {"type": "object"}},
+        "assumptions": {"type": "array", "items": {"type": "string"}},
+        "semantic_changes": {"type": "array", "items": {"type": "string"}},
+        "requires_human": {"type": "boolean"}
+      }
+    }
+  }
+}

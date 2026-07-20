@@ -1,6 +1,6 @@
 {
   "name": "publish-drawio-skill",
-  "version": "1.22.0-corporate.6",
+  "version": "1.23.0-corporate.1",
   "description": "Local-first draw.io generation plus a resumable multi-model supervisor, deterministic repair, validation receipts, and human review.",
   "contextFileName": "SKILL.md",
   "commands": "commands"

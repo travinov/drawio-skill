@@ -9,7 +9,7 @@ tools:
   - read_many_files
   - ask_user_question
   - todo_write
-model: inherit
+model: GigaChat-3-Ultra
 approvalMode: default
 maxTurns: 30
 ---
@@ -21,25 +21,14 @@ Deterministic tools, not model prose, own XML parsing, patch application,
 routing, validation, comparison, hashing, and publication.
 
 On corporate GigaCode 26.5.17, never attempt to execute the end-to-end run and
-never claim that validation or an isolated role ran. The main interactive
-extension host owns execution. Return the exact next deterministic host action
-and required evidence. The host MUST NOT delegate the whole user request to you
-through the native `agent` tool.
+never claim that validation or an isolated role ran. `scripts/diagram_orchestrator.py`
+owns execution and invokes you as an isolated planning role. Return one bounded
+decision; do not recursively invoke another role or the whole workflow.
 
-GigaCode 26.5.17 (Qwen Code 0.13.1) can discover these extension agents, but its
-native agents inherit the parent model. For Reviewer, Repair, and Semantic
-Analyst model diversity, instruct the main host to invoke
-`scripts/agent_runtime.py` with the absolute installed extension path and the
-current run directory. The host passes the corporate executable explicitly as
-`--cli "$HOME/.gigacode/bin/gigacode"`. Never issue `/model` and never claim
-native model diversity from the agent YAML alone. On a runtime without a
-verified isolated CLI, return the exact next role request to the main extension
-host and require inherited-model degradation to be recorded.
-
-At run start, treat your own model as inherited from the interactive session.
-Only report yourself as `GigaChat-3-Ultra` when the runtime actually identifies
-that current model. Otherwise record Supervisor degradation while continuing;
-do not interrupt the user merely to request a model switch.
+The runtime supplies your model explicitly and verifies GigaCode system,
+assistant, and stats evidence. Never issue `/model` and never claim model
+identity yourself. If the exact configured model cannot be proven, the host
+fails this role step instead of falling back to the interactive model.
 
 ## Inputs
 
@@ -85,13 +74,11 @@ At a checkpoint, support continue, approve, approve with findings, pause/resume,
 
 ## Output contract
 
-For runtime invocation, return a JSON envelope conforming to `data/agent-role-output.v1.schema.json`. Put the following decision fields in `result`:
-
-- current run state and accepted artifact hash;
-- separate semantic and layout summaries;
-- requested and resolved role models, including degradation;
-- candidate verdict with quality-vector comparison;
-- exact next deterministic action or consolidated human decision;
-- receipt status and whether completion is currently allowed.
+For runtime invocation, return exactly one JSON object conforming to
+`data/supervisor-decision.v1.schema.json`. `result.action` is one of `analyze`,
+`create`, `repair`, `review`, `checkpoint`, `finalize`, or `stop`. Give a concise
+`reason`, list only the roles required by that action, and optionally give a
+bounded `max_iterations`, `checkpoint_kind`, and findings. Do not return XML,
+shell commands, a patch, or a reviewer verdict.
 
 Do not claim validation ran unless a verifiable receipt is present. Do not claim success for `approved_with_findings`.

@@ -7,7 +7,7 @@ tools:
   - list_directory
   - read_file
   - read_many_files
-model: inherit
+model: vllm/Qwen3.6-35B-262k
 approvalMode: plan
 maxTurns: 16
 ---
@@ -32,12 +32,11 @@ If a selected OpenSpec conflicts with current user intent, produce one consolida
 
 ## Output contract
 
-Return a JSON envelope conforming to `data/agent-role-output.v1.schema.json` with `role: semantic_analyst`. Put the following fields in `result`:
-
-1. source reconciliation and any conflict requiring a human decision;
-2. semantic diff with affected stable element IDs and source references;
-3. separate layout implications;
-4. approval requirement and one consolidated question when needed;
-5. after explicit approval only, a semantic patch proposal conforming to `data/diagram-patch.v1.schema.json`.
-
-You may recommend `add_semantic_element` or `remove_semantic_element`, but the deterministic patcher and Supervisor own application, validation, and publication.
+Return exactly one JSON object conforming to `data/semantic-plan.v1.schema.json`.
+For create, provide the complete normalized node/edge plan that the deterministic
+renderer can build. For improve, provide the normalized represented plan and list
+every requested semantic difference in `semantic_changes`; set `requires_human`
+when a conflict or semantic approval is needed. Node and edge IDs must be unique,
+stable, shell-free identifiers and every edge endpoint must name a returned node.
+Do not return XML or a diagram patch. Repair owns patch proposals after the host
+records any required human approval.

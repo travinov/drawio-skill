@@ -2,7 +2,7 @@
 name: drawio-skill
 description: Use when the user requests diagrams, flowcharts, roadmap diagrams, git-flow / branching strategy timelines, architecture diagrams, ER diagrams, UML / sequence / class diagrams, network topology, cloud architecture from Terraform or Kubernetes manifests, ML/DL model figures (Transformer/CNN/LSTM), mind maps, or any visualization. Also use proactively when explaining systems with 3+ components, complex data flows, or relationships that benefit from visual representation. Best suited when the diagram needs custom styling, rich shape vocabulary, swimlanes, precise timeline/lane placement, intake clarification, canonical XLSX/CSV roadmap intake, full milestone revision history, baseline comparison, milestone shift markers, or exportable images (PNG/SVG/PDF/JPG). Generates .drawio XML and exports locally via the native draw.io desktop CLI.
 license: MIT
-metadata: {"openclaw":{"requires":{"anyBins":["draw.io","drawio"]},"emoji":"📐","os":["darwin","linux","win32"],"install":[{"id":"marketplace-drawio","kind":"manual","label":"Install draw.io Desktop from the corporate application marketplace / SberUserSoft","os":["darwin","win32"]},{"id":"graphviz","kind":"manual","label":"Install Graphviz for optional autolayout.py / gitflow.py edge routing if approved in your environment","optional":true}]},"hermes":{"tags":["drawio","diagram","flowchart","git-flow","architecture","visualization","uml"],"category":"design","requires_tools":["drawio","draw.io"],"related_skills":["mermaid","excalidraw","plantuml"]},"author":"Agents365-ai","version":"1.22.0-corporate.6"}
+metadata: {"openclaw":{"requires":{"anyBins":["draw.io","drawio"]},"emoji":"📐","os":["darwin","linux","win32"],"install":[{"id":"marketplace-drawio","kind":"manual","label":"Install draw.io Desktop from the corporate application marketplace / SberUserSoft","os":["darwin","win32"]},{"id":"graphviz","kind":"manual","label":"Install Graphviz for optional autolayout.py / gitflow.py edge routing if approved in your environment","optional":true}]},"hermes":{"tags":["drawio","diagram","flowchart","git-flow","architecture","visualization","uml"],"category":"design","requires_tools":["drawio","draw.io"],"related_skills":["mermaid","excalidraw","plantuml"]},"author":"Agents365-ai","version":"1.23.0-corporate.1"}
 ---
 
 # Draw.io Diagrams
@@ -31,9 +31,10 @@ When the workflow references one of these, read it on demand — none of them ne
 | File | Read it when |
 |---|---|
 | `references/diagram-intake.md` | The user's request is broad, ambiguous, or non-trivial and you need a **Diagram Intake Agent** pass to classify the diagram type, ask only material questions, and produce a confirmed diagram brief before generation |
-| `commands/drawio/review.md` + `scripts/diagram_host.py` | Corporate GigaCode review of an existing `.drawio`. The `/drawio:review` command executes preflight, strict validation, and an isolated Reviewer before the interactive model can choose tools |
+| `commands/drawio/*.md` + `scripts/diagram_orchestrator.py` | Corporate GigaCode lifecycle commands: `/drawio:create`, `/drawio:improve`, `/drawio:resume`, and `/drawio:trace`. The deterministic host runs isolated roles, validation, monotonic repair, checkpoints, and evidence before the interactive model presents the result |
+| `commands/drawio/review.md` + `scripts/diagram_host.py` | Preserved read-only `/drawio:review` for validation and isolated independent review of an existing diagram |
 | `references/diagram-supervisor.md` + `scripts/diagram_supervisor.py` | The user supplies an existing `.drawio`, asks for iterative repair/independent review, wants proof that validation ran, or requests the agent/tool/human feedback loop. Import and patch the existing XML; do not regenerate it |
-| `references/model-routing.md` + `scripts/agent_runtime.py` | A role needs a different model. Prefer the capability-probed isolated CLI with runtime model proof; use native per-agent configuration only when the installed runtime proves it, otherwise record inherited-model degradation |
+| `references/model-routing.md` + `scripts/agent_runtime.py` | A role needs a different model. Lifecycle commands require the capability-probed isolated CLI and exact runtime model proof; they fail closed rather than reuse the interactive model |
 | `references/xml-authoring.md` | You're about to **hand-write `.drawio` XML** (workflow step 3) — file skeleton, shape/edge cells, containers, connection distribution, palette, spacing/grid rules. Not needed when a bundled generator writes the XML |
 | `references/mermaid-authoring.md` | The diagram is a **standard type with no custom styling/icon needs** (flowchart, state, gantt, mindmap, timeline, journey, pie, …) and the CLI is **≥ v30** — author it as Mermaid text and let the CLI convert to native `.drawio` (structure only, layout free). Also documents the CLI's ELK `--layout` pass for XML |
 | `references/diagram-types.md` | The user names a specific diagram type (ERD, UML class, sequence, C4, architecture, ML/DL, flowchart) |
@@ -134,14 +135,30 @@ its model evidence, and returns only structured status for presentation. The
 interactive model must not repeat failed directory/search calls or invent a shell
 tool. The source `.drawio` remains unchanged during this command.
 
-On corporate GigaCode 26.5.17, the **main interactive session is the extension
-host and Supervisor executor**. It MUST NOT delegate the whole workflow to the
-native `diagram-supervisor` through the `agent` tool. That native agent is an
-advisory/planning compatibility role only. The main session runs deterministic
-commands itself with the absolute installed extension path and invokes only
-Reviewer, Repair, and Semantic Analyst as isolated roles through
-`scripts/agent_runtime.py`. A native agent result such as `completed` is not
-evidence that validation or model isolation occurred.
+Creation and iterative improvement MUST use the executable lifecycle commands,
+not conversational requests to list directories or call native agents:
+
+```text
+/drawio:create --diagram "/absolute/path/to/new.drawio" --request "what to show"
+/drawio:improve --diagram "/absolute/path/to/existing.drawio" --request "requirements"
+/drawio:resume --run "<run-id>" --decision continue --feedback "correction"
+/drawio:trace --run "<run-id>"
+```
+
+`diagram_orchestrator.py` creates `.diagram-runs/<run-id>`, invokes isolated
+Supervisor and Semantic Analyst, renders or imports a baseline, validates it,
+and invokes Repair/Reviewer only when their state requires them. Resume applies
+human feedback to that same run. Trace is read-only and verifies event chaining,
+model proofs against captured raw runtime output and the configured routing
+policy, validation receipts, and artifact hashes. It is local evidence
+verification, not external cryptographic attestation against an actor who can
+rewrite the entire run directory.
+
+On corporate GigaCode 26.5.17, the deterministic command host is the extension
+host. It invokes Supervisor, Reviewer, Repair, and Semantic Analyst as isolated
+roles through `scripts/agent_runtime.py`; the main interactive session only
+presents the structured result. A native agent result such as `completed` is
+not evidence that validation or model isolation occurred.
 
 Before inspecting the diagram, run this from the main session and keep its
 evidence under the user's project, never under the installed extension:

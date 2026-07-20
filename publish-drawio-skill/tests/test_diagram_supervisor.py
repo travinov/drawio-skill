@@ -1493,14 +1493,14 @@ class ModelRoutingTests(unittest.TestCase):
         }
         for role, agent_file in agent_files.items():
             agent_definition = (ROOT / "agents" / agent_file).read_text(encoding="utf-8")
-            self.assertIn("model: inherit\n", agent_definition)
+            self.assertIn(f"model: {expected[role]}\n", agent_definition)
             self.assertIn("maxTurns:", agent_definition)
             self.assertNotIn("max_turns:", agent_definition)
             self.assertNotIn("kind:", agent_definition)
             self.assertNotIn("temperature:", agent_definition)
         supervisor_definition = (ROOT / "agents" / "diagram-supervisor.md").read_text(encoding="utf-8")
         self.assertNotIn("  - run_shell_command\n", supervisor_definition)
-        self.assertIn("extension host owns execution", supervisor_definition)
+        self.assertIn("owns execution and invokes you as an isolated planning role", supervisor_definition)
         for role in ("reviewer", "repair", "semantic_analyst"):
             agent_definition = (ROOT / "agents" / agent_files[role]).read_text(encoding="utf-8")
             self.assertIn("approvalMode: plan\n", agent_definition)
@@ -1804,7 +1804,10 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertTrue(result["runtime_metadata"]["model_proof"]["verified"])
             self.assertEqual(result["runtime_metadata"]["runtime_version"], "0.13.1")
             events = [json.loads(line) for line in (temp / "run/run-manifest.jsonl").read_text().splitlines()]
-            self.assertEqual([event["event_type"] for event in events], ["model_resolved", "review_verdict"])
+            self.assertEqual(
+                [event["event_type"] for event in events],
+                ["role_started", "model_resolved", "role_finished", "review_verdict"],
+            )
 
     def test_gigacode_model_proof_mismatch_or_missing_proof_is_not_published(self):
         valid = (
@@ -1847,7 +1850,7 @@ class AgentRuntimeTests(unittest.TestCase):
                 self.assertFalse(output.exists())
                 manifest = temp / "run/run-manifest.jsonl"
                 events = [json.loads(line) for line in manifest.read_text().splitlines()]
-                self.assertEqual([event["event_type"] for event in events], ["role_failed"])
+                self.assertEqual([event["event_type"] for event in events], ["role_started", "role_failed"])
 
     def test_realistic_gemini_envelope_extracts_inner_verdict_and_keeps_sanitized_stats(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1888,7 +1891,7 @@ class AgentRuntimeTests(unittest.TestCase):
                     )
                 self.assertFalse(output.exists())
                 events = [json.loads(line) for line in (temp / "run/run-manifest.jsonl").read_text().splitlines()]
-                self.assertEqual([event["event_type"] for event in events], ["role_failed"])
+                self.assertEqual([event["event_type"] for event in events], ["role_started", "role_failed"])
 
     def test_nonzero_or_invalid_output_leaves_no_output_or_success_event(self):
         for name, behavior, error in (
@@ -1906,7 +1909,7 @@ class AgentRuntimeTests(unittest.TestCase):
                     )
                 self.assertFalse(output_path.exists())
                 events = [json.loads(line) for line in (temp / "run/run-manifest.jsonl").read_text().splitlines()]
-                self.assertEqual([event["event_type"] for event in events], ["role_failed"])
+                self.assertEqual([event["event_type"] for event in events], ["role_started", "role_failed"])
 
     def test_schema_failure_preserves_proven_model_without_publishing_invalid_json(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1960,7 +1963,7 @@ class AgentRuntimeTests(unittest.TestCase):
                 json.loads(line)
                 for line in (temp / "run/run-manifest.jsonl").read_text().splitlines()
             ]
-            self.assertEqual([event["event_type"] for event in events], ["role_failed"])
+            self.assertEqual([event["event_type"] for event in events], ["role_started", "role_failed"])
 
     def test_requested_model_unavailable_falls_back_to_inherited_current(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1988,7 +1991,10 @@ class AgentRuntimeTests(unittest.TestCase):
                 "interactive-model",
             )
             events = [json.loads(line) for line in (temp / "run/run-manifest.jsonl").read_text().splitlines()]
-            self.assertEqual([event["event_type"] for event in events], ["role_failed", "model_resolved", "review_verdict"])
+            self.assertEqual(
+                [event["event_type"] for event in events],
+                ["role_started", "role_failed", "model_resolved", "role_finished", "review_verdict"],
+            )
 
     def test_cli_without_model_flag_records_proven_runtime_default_as_degradation(self):
         with tempfile.TemporaryDirectory() as temp:
