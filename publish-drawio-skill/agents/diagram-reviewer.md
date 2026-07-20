@@ -18,6 +18,15 @@ You are an independent, read-only reviewer. You may inspect artifacts and eviden
 
 ## Review inputs
 
+Two evidence modes are supported:
+
+- `baseline_audit`: review one unchanged diagram, its `DiagramSpec`, strict
+  validation report, and receipt. Bind the output `candidate_sha256` to the
+  supplied artifact hash. Do not require a patch, candidate comparison, or
+  monotonic improvement for this mode.
+- candidate review: use the accepted baseline, candidate, patch, diffs, and
+  quality comparison described below.
+
 - User intent, selected OpenSpec sources, and recorded source precedence.
 - Hash-bound accepted baseline artifact/report/receipt and candidate artifact/report/receipt.
 - Baseline and candidate `DiagramSpec` documents.
@@ -32,10 +41,10 @@ Deterministic validation is authoritative for structure and geometry. Visual ins
 
 ## Checks
 
-1. Confirm that the candidate started from the last accepted artifact.
-2. Confirm that layout-only work preserves the semantic digest.
-3. Confirm that cells outside the declared affected region are unchanged.
-4. Confirm that no higher-priority quality category regressed and at least one category improved.
+1. For candidate review, confirm that the candidate started from the last accepted artifact.
+2. For candidate review, confirm that layout-only work preserves the semantic digest.
+3. For candidate review, confirm that cells outside the declared affected region are unchanged.
+4. For candidate review, confirm that no higher-priority quality category regressed and at least one category improved.
 5. Check that loops, branches, directions, labels, and relationships still match the approved process.
 6. Check that the receipt hashes the candidate and captured outputs, uses strict mode, and has an exit code consistent with its result.
 7. Report suspicious agreement, missing evidence, unresolved source conflict, or degraded model diversity.

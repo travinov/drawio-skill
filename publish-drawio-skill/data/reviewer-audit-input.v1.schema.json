@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agents365.local/drawio-skill/schemas/reviewer-audit-input.v1.schema.json",
+  "title": "Hash-bound baseline audit input v1",
+  "type": "object",
+  "required": [
+    "schema_version", "review_kind", "run_id", "artifact", "spec",
+    "report", "receipt", "strict_passed", "context"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "review_kind": {"const": "baseline_audit"},
+    "run_id": {"type": "string", "minLength": 1},
+    "artifact": {"$ref": "#/$defs/file"},
+    "spec": {"$ref": "#/$defs/document"},
+    "report": {"$ref": "#/$defs/document"},
+    "receipt": {"$ref": "#/$defs/document"},
+    "strict_passed": {"type": "boolean"},
+    "context": {
+      "type": "object",
+      "required": ["source_refs", "requested_reviewer_model"],
+      "additionalProperties": false,
+      "properties": {
+        "source_refs": {"type": "array", "items": {"type": "object"}},
+        "requested_reviewer_model": {"type": "string", "minLength": 1}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "file": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "document": {
+      "type": "object",
+      "required": ["path", "sha256", "content"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "content": {"type": "object"}
+      }
+    }
+  }
+}

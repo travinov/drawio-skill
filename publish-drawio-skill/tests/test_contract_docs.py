@@ -63,6 +63,15 @@ class ContractDocumentationTests(unittest.TestCase):
         self.assertIn("main interactive GigaChat session", workflow)
         self.assertIn("Stop before analysis if preflight fails", workflow)
 
+    def test_review_slash_command_is_the_normal_corporate_entrypoint(self):
+        skill = self.read("SKILL.md")
+        readme = self.read("README.md")
+        workflow = self.read("references/diagram-supervisor.md")
+        for text in (skill, readme, workflow):
+            self.assertIn("/drawio:review", text)
+        self.assertIn("commands/drawio/review.toml", skill)
+        self.assertIn("scripts/diagram_host.py", skill)
+
 
 if __name__ == "__main__":
     unittest.main()

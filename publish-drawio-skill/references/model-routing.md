@@ -101,6 +101,13 @@ The resulting `host-preflight.json` and `host_preflight` manifest event prove
 that the parent session could access the installed scripts and corporate CLI.
 A successful native `agent` tool status does not provide that proof.
 
+The corporate `/drawio:review` command enforces this boundary mechanically:
+Qwen's custom-command processor runs `scripts/diagram_host.py`, and that host
+invokes `agent_runtime.py reviewer` with the requested model. The interactive
+session receives the completed structured result only after the isolated
+process exits. Therefore a global `/model` choice affects presentation but does
+not select the Reviewer model.
+
 ## Resolution record
 
 Append one `model_resolved` event per activated role to `run-manifest.jsonl`. The event payload must include:

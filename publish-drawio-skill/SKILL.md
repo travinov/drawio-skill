@@ -2,7 +2,7 @@
 name: drawio-skill
 description: Use when the user requests diagrams, flowcharts, roadmap diagrams, git-flow / branching strategy timelines, architecture diagrams, ER diagrams, UML / sequence / class diagrams, network topology, cloud architecture from Terraform or Kubernetes manifests, ML/DL model figures (Transformer/CNN/LSTM), mind maps, or any visualization. Also use proactively when explaining systems with 3+ components, complex data flows, or relationships that benefit from visual representation. Best suited when the diagram needs custom styling, rich shape vocabulary, swimlanes, precise timeline/lane placement, intake clarification, canonical XLSX/CSV roadmap intake, full milestone revision history, baseline comparison, milestone shift markers, or exportable images (PNG/SVG/PDF/JPG). Generates .drawio XML and exports locally via the native draw.io desktop CLI.
 license: MIT
-metadata: {"openclaw":{"requires":{"anyBins":["draw.io","drawio"]},"emoji":"📐","os":["darwin","linux","win32"],"install":[{"id":"marketplace-drawio","kind":"manual","label":"Install draw.io Desktop from the corporate application marketplace / SberUserSoft","os":["darwin","win32"]},{"id":"graphviz","kind":"manual","label":"Install Graphviz for optional autolayout.py / gitflow.py edge routing if approved in your environment","optional":true}]},"hermes":{"tags":["drawio","diagram","flowchart","git-flow","architecture","visualization","uml"],"category":"design","requires_tools":["drawio","draw.io"],"related_skills":["mermaid","excalidraw","plantuml"]},"author":"Agents365-ai","version":"1.22.0-corporate.3"}
+metadata: {"openclaw":{"requires":{"anyBins":["draw.io","drawio"]},"emoji":"📐","os":["darwin","linux","win32"],"install":[{"id":"marketplace-drawio","kind":"manual","label":"Install draw.io Desktop from the corporate application marketplace / SberUserSoft","os":["darwin","win32"]},{"id":"graphviz","kind":"manual","label":"Install Graphviz for optional autolayout.py / gitflow.py edge routing if approved in your environment","optional":true}]},"hermes":{"tags":["drawio","diagram","flowchart","git-flow","architecture","visualization","uml"],"category":"design","requires_tools":["drawio","draw.io"],"related_skills":["mermaid","excalidraw","plantuml"]},"author":"Agents365-ai","version":"1.22.0-corporate.4"}
 ---
 
 # Draw.io Diagrams
@@ -31,6 +31,7 @@ When the workflow references one of these, read it on demand — none of them ne
 | File | Read it when |
 |---|---|
 | `references/diagram-intake.md` | The user's request is broad, ambiguous, or non-trivial and you need a **Diagram Intake Agent** pass to classify the diagram type, ask only material questions, and produce a confirmed diagram brief before generation |
+| `commands/drawio/review.toml` + `scripts/diagram_host.py` | Corporate GigaCode review of an existing `.drawio`. The `/drawio:review` command executes preflight, strict validation, and an isolated Reviewer before the interactive model can choose tools |
 | `references/diagram-supervisor.md` + `scripts/diagram_supervisor.py` | The user supplies an existing `.drawio`, asks for iterative repair/independent review, wants proof that validation ran, or requests the agent/tool/human feedback loop. Import and patch the existing XML; do not regenerate it |
 | `references/model-routing.md` + `scripts/agent_runtime.py` | A role needs a different model. Prefer the capability-probed isolated CLI with runtime model proof; use native per-agent configuration only when the installed runtime proves it, otherwise record inherited-model degradation |
 | `references/xml-authoring.md` | You're about to **hand-write `.drawio` XML** (workflow step 3) — file skeleton, shape/edge cells, containers, connection distribution, palette, spacing/grid rules. Not needed when a bundled generator writes the XML |
@@ -118,6 +119,20 @@ unchanged. Search for a relevant OpenSpec and compare it with both the user's
 process description and the current diagram. Tell the user when that comparison
 implies semantic changes; a user/OpenSpec conflict requires one consolidated
 decision. Absence of a relevant spec is not a blocker.
+
+On corporate GigaCode, normal read-only review MUST start through the extension
+command, not through a free-form chat prompt:
+
+```text
+/drawio:review "/absolute/path/to/diagram.drawio"
+```
+
+`commands/drawio/review.toml` runs `scripts/diagram_host.py` before the
+interactive model receives the result. The host creates the run directory,
+executes preflight and strict validation, invokes the isolated Reviewer, verifies
+its model evidence, and returns only structured status for presentation. The
+interactive model must not repeat failed directory/search calls or invent a shell
+tool. The source `.drawio` remains unchanged during this command.
 
 On corporate GigaCode 26.5.17, the **main interactive session is the extension
 host and Supervisor executor**. It MUST NOT delegate the whole workflow to the

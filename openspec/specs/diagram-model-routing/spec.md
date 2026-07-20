@@ -20,6 +20,10 @@ The extension SHALL resolve Supervisor, Reviewer, Repair, and Semantic Analyst m
 - **WHEN** the corporate runtime starts a diagram workflow from the interactive session
 - **THEN** the main session executes deterministic commands and isolated child roles itself and does not delegate the whole workflow to native `diagram-supervisor`
 
+#### Scenario: Review slash command invokes isolated Reviewer
+- **WHEN** the user starts `/drawio:review` while any supported model is selected in the interactive session
+- **THEN** the command host invokes Reviewer with the routing policy model through the isolated CLI and returns its requested model, resolved model, and verified runtime model proof
+
 #### Scenario: Native supervisor reports completion
 - **WHEN** the native agent tool reports that `diagram-supervisor` completed
 - **THEN** the extension does not treat that status as validation or model-routing evidence

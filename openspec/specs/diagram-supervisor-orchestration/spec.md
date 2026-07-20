@@ -10,6 +10,14 @@ The extension SHALL persist each run state and SHALL support `analyzed`, `awaiti
 - **WHEN** the workflow runs on corporate GigaCode 26.5.17
 - **THEN** the main extension host completes a deterministic preflight and records `host-preflight.json` plus a `host_preflight` manifest event before diagram analysis
 
+#### Scenario: User invokes deterministic review command
+- **WHEN** the user runs `/drawio:review` with a `.drawio` path inside the current workspace
+- **THEN** the custom command host creates a unique run directory and completes preflight, strict validation, and isolated independent review before the interactive model receives the structured result
+
+#### Scenario: Interactive model cannot select workflow tools
+- **WHEN** `/drawio:review` is running
+- **THEN** correctness does not depend on the interactive model choosing directory, search, shell, or native agent tools
+
 #### Scenario: Host evidence is absent
 - **WHEN** the run lacks main-host preflight evidence
 - **THEN** the workflow fails closed and does not claim that its agent, tools, or validation executed

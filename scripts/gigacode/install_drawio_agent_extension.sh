@@ -3,8 +3,8 @@ set -Eeuo pipefail
 
 EXTENSION_NAME="publish-drawio-skill"
 ARCHIVE_NAME="drawio-skill-agent-extension.zip"
-DEFAULT_VERSION="1.22.0-corporate.3"
-DEFAULT_BRANCH="codex/drawio-main-host-v1.22.0-corporate.3"
+DEFAULT_VERSION="1.22.0-corporate.4"
+DEFAULT_BRANCH="codex/drawio-command-orchestrator-v1.22.0-corporate.4"
 DEFAULT_BASE_URL="https://raw.githubusercontent.com/travinov/corporate-agent-skills/refs/heads/${DEFAULT_BRANCH}/dist"
 
 GIGACODE_HOME="${GIGACODE_HOME:-$HOME/.gigacode}"
@@ -320,7 +320,9 @@ if [[ -n "$source_dir" ]]; then
     agents/diagram-supervisor.md \
     agents/diagram-reviewer.md \
     agents/diagram-repair.md \
-    agents/diagram-semantic-analyst.md; do
+    agents/diagram-semantic-analyst.md \
+    commands/drawio/review.toml \
+    scripts/diagram_host.py; do
     [[ -f "$extension_root/$required" ]] || die "Extracted extension is missing: $required"
   done
   "$PYTHON_BIN" - "$extension_root" <<'PY'
@@ -427,6 +429,8 @@ required = {
     "drawio-skill/agents/diagram-reviewer.md",
     "drawio-skill/agents/diagram-repair.md",
     "drawio-skill/agents/diagram-semantic-analyst.md",
+    "drawio-skill/commands/drawio/review.toml",
+    "drawio-skill/scripts/diagram_host.py",
 }
 with zipfile.ZipFile(archive) as zf:
     names = set(zf.namelist())

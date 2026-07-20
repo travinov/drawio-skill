@@ -57,6 +57,16 @@ After verification, restart GigaCode and run `/agents manage`. Expected extensio
 - `diagram-repair`
 - `diagram-semantic-analyst`
 
+Then open the diagram project as the GigaCode working directory and run:
+
+```text
+/drawio:review "/absolute/path/to/project/diagram.drawio"
+```
+
+The command creates `.diagram-runs/<run-id>` itself. Do not create that
+directory manually and do not ask the chat model to execute the workflow step
+by step.
+
 For a real diagram task, the main interactive GigaChat session owns execution;
 it does not send the whole workflow to native `diagram-supervisor`. A successful
 run creates `.diagram-runs/<run-id>/host-preflight.json`,

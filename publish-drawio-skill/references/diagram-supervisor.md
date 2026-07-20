@@ -19,6 +19,27 @@ native `diagram-supervisor` through the `agent` tool. That native role is
 planning-only because its successful status neither proves shell execution nor
 model isolation.
 
+For a normal read-only audit, use the extension command as the only supported
+entry point:
+
+```text
+/drawio:review "/absolute/path/to/diagram.drawio"
+```
+
+The custom command executes `scripts/diagram_host.py` before the interactive
+model can select tools. It creates `.diagram-runs/<run-id>`, performs
+host-preflight and strict validation, invokes the Reviewer through the isolated
+CLI adapter, verifies hash bindings and model proof, then supplies a structured
+result to the interactive model for presentation only. Do not replace this with
+prompt instructions asking the model to call `list_directory`, `grep_search`, a
+shell tool, or the native supervisor agent.
+
+The command honors `PYTHON_BIN`, `GIGACODE_HOME`, `GIGACODE_EXTENSIONS_DIR`, and
+`GIGACODE_BIN` when those installer-supported overrides are present. Its
+`{{args}}` placeholder is intentionally left to Qwen's custom-command processor,
+which applies shell escaping before `!{...}` execution. A non-zero host exit is
+not suppressed or presented as a successful review.
+
 The main host starts every run with the absolute installed extension path:
 
 ```bash

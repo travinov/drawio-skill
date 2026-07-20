@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 EXTENSION_NAME="publish-drawio-skill"
-EXPECTED_VERSION="${DRAWIO_EXTENSION_VERSION:-1.22.0-corporate.3}"
+EXPECTED_VERSION="${DRAWIO_EXTENSION_VERSION:-1.22.0-corporate.4}"
 GIGACODE_HOME="${GIGACODE_HOME:-$HOME/.gigacode}"
 GIGACODE_BIN="${GIGACODE_BIN:-$GIGACODE_HOME/bin/gigacode}"
 GIGACODE_SKILLS_DIR="${GIGACODE_SKILLS_DIR:-$GIGACODE_HOME/skills}"
@@ -116,11 +116,20 @@ def frontmatter(path):
 
 
 def verify_tree(root, label):
+    for relative in (
+        "commands/drawio/review.toml",
+        "scripts/diagram_host.py",
+        "data/reviewer-audit-input.v1.schema.json",
+    ):
+        if not (root / relative).is_file():
+            fail(f"Missing {label} command host file: {relative}")
     manifest = load_json(root / "gemini-extension.json")
     if manifest.get("name") != "publish-drawio-skill":
         fail(f"Unexpected {label} manifest name: {manifest.get('name')!r}")
     if manifest.get("version") != expected_version:
         fail(f"Expected {label} version {expected_version}, found {manifest.get('version')!r}")
+    if manifest.get("commands") != "commands":
+        fail(f"Expected {label} commands directory, found {manifest.get('commands')!r}")
     generated = root / "gigacode-extension.json"
     if generated.exists():
         native = load_json(generated)
