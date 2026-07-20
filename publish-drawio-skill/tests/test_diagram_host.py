@@ -110,6 +110,43 @@ class DiagramHostTests(unittest.TestCase):
             self.assertEqual(result["reviewer"]["status"], "failed")
             self.assertEqual(result["next_action"], "inspect_findings_before_any_repair")
 
+    def test_review_preserves_model_proof_when_reviewer_json_breaks_schema(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            artifact = workspace / "diagram.drawio"
+            artifact.write_text(clean_diagram(), encoding="utf-8")
+            proof = {
+                "verified": True,
+                "system_model": "vllm/DeepSeek-V4-Flash-262k",
+                "assistant_model": "vllm/DeepSeek-V4-Flash-262k",
+                "stats_models": ["vllm/DeepSeek-V4-Flash-262k"],
+            }
+            failure = diagram_host.agent_runtime.RoleOutputContractError(
+                "isolated reviewer output schema failed: candidate_sha256 is required",
+                resolution={
+                    "requested_model": "vllm/DeepSeek-V4-Flash-262k",
+                    "resolved_model": "vllm/DeepSeek-V4-Flash-262k",
+                    "resolution_mode": "isolated_cli",
+                    "fallback_used": False,
+                },
+                runtime_metadata={"model_proof": proof},
+                invalid_output_sha256="d" * 64,
+            )
+            with mock.patch.object(
+                diagram_host.agent_runtime, "invoke_role", side_effect=failure
+            ):
+                result = diagram_host.run_review(
+                    artifact, workspace, sys.executable, run_id="review-schema-failed"
+                )
+
+            reviewer = result["reviewer"]
+            self.assertEqual(reviewer["status"], "failed")
+            self.assertEqual(
+                reviewer["resolved_model"], "vllm/DeepSeek-V4-Flash-262k"
+            )
+            self.assertTrue(reviewer["model_proof"]["verified"])
+            self.assertEqual(reviewer["invalid_output_sha256"], "d" * 64)
+
     def test_review_rejects_artifact_outside_workspace(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -1722,6 +1722,37 @@ class AgentRuntimeTests(unittest.TestCase):
             ):
                 agent_runtime.parse_runtime_output("reviewer", json.dumps(events))
 
+    def test_baseline_reviewer_prompt_embeds_schema_and_exact_hash_bindings(self):
+        payload = {
+            "schema_version": 1,
+            "review_kind": "baseline_audit",
+            "run_id": "review-contract-test",
+            "artifact": {"path": "diagram.drawio", "sha256": "a" * 64},
+            "report": {"path": "report.json", "sha256": "b" * 64, "content": {}},
+            "receipt": {"path": "receipt.json", "sha256": "c" * 64, "content": {}},
+        }
+
+        contract = agent_runtime.role_output_contract("reviewer", payload)
+
+        self.assertIn("## Required output JSON Schema", contract)
+        schema_text = contract.split(
+            "Do not omit required properties.\n\n", 1
+        )[1].split("\n\n## Mandatory reviewer evidence bindings", 1)[0]
+        self.assertEqual(
+            json.loads(schema_text),
+            json.loads((ROOT / "data/reviewer-verdict.v1.schema.json").read_text()),
+        )
+        self.assertIn("## Mandatory reviewer evidence bindings", contract)
+        self.assertIn('"run_id": "review-contract-test"', contract)
+        self.assertIn('"candidate_sha256": "' + "a" * 64 + '"', contract)
+        self.assertIn('"report_sha256": "' + "b" * 64 + '"', contract)
+        self.assertIn('"receipt_sha256": "' + "c" * 64 + '"', contract)
+
+        candidate_contract = agent_runtime.role_output_contract(
+            "reviewer", self.reviewer_input()
+        )
+        self.assertIn('"candidate_sha256": "' + "1" * 64 + '"', candidate_contract)
+
     @staticmethod
     def fake_cli(path, behavior):
         script = (
@@ -1862,7 +1893,7 @@ class AgentRuntimeTests(unittest.TestCase):
     def test_nonzero_or_invalid_output_leaves_no_output_or_success_event(self):
         for name, behavior, error in (
             ("exit", "print('nope')\nprint('failed', file=sys.stderr)\nraise SystemExit(42)\n", "exit code 42"),
-            ("invalid", "print('{}')\n", "output schema"),
+            ("invalid", "print('{}')\n", "verifiable model evidence"),
         ):
             with self.subTest(case=name), tempfile.TemporaryDirectory() as temp:
                 temp = Path(temp)
@@ -1876,6 +1907,60 @@ class AgentRuntimeTests(unittest.TestCase):
                 self.assertFalse(output_path.exists())
                 events = [json.loads(line) for line in (temp / "run/run-manifest.jsonl").read_text().splitlines()]
                 self.assertEqual([event["event_type"] for event in events], ["role_failed"])
+
+    def test_schema_failure_preserves_proven_model_without_publishing_invalid_json(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            cli = self.fake_cli(temp / "schema-failure-cli", "emit({'schema_version': 1})\n")
+            output = temp / "verdict.json"
+
+            with self.assertRaises(agent_runtime.RoleOutputContractError) as raised:
+                agent_runtime.invoke_role(
+                    "reviewer", write_json(temp / "input.json", self.reviewer_input()),
+                    output, cli=str(cli), run_dir=temp / "run",
+                )
+
+            error = raised.exception
+            self.assertEqual(
+                error.resolution["resolved_model"], "vllm/DeepSeek-V4-Flash-262k"
+            )
+            self.assertTrue(error.runtime_metadata["model_proof"]["verified"])
+            self.assertFalse(output.exists())
+            self.assertRegex(error.invalid_output_sha256, r"^[a-f0-9]{64}$")
+            self.assertFalse(list(temp.glob("*.invalid.json")))
+            event = json.loads((temp / "run/run-manifest.jsonl").read_text().splitlines()[-1])
+            self.assertEqual(event["event_type"], "role_failed")
+            self.assertEqual(
+                event["payload"]["resolved_model"], "vllm/DeepSeek-V4-Flash-262k"
+            )
+            self.assertTrue(event["payload"]["model_proof"]["verified"])
+            self.assertEqual(
+                event["payload"]["invalid_output_sha256"],
+                error.invalid_output_sha256,
+            )
+
+    def test_reviewer_hash_binding_mismatch_is_not_published(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            verdict = self.reviewer_verdict("wrong-binding")
+            verdict["candidate_sha256"] = "f" * 64
+            cli = self.fake_cli(temp / "wrong-binding-cli", f"emit({verdict!r})\n")
+            output = temp / "verdict.json"
+
+            with self.assertRaisesRegex(
+                agent_runtime.RoleOutputContractError, "evidence binding mismatch"
+            ):
+                agent_runtime.invoke_role(
+                    "reviewer", write_json(temp / "input.json", self.reviewer_input()),
+                    output, cli=str(cli), run_dir=temp / "run",
+                )
+
+            self.assertFalse(output.exists())
+            events = [
+                json.loads(line)
+                for line in (temp / "run/run-manifest.jsonl").read_text().splitlines()
+            ]
+            self.assertEqual([event["event_type"] for event in events], ["role_failed"])
 
     def test_requested_model_unavailable_falls_back_to_inherited_current(self):
         with tempfile.TemporaryDirectory() as temp:

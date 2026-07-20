@@ -140,6 +140,19 @@ def run_review(artifact, workspace, cli, *, run_id=None, profile=None, source=No
             "model_proof": runtime["runtime_metadata"]["model_proof"],
             "output": str(reviewer_output_path),
         }
+    except agent_runtime.RoleOutputContractError as exc:
+        reviewer = {
+            "status": "failed",
+            "error": str(exc),
+            "requested_model": exc.resolution["requested_model"],
+            "resolved_model": exc.resolution["resolved_model"],
+            "resolution_mode": exc.resolution["resolution_mode"],
+            "fallback_used": exc.resolution["fallback_used"],
+            "model_proof": exc.runtime_metadata["model_proof"],
+            "reported_model": exc.runtime_metadata.get("reported_model"),
+            "runtime_version": exc.runtime_metadata.get("runtime_version"),
+            "invalid_output_sha256": exc.invalid_output_sha256,
+        }
     except (OSError, json.JSONDecodeError, supervisor.SupervisorError) as exc:
         reviewer = {
             "status": "failed",

@@ -85,6 +85,15 @@ entire payload consists of the fence and one JSON object. Prose outside the
 fence, multiple fences, an unterminated fence, schema-invalid JSON, or missing
 model proof still fails closed.
 
+The isolated prompt must embed the actual role output Schema. For Reviewer it
+must also embed the exact evidence bindings derived from the runtime input;
+prompt guidance never replaces deterministic equality checks before
+publication. If the runtime proves one consistent model but the returned role
+object fails its Schema or evidence bindings, preserve the bounded model proof
+in `role_failed` and the host result while keeping Reviewer status `failed`.
+This proves which model executed, but it does not make the invalid verdict
+usable and must not emit `model_resolved` or `review_verdict` success events.
+
 ### Inherited-model degradation
 
 If neither native override nor isolated invocation is available, or the requested isolated model is explicitly reported unavailable, run the role with the current session model without changing it. Set `resolution_mode` to `inherited_current`, set `fallback_used` to `true`, and record why the requested model was unavailable. Record the actual current model and provider; use provider `unknown` when the runtime cannot report it, never the requested provider.

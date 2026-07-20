@@ -8,6 +8,7 @@ the interactive session's global model and never executes model output.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -33,6 +34,16 @@ SAFE_ENV_KEYS = {
 }
 
 
+class RoleOutputContractError(SupervisorError):
+    """Role output was model-proven JSON but failed its output contract."""
+
+    def __init__(self, message, *, resolution, runtime_metadata, invalid_output_sha256=None):
+        super().__init__(message)
+        self.resolution = resolution
+        self.runtime_metadata = runtime_metadata
+        self.invalid_output_sha256 = invalid_output_sha256
+
+
 def redact(text):
     text = re.sub(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/-]+", r"\1 [REDACTED]", text or "")
     return re.sub(
@@ -50,6 +61,59 @@ def role_body(path):
     if marker < 0:
         raise SupervisorError(f"agent prompt {path} has unterminated YAML frontmatter")
     return text[marker + 5:].strip()
+
+
+def role_schema_name(role):
+    if role == "reviewer":
+        return "reviewer-verdict.v1.schema.json"
+    if role == "repair":
+        return "diagram-patch.v1.schema.json"
+    return "agent-role-output.v1.schema.json"
+
+
+def reviewer_evidence_bindings(payload):
+    if payload.get("review_kind") == "baseline_audit":
+        return {
+            "run_id": payload["run_id"],
+            "candidate_sha256": payload["artifact"]["sha256"],
+            "report_sha256": payload["report"]["sha256"],
+            "receipt_sha256": payload["receipt"]["sha256"],
+        }
+    candidate = payload.get("candidate")
+    if isinstance(candidate, dict) and isinstance(candidate.get("artifact"), dict):
+        return {
+            "run_id": payload["run_id"],
+            "candidate_sha256": candidate["artifact"]["sha256"],
+            "report_sha256": candidate["report"]["sha256"],
+            "receipt_sha256": candidate["receipt"]["sha256"],
+        }
+    if isinstance(candidate, dict) and "sha256" in candidate:
+        return {
+            "run_id": payload["run_id"],
+            "candidate_sha256": candidate["sha256"],
+            "report_sha256": payload["validation_report"]["sha256"],
+            "receipt_sha256": payload["validation_receipt"]["sha256"],
+        }
+    return None
+
+
+def role_output_contract(role, payload):
+    schema = load_json(ROOT / "data" / role_schema_name(role))
+    sections = [
+        "## Required output JSON Schema",
+        "Return exactly one JSON object that validates against this schema. Do not omit required properties.",
+        json.dumps(schema, ensure_ascii=False, sort_keys=True),
+    ]
+    bindings = reviewer_evidence_bindings(payload) if role == "reviewer" else None
+    if bindings:
+        sections.extend(
+            [
+                "## Mandatory reviewer evidence bindings",
+                "Copy these four values exactly into the output object; they are not optional and must not be renamed:",
+                json.dumps(bindings, ensure_ascii=False, sort_keys=True),
+            ]
+        )
+    return "\n\n".join(sections)
 
 
 def build_gemini_command(cli, model=None, auth_type=None):
@@ -254,13 +318,7 @@ def parse_runtime_output(role, output):
 
 
 def validate_role_output(role, parsed):
-    if role == "reviewer":
-        schema_name = "reviewer-verdict.v1.schema.json"
-    elif role == "repair":
-        schema_name = "diagram-patch.v1.schema.json"
-    else:
-        schema_name = "agent-role-output.v1.schema.json"
-    schema = load_json(ROOT / "data" / schema_name)
+    schema = load_json(ROOT / "data" / role_schema_name(role))
     errors = sorted(
         jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker()).iter_errors(parsed),
         key=lambda error: (list(error.path), error.message),
@@ -272,19 +330,48 @@ def validate_role_output(role, parsed):
     return parsed
 
 
+def validate_role_bindings(role, payload, parsed):
+    expected = reviewer_evidence_bindings(payload) if role == "reviewer" else None
+    if not expected:
+        return parsed
+    mismatches = [
+        key for key, value in expected.items() if parsed.get(key) != value
+    ]
+    if mismatches:
+        raise SupervisorError(
+            "isolated reviewer output evidence binding mismatch: " + ", ".join(mismatches)
+        )
+    return parsed
+
+
 def model_unavailable(stderr):
     return bool(re.search(r"(?i)(unknown|unsupported|unavailable|not[ -]found|no access).{0,80}model|model.{0,80}(unknown|unsupported|unavailable|not[ -]found|no access)", stderr or ""))
 
 
-def record_failure(run_dir, role, phase, requested_model, *, exit_code=None, diagnostic=None):
+def record_failure(
+    run_dir, role, phase, requested_model, *, exit_code=None, diagnostic=None,
+    resolved_model=None, model_proof=None, reported_model=None, runtime_version=None,
+    invalid_output_sha256=None,
+):
     if run_dir:
+        payload = {
+            "role": role, "phase": phase, "requested_model": requested_model,
+            "exit_code": exit_code, "diagnostic": redact(diagnostic or "")[-1000:],
+        }
+        if resolved_model is not None:
+            payload["resolved_model"] = resolved_model
+        if model_proof is not None:
+            payload["model_proof"] = sanitized_metadata(model_proof)
+        if reported_model is not None:
+            payload["reported_model"] = reported_model
+        if runtime_version is not None:
+            payload["runtime_version"] = runtime_version
+        if invalid_output_sha256 is not None:
+            payload["invalid_output_sha256"] = invalid_output_sha256
         append_event(
             run_dir, "role_failed",
-            {
-                "role": role, "phase": phase, "requested_model": requested_model,
-                "exit_code": exit_code, "diagnostic": redact(diagnostic or "")[-1000:],
-            },
-            actor={"kind": "tool", "id": "agent-runtime", "model": None},
+            payload,
+            actor={"kind": "tool", "id": "agent-runtime", "model": resolved_model},
         )
 
 
@@ -300,7 +387,13 @@ def invoke_role(
         raise SupervisorError(f"unknown role {role!r}")
     prompt_path = ROOT / config["prompt"]
     payload = load_json(input_path)
-    stdin_text = role_body(prompt_path) + "\n\n## Runtime input\n\n" + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    stdin_text = (
+        role_body(prompt_path)
+        + "\n\n"
+        + role_output_contract(role, payload)
+        + "\n\n## Runtime input\n\n"
+        + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    )
     try:
         capabilities = detect_cli_capabilities(cli)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -378,9 +471,10 @@ def invoke_role(
             f"isolated {role} process failed with exit code {completed.returncode}: "
             f"{redact(failure_diagnostic[-1000:])}"
         )
+    parsed_output = None
+    runtime_metadata = None
     try:
         parsed_output, runtime_metadata = parse_runtime_output(role, completed.stdout)
-        parsed_output = validate_role_output(role, parsed_output)
         reported_model = runtime_metadata.get("reported_model")
         expected_model = (
             None
@@ -398,8 +492,31 @@ def invoke_role(
         resolution["fallback_used"] = (
             resolution["fallback_used"] or reported_model != resolution["requested_model"]
         )
+        try:
+            parsed_output = validate_role_output(role, parsed_output)
+            parsed_output = validate_role_bindings(role, payload, parsed_output)
+        except SupervisorError as exc:
+            invalid_output_sha256 = hashlib.sha256(
+                json.dumps(
+                    parsed_output, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest()
+            raise RoleOutputContractError(
+                str(exc),
+                resolution=dict(resolution),
+                runtime_metadata=runtime_metadata,
+                invalid_output_sha256=invalid_output_sha256,
+            ) from exc
     except SupervisorError as exc:
-        record_failure(run_dir, role, "output_validation", config["requested_model"], diagnostic=str(exc))
+        record_failure(
+            run_dir, role, "output_validation", config["requested_model"],
+            diagnostic=str(exc),
+            resolved_model=(resolution.get("resolved_model") if runtime_metadata else None),
+            model_proof=(runtime_metadata.get("model_proof") if runtime_metadata else None),
+            reported_model=(runtime_metadata.get("reported_model") if runtime_metadata else None),
+            runtime_version=(runtime_metadata.get("runtime_version") if runtime_metadata else None),
+            invalid_output_sha256=getattr(exc, "invalid_output_sha256", None),
+        )
         raise
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=output_path.parent, delete=False) as tmp:
