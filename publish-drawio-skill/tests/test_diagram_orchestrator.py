@@ -32,15 +32,17 @@ FAKE_GIGACODE = """#!/usr/bin/env python3
 import json
 import sys
 
-HELP = "GigaCode --model --prompt --output-format --approval-mode --auth-type"
+HELP = (
+    "GigaCode --model --prompt --output-format --approval-mode --auth-type "
+    "--extensions --system-prompt --max-session-turns --exclude-tools"
+)
 
 
 def runtime_input():
     raw = sys.stdin.read()
-    marker = "## Runtime input"
-    if marker not in raw:
+    if not raw.strip():
         raise SystemExit("missing runtime input")
-    return json.loads(raw.split(marker, 1)[1].strip())
+    return json.loads(raw)
 
 
 def emit(payload):

@@ -1622,6 +1622,31 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(
             fallback_metadata["reported_model"], "vllm/DeepSeek-V4-Flash-262k"
         )
+        self.assertEqual(metadata["isolation_proof"]["tool_calls"], 0)
+        self.assertTrue(metadata["isolation_proof"]["verified"])
+
+    def test_corporate_recursive_supervisor_fixture_is_rejected_as_isolation_leak(self):
+        capture = (
+            ROOT / "tests/fixtures/gigacode-recursive-supervisor-runtime.json"
+        ).read_text(encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            supervisor.SupervisorError, "customization isolation failed"
+        ):
+            agent_runtime.parse_runtime_output("supervisor", capture)
+
+    def test_gigacode_event_parser_rejects_every_tool_call_without_custom_context(self):
+        verdict = self.reviewer_verdict("tool-free-proof")
+        events = self.gigacode_events(verdict)
+        events[1]["message"]["content"] = [
+            {"type": "tool_use", "name": "agent", "input": {}},
+            {"type": "text", "text": json.dumps(verdict)},
+        ]
+
+        with self.assertRaisesRegex(
+            supervisor.SupervisorError, "tool-free role contract: agent"
+        ):
+            agent_runtime.parse_runtime_output("reviewer", json.dumps(events))
 
     def test_gigacode_event_parser_accepts_one_markdown_fenced_json_object(self):
         verdict = self.reviewer_verdict("fenced-proof")
@@ -1759,7 +1784,7 @@ class AgentRuntimeTests(unittest.TestCase):
             f"#!{sys.executable}\n"
             "import json, os, sys\n"
             "if '--help' in sys.argv:\n"
-            "    print('--model --prompt --output-format --approval-mode')\n"
+            "    print('--model --prompt --output-format --approval-mode --extensions --system-prompt --max-session-turns --exclude-tools')\n"
             "    raise SystemExit(0)\n"
             "def emit(value):\n"
             "    model=sys.argv[sys.argv.index('--model')+1]\n"
@@ -1781,7 +1806,7 @@ class AgentRuntimeTests(unittest.TestCase):
             cli = self.fake_cli(
                 temp / "safe-cli",
                 "if 'DIAGRAM_TEST_SECRET' in os.environ: raise SystemExit(91)\n"
-                "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
+                "payload=json.loads(sys.stdin.read())\n"
                 "d=payload['candidate']['sha256']\n"
                 "emit({'schema_version':1,'verdict_id':'v1','run_id':payload['run_id'],'candidate_sha256':d,'report_sha256':payload['validation_report']['sha256'],'receipt_sha256':payload['validation_receipt']['sha256'],'verdict':'approve','reviewed_at':'2026-07-16T00:00:00Z','findings':[]})\n",
             )
@@ -1819,7 +1844,7 @@ class AgentRuntimeTests(unittest.TestCase):
         cases = (
             (
                 "mismatch",
-                "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
+                "payload=json.loads(sys.stdin.read())\n"
                 "d=payload['candidate']['sha256']\n"
                 f"value={valid}\n"
                 "requested=sys.argv[sys.argv.index('--model')+1]\n"
@@ -1831,7 +1856,7 @@ class AgentRuntimeTests(unittest.TestCase):
             ),
             (
                 "missing",
-                "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
+                "payload=json.loads(sys.stdin.read())\n"
                 "d=payload['candidate']['sha256']\n"
                 f"print(json.dumps({valid}))\n",
                 "did not provide verifiable model evidence",
@@ -1857,7 +1882,7 @@ class AgentRuntimeTests(unittest.TestCase):
             temp = Path(temp)
             cli = self.fake_cli(
                 temp / "gemini-envelope-cli",
-                "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
+                "payload=json.loads(sys.stdin.read())\n"
                 "d=payload['candidate']['sha256']\n"
                 "inner={'schema_version':1,'verdict_id':'vg','run_id':payload['run_id'],'candidate_sha256':d,'report_sha256':payload['validation_report']['sha256'],'receipt_sha256':payload['validation_receipt']['sha256'],'verdict':'approve','reviewed_at':'2026-07-16T00:00:00Z','findings':[]}\n"
                 "model=sys.argv[sys.argv.index('--model')+1]\n"
@@ -1973,7 +1998,7 @@ class AgentRuntimeTests(unittest.TestCase):
                 "if '--model' in sys.argv and sys.argv[sys.argv.index('--model')+1] == 'vllm/DeepSeek-V4-Flash-262k':\n"
                 "    print('requested model unavailable', file=sys.stderr)\n"
                 "    raise SystemExit(3)\n"
-                "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
+                "payload=json.loads(sys.stdin.read())\n"
                 "d=payload['candidate']['sha256']\n"
                 "emit({'schema_version':1,'verdict_id':'vf','run_id':payload['run_id'],'candidate_sha256':d,'report_sha256':payload['validation_report']['sha256'],'receipt_sha256':payload['validation_receipt']['sha256'],'verdict':'approve','reviewed_at':'2026-07-16T00:00:00Z','findings':[]})\n",
             )
@@ -2004,9 +2029,9 @@ class AgentRuntimeTests(unittest.TestCase):
                 f"#!{sys.executable}\n"
                 "import json, sys\n"
                 "if '--help' in sys.argv:\n"
-                "    print('--prompt --output-format --approval-mode')\n"
+                "    print('--prompt --output-format --approval-mode --extensions --system-prompt --max-session-turns --exclude-tools')\n"
                 "    raise SystemExit(0)\n"
-                "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
+                "payload=json.loads(sys.stdin.read())\n"
                 "d=payload['candidate']['sha256']\n"
                 "value={'schema_version':1,'verdict_id':'inherited','run_id':payload['run_id'],'candidate_sha256':d,'report_sha256':payload['validation_report']['sha256'],'receipt_sha256':payload['validation_receipt']['sha256'],'verdict':'approve','reviewed_at':'2026-07-16T00:00:00Z','findings':[]}\n"
                 "encoded=json.dumps(value)\n"
@@ -2035,7 +2060,7 @@ class AgentRuntimeTests(unittest.TestCase):
                 f"#!{sys.executable}\n"
                 "import sys\n"
                 "if '--help' in sys.argv:\n"
-                "    print('--model --prompt --output-format --approval-mode')\n"
+                "    print('--model --prompt --output-format --approval-mode --extensions --system-prompt --max-session-turns --exclude-tools')\n"
                 "    raise SystemExit(0)\n"
                 "raise SystemExit(99)\n",
             )
@@ -2058,6 +2083,26 @@ class AgentRuntimeTests(unittest.TestCase):
             )
             self.assertIn("--approval-mode", result["command"])
             self.assertIn("plan", result["command"])
+            self.assertEqual(
+                result["command"][result["command"].index("--extensions") + 1],
+                "none",
+            )
+            self.assertEqual(
+                result["command"][result["command"].index("--max-session-turns") + 1],
+                str(agent_runtime.ROLE_MAX_SESSION_TURNS),
+            )
+            excluded = result["command"][
+                result["command"].index("--exclude-tools") + 1
+            ].split(",")
+            self.assertIn("agent", excluded)
+            self.assertIn("ask_user_question", excluded)
+            self.assertIn("web_search", excluded)
+            self.assertIn("mcp__*", excluded)
+            system_prompt = result["command"][
+                result["command"].index("--system-prompt") + 1
+            ]
+            self.assertIn("Do not call or delegate to any agent", system_prompt)
+            self.assertIn("## Required output JSON Schema", system_prompt)
             self.assertNotIn("sh", result["command"])
             self.assertNotIn("-c", result["command"])
             self.assertNotIn("/model", " ".join(result["command"]))
@@ -2070,11 +2115,15 @@ class AgentRuntimeTests(unittest.TestCase):
 
     def test_gigacode_dry_run_pins_corporate_auth_type_when_supported(self):
         for executable, help_text in (
-            ("gigacode", "--model --prompt --output-format --approval-mode --auth-type"),
+            (
+                "gigacode",
+                "--model --prompt --output-format --approval-mode --auth-type --extensions --system-prompt --max-session-turns --exclude-tools",
+            ),
             (
                 "corporate-wrapper",
                 "GigaCode - CLI --model --prompt --output-format --approval-mode "
-                "--auth-type choices: gigacode",
+                "--auth-type choices: gigacode --extensions --system-prompt "
+                "--max-session-turns --exclude-tools",
             ),
         ):
             with self.subTest(executable=executable), tempfile.TemporaryDirectory() as temp:
@@ -2107,7 +2156,7 @@ class AgentRuntimeTests(unittest.TestCase):
                 f"#!{sys.executable}\n"
                 "import sys\n"
                 "if '--help' in sys.argv:\n"
-                "    print('GigaCode --model --prompt --output-format --approval-mode --auth-type gigacode')\n"
+                "    print('GigaCode --model --prompt --output-format --approval-mode --auth-type gigacode --extensions --system-prompt --max-session-turns --exclude-tools')\n"
                 "    raise SystemExit(0)\n"
                 "raise SystemExit(99)\n",
             )
@@ -2182,7 +2231,7 @@ class AgentRuntimeTests(unittest.TestCase):
             )
             fake = self.fake_cli(
                 temp / "reviewer-cli",
-                "payload=json.loads(sys.stdin.read().split('## Runtime input')[-1])\n"
+                "payload=json.loads(sys.stdin.read())\n"
                 "emit({'schema_version':1,'verdict_id':'e2e','run_id':payload['run_id'],'candidate_sha256':payload['candidate']['artifact']['sha256'],'report_sha256':payload['candidate']['report']['sha256'],'receipt_sha256':payload['candidate']['receipt']['sha256'],'verdict':'approve','reviewed_at':'2026-07-16T00:00:00Z','findings':[]})\n",
             )
             run(

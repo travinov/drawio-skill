@@ -3,8 +3,8 @@ set -Eeuo pipefail
 
 EXTENSION_NAME="publish-drawio-skill"
 ARCHIVE_NAME="drawio-skill-agent-extension.zip"
-DEFAULT_VERSION="1.23.0-corporate.2"
-DEFAULT_BRANCH="codex/drawio-conversational-commands-v1.23.0-corporate.2"
+DEFAULT_VERSION="1.23.0-corporate.3"
+DEFAULT_BRANCH="codex/drawio-headless-role-isolation-v1.23.0-corporate.3"
 DEFAULT_BASE_URL="https://raw.githubusercontent.com/travinov/corporate-agent-skills/refs/heads/${DEFAULT_BRANCH}/dist"
 
 GIGACODE_HOME="${GIGACODE_HOME:-$HOME/.gigacode}"
@@ -138,6 +138,16 @@ extensions_supports_validate() {
 
   # Older/forked CLIs may not expose a parent command listing.
   "$GIGACODE_BIN" extensions validate --help >/dev/null 2>&1
+}
+
+verify_role_runtime_capabilities() {
+  local help_text flag missing=()
+  help_text="$($GIGACODE_BIN --help 2>&1 || true)"
+  for flag in --model --prompt --output-format --approval-mode --extensions --system-prompt --max-session-turns --exclude-tools; do
+    grep -Fq -- "$flag" <<<"$help_text" || missing+=("$flag")
+  done
+  ((${#missing[@]} == 0)) || die "GigaCode CLI lacks required isolated-role flags: ${missing[*]}"
+  log "Verified headless role-isolation capabilities"
 }
 
 native_validate() {
@@ -478,6 +488,7 @@ PY
 [[ -n "$manifest_version" ]] || die "Extension version is missing"
 [[ "$manifest_version" == "$DEFAULT_VERSION" ]] || die "Unexpected extension version: $manifest_version"
 
+verify_role_runtime_capabilities
 native_validate "$extension_root"
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"

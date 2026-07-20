@@ -1,0 +1,83 @@
+[
+  {
+    "type": "system",
+    "subtype": "init",
+    "model": "GigaChat-3-Ultra",
+    "qwen_code_version": "0.13.1",
+    "agents": [
+      "general-purpose",
+      "diagram-supervisor",
+      "diagram-reviewer",
+      "diagram-repair",
+      "diagram-semantic-analyst"
+    ],
+    "slash_commands": [
+      "drawio:create",
+      "drawio:improve",
+      "drawio:resume",
+      "drawio:review",
+      "drawio:trace"
+    ]
+  },
+  {
+    "type": "assistant",
+    "message": {
+      "model": "GigaChat-3-Ultra",
+      "content": [
+        {
+          "type": "tool_use",
+          "name": "agent",
+          "input": {
+            "subagent_type": "diagram-supervisor"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "assistant",
+    "message": {
+      "model": "GigaChat-3-Ultra",
+      "content": [
+        {
+          "type": "tool_use",
+          "name": "list_directory",
+          "input": {
+            "path": "."
+          }
+        },
+        {
+          "type": "tool_use",
+          "name": "todo_write",
+          "input": {}
+        }
+      ]
+    }
+  },
+  {
+    "type": "assistant",
+    "message": {
+      "model": "GigaChat-3-Ultra",
+      "content": [
+        {
+          "type": "text",
+          "text": "План создания диаграммы готов. Подтвердите, пожалуйста."
+        }
+      ]
+    }
+  },
+  {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "result": "План создания диаграммы готов. Подтвердите, пожалуйста.",
+    "stats": {
+      "models": {
+        "GigaChat-3-Ultra": {}
+      },
+      "tools": {
+        "totalCalls": 99
+      }
+    }
+  }
+]

@@ -25,6 +25,13 @@ log="${FAKE_GIGACODE_LOG:?}"
 printf '%q ' "$@" >>"$log"
 printf '\n' >>"$log"
 
+if [[ "${1:-}" == --help ]]; then
+  printf '%s\n' 'GigaCode --model --prompt --output-format --approval-mode --extensions --system-prompt --max-session-turns'
+  if [[ "${FAKE_GIGACODE_MISSING_ISOLATION:-0}" != 1 ]]; then
+    printf '%s\n' '--exclude-tools'
+  fi
+  exit 0
+fi
 if [[ "${1:-}" != extensions ]]; then exit 2; fi
 case "${2:-}" in
   --help)
@@ -172,7 +179,7 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
 
         result = self.install()
 
-        self.assertIn("Installed publish-drawio-skill 1.23.0-corporate.2", result.stdout)
+        self.assertIn("Installed publish-drawio-skill 1.23.0-corporate.3", result.stdout)
         self.assertIn("Self-check skipped by request", result.stdout)
         self.assertFalse(legacy.exists())
         installed = self.home / "extensions" / "publish-drawio-skill"
@@ -192,14 +199,14 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
     def test_verifier_accepts_canonical_markdown_command(self) -> None:
         result = self.install()
 
-        self.assertIn("Installed publish-drawio-skill 1.23.0-corporate.2", result.stdout)
+        self.assertIn("Installed publish-drawio-skill 1.23.0-corporate.3", result.stdout)
         active = self.home / "extensions" / "publish-drawio-skill"
         self.assertFalse((active / "commands" / "drawio" / "review.toml").exists())
         self.assertTrue((active / "commands" / "drawio" / "review.md").is_file())
         verify = self.run_script(
             "verify_drawio_agent_extension.sh", "--skip-self-check"
         )
-        self.assertIn("Verified publish-drawio-skill 1.23.0-corporate.2", verify.stdout)
+        self.assertIn("Verified publish-drawio-skill 1.23.0-corporate.3", verify.stdout)
 
     def test_verifier_rejects_tampered_markdown_command_with_contract_markers(self) -> None:
         self.install()
@@ -244,7 +251,7 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
         self.assertIn("Installing pinned Python dependencies", result.stdout)
         self.assertIn("Running extension self-check", result.stdout)
         self.assertIn("fake self-check passed", result.stdout)
-        self.assertIn("Installed publish-drawio-skill 1.23.0-corporate.2", result.stdout)
+        self.assertIn("Installed publish-drawio-skill 1.23.0-corporate.3", result.stdout)
         self.assertNotIn("unbound variable", result.stdout)
         self.assertNotIn("restoring backup", result.stdout)
         self.assertEqual(
@@ -257,7 +264,7 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
         result = self.install()
 
         self.assertIn("Native 'extensions validate' is unavailable", result.stdout)
-        self.assertIn("Installed publish-drawio-skill 1.23.0-corporate.2", result.stdout)
+        self.assertIn("Installed publish-drawio-skill 1.23.0-corporate.3", result.stdout)
         self.assertTrue(
             (self.home / "extensions" / "publish-drawio-skill" / "gemini-extension.json").is_file()
         )
@@ -383,6 +390,23 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
         self.assertIn("[dry-run]", result.stdout)
         self.assertTrue((legacy / "keep.txt").is_file())
         self.assertFalse((self.home / "extensions").exists())
+
+    def test_install_rejects_cli_without_role_isolation_capabilities(self) -> None:
+        self.env["FAKE_GIGACODE_MISSING_ISOLATION"] = "1"
+
+        result = self.run_script(
+            "install_drawio_agent_extension.sh",
+            "--archive",
+            str(self.archive),
+            "--checksum",
+            str(self.checksum),
+            "--skip-deps",
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("lacks required isolated-role flags: --exclude-tools", result.stdout)
+        self.assertFalse((self.home / "extensions" / "publish-drawio-skill").exists())
         self.assertFalse((self.home / "extension-sources").exists())
         self.assertFalse((self.home / "backups").exists())
 
@@ -408,7 +432,7 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
             "verify_drawio_agent_extension.sh", "--skip-self-check"
         )
 
-        self.assertIn("Verified publish-drawio-skill 1.23.0-corporate.2", result.stdout)
+        self.assertIn("Verified publish-drawio-skill 1.23.0-corporate.3", result.stdout)
 
     def test_verifier_rejects_active_source_content_mismatch(self) -> None:
         self.install()
@@ -525,7 +549,7 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
             self.home
             / "extension-sources"
             / "publish-drawio-skill"
-            / "1.23.0-corporate.2"
+            / "1.23.0-corporate.3"
         )
         self.assertFalse(version_dir.exists())
 

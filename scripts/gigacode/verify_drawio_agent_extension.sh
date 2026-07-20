@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 EXTENSION_NAME="publish-drawio-skill"
-EXPECTED_VERSION="${DRAWIO_EXTENSION_VERSION:-1.23.0-corporate.2}"
+EXPECTED_VERSION="${DRAWIO_EXTENSION_VERSION:-1.23.0-corporate.3}"
 GIGACODE_HOME="${GIGACODE_HOME:-$HOME/.gigacode}"
 GIGACODE_BIN="${GIGACODE_BIN:-$GIGACODE_HOME/bin/gigacode}"
 GIGACODE_SKILLS_DIR="${GIGACODE_SKILLS_DIR:-$GIGACODE_HOME/skills}"
@@ -39,6 +39,16 @@ extensions_supports_validate() {
   "$GIGACODE_BIN" extensions validate --help >/dev/null 2>&1
 }
 
+verify_role_runtime_capabilities() {
+  local help_text flag missing=()
+  help_text="$($GIGACODE_BIN --help 2>&1 || true)"
+  for flag in --model --prompt --output-format --approval-mode --extensions --system-prompt --max-session-turns --exclude-tools; do
+    grep -Fq -- "$flag" <<<"$help_text" || missing+=("$flag")
+  done
+  ((${#missing[@]} == 0)) || die "GigaCode CLI lacks required isolated-role flags: ${missing[*]}"
+  log "Verified headless role-isolation capabilities"
+}
+
 while (($#)); do
   case "$1" in
     --source) [[ $# -ge 2 ]] || die "--source requires PATH"; source_path="$2"; shift 2 ;;
@@ -50,6 +60,7 @@ done
 
 [[ -x "$GIGACODE_BIN" ]] || die "GigaCode CLI not executable: $GIGACODE_BIN"
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || die "Python not found: $PYTHON_BIN"
+verify_role_runtime_capabilities
 
 current="$GIGACODE_EXTENSION_SOURCES_DIR/$EXTENSION_NAME/current"
 installed="$GIGACODE_EXTENSIONS_DIR/$EXTENSION_NAME"

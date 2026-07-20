@@ -48,11 +48,14 @@ Record the native model identifier returned by the runtime, not only the request
 
 If native role-specific models are unavailable, use `scripts/agent_runtime.py`
 to start a separate non-interactive process with the role's requested model.
-The adapter probes the CLI for the required headless/model/output/approval
-flags, builds an argument array, enforces plan/read-only approval mode, bounds
-runtime, captures output, and never executes model output. Never concatenate a
-shell command and never interpolate diagram labels, XML, IDs, user text, or
-links.
+The adapter probes the CLI for the required headless/model/output/approval and
+isolation flags, builds an argument array, disables extensions with
+`--extensions none`, supplies the immutable role contract through
+`--system-prompt`, excludes role-visible tools with `--exclude-tools`, applies
+`--max-session-turns`, enforces plan/read-only approval mode, captures output,
+and never executes model output. The canonical runtime JSON alone is supplied
+on stdin. Never concatenate a shell command and never interpolate diagram
+labels, XML, IDs, user text, or links into command metadata.
 
 The conceptual shape is:
 
@@ -67,14 +70,16 @@ python3 scripts/agent_runtime.py reviewer reviewer-input.json \
   --output reviewer-output.json --cli gigacode --dry-run
 ```
 
-The verified GigaCode 26.5.17 contract supports `--model`, `--prompt`,
-`--output-format json`, `--approval-mode plan`, and `--auth-type gigacode`.
-The adapter adds the corporate auth type when the CLI help identifies GigaCode,
-without changing the interactive session.
+The verified upstream Qwen Code 0.13.1 contract supports `--model`, `--prompt`,
+`--output-format json`, `--approval-mode plan`, `--extensions none`,
+`--system-prompt`, `--max-session-turns`, and `--exclude-tools`. Corporate
+GigaCode must advertise the same required isolation controls before a role is
+started. It also supports `--auth-type gigacode`; the adapter adds that auth
+type when CLI help identifies GigaCode.
 
 Use a bounded timeout, explicit working directory, captured stdout/stderr, and a minimal allowlisted environment. Do not inherit arbitrary API keys, tokens, passwords, or unrelated process secrets. The Reviewer process must receive read-only inputs and no artifact-publication capability. A model response is data for the Supervisor or deterministic tools; it is not permission to run response text as a command.
 
-Publish role output atomically only after the process exits successfully and its JSON conforms to the role schema: Reviewer uses `reviewer-verdict.v1.schema.json`, Repair uses `diagram-patch.v1.schema.json`, Supervisor uses `supervisor-decision.v1.schema.json`, and Semantic Analyst uses `semantic-plan.v1.schema.json`. GigaCode JSON output is an event array: require one consistent primary model in the `system` init event, every assistant message, and `result.stats.models`; extract and JSON-decode the final result payload. Stock Gemini JSON output is an outer envelope: reject non-empty `error`/`errors`, extract and JSON-decode `response`, then validate only that inner role payload. Preserve redacted runtime stats/errors as evidence, not as the verdict. Direct top-level role JSON may be parsed for compatibility but cannot publish a successful isolated role because it lacks model proof. On timeout, non-zero exit, invalid output, missing proof, or model mismatch, append `role_failed`; do not create the output file or any role-success event.
+Publish role output atomically only after the process exits successfully and its JSON conforms to the role schema: Reviewer uses `reviewer-verdict.v1.schema.json`, Repair uses `diagram-patch.v1.schema.json`, Supervisor uses `supervisor-decision.v1.schema.json`, and Semantic Analyst uses `semantic-plan.v1.schema.json`. GigaCode JSON output is an event array: reject any `tool_use`, `diagram-*` custom agent, or `drawio:*` command leaked into the isolated process; then require one consistent primary model in the `system` init event, every assistant message, and `result.stats.models`, and JSON-decode the final result payload. Stock Gemini JSON output is an outer envelope: reject non-empty `error`/`errors`, extract and JSON-decode `response`, then validate only that inner role payload. Preserve redacted runtime stats/errors as evidence, not as the verdict. Direct top-level role JSON may be parsed for compatibility but cannot publish a successful isolated role because it lacks model proof. On timeout, non-zero exit, tool call, customization leak, invalid output, missing proof, or model mismatch, append `role_failed`; do not create the output file or any role-success event.
 
 Some approved models wrap an otherwise valid role object in exactly one
 Markdown `json` fence. The adapter may unwrap that single fence only when the

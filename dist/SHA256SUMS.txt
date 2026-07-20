@@ -1,2 +1,2 @@
 8e6ea728e0fb0889631f6142173ccc0b6d47cc5d842e86ebbeadbc65b0d6014a  bpmn-architect-skill.zip
-63366646036612582a2ebfafe304eebe57cb980c80ae4117647444b76fae611f  drawio-skill-agent-extension.zip
+6dcbab5f12ea99d1b4a191eada83626b2b53e78bfe1c85d4bc1a8e37c8db6d11  drawio-skill-agent-extension.zip

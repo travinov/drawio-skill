@@ -181,13 +181,13 @@ class DiagramHostTests(unittest.TestCase):
                 """#!/usr/bin/env python3
 import json, sys
 if '--help' in sys.argv:
-    print('GigaCode --model --prompt --output-format --approval-mode --auth-type')
+    print('GigaCode --model --prompt --output-format --approval-mode --auth-type --extensions --system-prompt --max-session-turns --exclude-tools')
     raise SystemExit(0)
 if '--version' in sys.argv:
     print('26.5.17-test')
     raise SystemExit(0)
 raw = sys.stdin.read()
-payload = json.loads(raw.rsplit('## Runtime input', 1)[1].strip())
+payload = json.loads(raw)
 model = payload['context']['requested_reviewer_model']
 verdict = {
     'schema_version': 1,

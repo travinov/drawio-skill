@@ -32,6 +32,31 @@ SAFE_ENV_KEYS = {
     "HOME", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "PATH",
     "SYSTEMROOT", "TEMP", "TMP", "TMPDIR", "WINDIR",
 }
+ROLE_MAX_SESSION_TURNS = 4
+ROLE_EXCLUDED_TOOLS = (
+    "agent",
+    "task",
+    "skill",
+    "ask_user_question",
+    "ask_user",
+    "todo_write",
+    "write_todos",
+    "list_directory",
+    "read_file",
+    "read_many_files",
+    "grep_search",
+    "glob",
+    "run_shell_command",
+    "write_file",
+    "edit",
+    "replace",
+    "save_memory",
+    "web_fetch",
+    "web_search",
+    "lsp",
+    "mcp__*",
+    "exit_plan_mode",
+)
 
 
 class RoleOutputContractError(SupervisorError):
@@ -120,14 +145,35 @@ def role_output_contract(role, payload):
     return "\n\n".join(sections)
 
 
-def build_gemini_command(cli, model=None, auth_type=None):
+def isolated_role_system_prompt(role, prompt_path, payload):
+    return (
+        "You are the isolated diagram role itself. Complete exactly one bounded "
+        "JSON decision. Do not call or delegate to any agent. Do not call any tool, "
+        "slash command, skill, interactive question, todo facility, filesystem "
+        "operation, shell command, or network service. Do not ask for confirmation. "
+        "The canonical runtime input is the JSON document supplied on standard input. "
+        "Return exactly one JSON object and no prose.\n\n"
+        + role_body(prompt_path)
+        + "\n\n"
+        + role_output_contract(role, payload)
+    )
+
+
+def build_gemini_command(cli, model=None, auth_type=None, *, system_prompt):
     command = [cli]
     if auth_type:
         command.extend(["--auth-type", auth_type])
     if model:
         command.extend(["--model", model])
     command.extend([
-        "--prompt", "Execute the supplied diagram role contract against the JSON input. Return role output only.",
+        "--extensions", "none",
+        "--system-prompt", system_prompt,
+        "--max-session-turns", str(ROLE_MAX_SESSION_TURNS),
+        "--exclude-tools", ",".join(ROLE_EXCLUDED_TOOLS),
+        "--prompt", (
+            "Process the canonical runtime JSON supplied on standard input. "
+            "Return exactly one object satisfying the system contract."
+        ),
         "--output-format", "json",
         "--approval-mode", "plan",
     ])
@@ -144,7 +190,12 @@ def detect_cli_capabilities(cli):
         env=minimal_environment(),
     )
     help_text = completed.stdout + completed.stderr
-    base_required = ("--prompt", "--output-format", "--approval-mode")
+    isolation_required = (
+        "--extensions", "--system-prompt", "--max-session-turns", "--exclude-tools",
+    )
+    base_required = (
+        "--prompt", "--output-format", "--approval-mode", *isolation_required,
+    )
     required = ("--model", *base_required)
     missing = [flag for flag in required if flag not in help_text]
     inherited_missing = [flag for flag in base_required if flag not in help_text]
@@ -161,6 +212,10 @@ def detect_cli_capabilities(cli):
         "exit_code": completed.returncode,
         "required_flags": list(required),
         "missing_flags": missing,
+        "isolation_flags": list(isolation_required),
+        "isolation_available": completed.returncode == 0 and not [
+            flag for flag in isolation_required if flag not in help_text
+        ],
     }
 
 
@@ -203,8 +258,34 @@ def _parse_gigacode_events(role, events):
         for event in events
         if event.get("type") == "system" and event.get("subtype") == "init" and event.get("model")
     }
+    leaked_agents = set()
+    leaked_commands = set()
+    for event in events:
+        if event.get("type") != "system" or event.get("subtype") != "init":
+            continue
+        agents = event.get("agents") if isinstance(event.get("agents"), list) else []
+        commands = (
+            event.get("slash_commands")
+            if isinstance(event.get("slash_commands"), list)
+            else []
+        )
+        leaked_agents.update(
+            value for value in agents
+            if isinstance(value, str) and value.startswith("diagram-")
+        )
+        leaked_commands.update(
+            value for value in commands
+            if isinstance(value, str) and value.startswith("drawio:")
+        )
+    if leaked_agents or leaked_commands:
+        raise SupervisorError(
+            f"isolated {role} GigaCode customization isolation failed: "
+            f"agents={sorted(leaked_agents)}, commands={sorted(leaked_commands)}"
+        )
+
     assistant_models = set()
     assistant_texts = []
+    tool_calls = []
     for event in events:
         if event.get("type") != "assistant" or not isinstance(event.get("message"), dict):
             continue
@@ -213,12 +294,22 @@ def _parse_gigacode_events(role, events):
             assistant_models.add(message["model"])
         content = message.get("content")
         if isinstance(content, list):
+            tool_calls.extend(
+                item.get("name") or "unknown"
+                for item in content
+                if isinstance(item, dict) and item.get("type") == "tool_use"
+            )
             text_parts = [
                 item.get("text") for item in content
                 if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str)
             ]
             if text_parts:
                 assistant_texts.append("".join(text_parts))
+    if tool_calls:
+        raise SupervisorError(
+            f"isolated {role} violated the tool-free role contract: "
+            + ", ".join(map(str, tool_calls[:10]))
+        )
 
     results = [event for event in events if event.get("type") == "result"]
     if not results:
@@ -262,6 +353,12 @@ def _parse_gigacode_events(role, events):
             "system_model": system_model,
             "assistant_model": assistant_model,
             "stats_models": sorted(stats_models),
+        },
+        "isolation_proof": {
+            "verified": True,
+            "tool_calls": 0,
+            "drawio_agents": [],
+            "drawio_commands": [],
         },
         "runtime_version": next(
             (
@@ -391,13 +488,8 @@ def invoke_role(
         raise SupervisorError(f"unknown role {role!r}")
     prompt_path = ROOT / config["prompt"]
     payload = load_json(input_path)
-    stdin_text = (
-        role_body(prompt_path)
-        + "\n\n"
-        + role_output_contract(role, payload)
-        + "\n\n## Runtime input\n\n"
-        + json.dumps(payload, ensure_ascii=False, sort_keys=True)
-    )
+    stdin_text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    system_prompt = isolated_role_system_prompt(role, prompt_path, payload)
     try:
         capabilities = detect_cli_capabilities(cli)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -415,7 +507,10 @@ def invoke_role(
         raise SupervisorError(f"CLI {cli!r} does not support explicit --auth-type")
     auth_type = auth_type or capabilities["suggested_auth_type"]
     command = build_gemini_command(
-        cli, None if inherited_without_override else config["requested_model"], auth_type=auth_type,
+        cli,
+        None if inherited_without_override else config["requested_model"],
+        auth_type=auth_type,
+        system_prompt=system_prompt,
     )
     resolution = resolve_model(
         policy_path, role, isolated_available=not inherited_without_override,
@@ -465,7 +560,9 @@ def invoke_role(
             exit_code=completed.returncode, diagnostic=failure_diagnostic,
         )
         inherited_without_override = False
-        command = build_gemini_command(cli, current_model, auth_type=auth_type)
+        command = build_gemini_command(
+            cli, current_model, auth_type=auth_type, system_prompt=system_prompt
+        )
         try:
             completed = subprocess.run(
                 command, input=stdin_text, text=True, capture_output=True, check=False,
