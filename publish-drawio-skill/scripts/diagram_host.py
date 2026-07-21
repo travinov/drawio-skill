@@ -210,8 +210,8 @@ def main():
     review.add_argument("--profile", choices=("roadmap", "gitflow"))
     review.add_argument("--source")
     review.add_argument("--timeout", type=int, default=600)
-    args = parser.parse_args()
     try:
+        args = parser.parse_args(command_ux.argv_with_qwen_command_args())
         artifact, selection = command_ux.select_diagram(
             args.workspace, args.artifact or args.artifact_positional,
         )
@@ -230,8 +230,15 @@ def main():
             "diagram_selection": selection,
         }
         result["next_commands"] = {
-            "improve": '/drawio:improve "Исправь найденные валидатором и Reviewer замечания"',
-            "trace": f'/drawio:trace --run "{result["run_id"]}"',
+            "improve": (
+                "/drawio:improve --diagram "
+                f"{command_ux.quote_command_value(artifact)} --request "
+                f"{command_ux.quote_command_value('Исправь найденные валидатором и Reviewer замечания')}"
+            ),
+            "trace": (
+                "/drawio:trace --run "
+                f"{command_ux.quote_command_value(result['run_id'])}"
+            ),
         }
         supervisor.write_json(Path(result["run_dir"]) / "host-result.json", result)
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))

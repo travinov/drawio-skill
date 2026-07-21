@@ -32,6 +32,8 @@ Upstream Qwen Code 0.13.1 provides the compatible controls needed here: `--exten
 9. **Capture streamed events when the CLI advertises them.** Prefer `--output-format stream-json` when `--help` names that value and retain the buffered JSON parser for compatible forks. Persist the JSONL stream before interpreting the exit code so a turn-limit failure still proves model identity, event count, tool use, and customization isolation when those events were emitted.
 10. **Recover only from a policy-approved Supervisor turn limit.** The primary Supervisor remains `GigaChat-3-Ultra`. After `FatalTurnLimitedError`, and only then, invoke Supervisor once with the configured `vllm/DeepSeek-V4-Flash-262k` runtime fallback. Do not retry capability, isolation, leakage, timeout, or integrity failures. The fallback must satisfy the same schema, model-proof, zero-tool, and evidence rules.
 11. **Preserve both attempts.** Store primary and fallback runtime captures under separate attempt directories. Mark the primary failure `terminal: false`, record its fallback target, and publish a single `role_finished` result with `fallback_used: true` only after the fallback succeeds. A failed fallback is terminal.
+12. **Treat `{{args}}` as a transport string, not argv.** Qwen shell-escapes a custom-command `{{args}}` expansion as one argument. Each command template assigns that value to `DRAWIO_COMMAND_ARGS`; the Python host parses it with `shlex.split`, normalizes a leading Draw.io `@` reference, rejects host-owned options and `--`, then inserts the reconstructed user tokens before fixed host arguments. No input is evaluated as shell code.
+13. **Keep generated commands executable.** `next_commands` uses the same documented grammar as the bridge. A review result carries its selected diagram into the improve command, and explicit resume/trace commands remain valid even when multiple diagrams or runs exist.
 
 ## Risks / Trade-offs
 
@@ -44,13 +46,15 @@ Upstream Qwen Code 0.13.1 provides the compatible controls needed here: `--exten
 - **Default approval appears less restrictive than Plan mode** -> tool availability is controlled independently by the empty core-tool allowlist and deny list; default approval only removes the contradictory Plan-mode reminder.
 - **Stream JSON omits aggregate model statistics** -> require one system-init model and one consistent assistant-message model; require aggregate `stats.models` only when the runtime actually supplies it.
 - **Supervisor fallback reduces model diversity** -> allow exactly one configured fallback, expose the degradation in `host-result.json` and `/drawio:trace`, and retain the primary attempt as hashed evidence.
+- **Internal tokenization could reintroduce shell injection** -> use `shlex.split` only as a parser, never pass its result through `eval` or `shell=True`, reject host-owned options, and keep subprocess calls as argument arrays.
+- **Qwen changes custom-command escaping** -> package tests cover the documented one-value transport and verifier checks every command template for the bridge marker; corporate retest remains required.
 
 ## Migration Plan
 
-1. Ship the follow-up as a new side-by-side `1.23.0-corporate.6` release ZIP and preserve
-   `1.23.0-corporate.5` plus the earlier packages for rollback.
+1. Ship the follow-up as a new side-by-side `1.23.0-corporate.7` release ZIP and preserve
+   `1.23.0-corporate.6` plus the earlier packages for rollback.
 2. Reinstall from the approved local archive on the corporate Mac.
-3. Re-run the same `/drawio:create` smoke test and inspect the per-attempt `runtime-output.jsonl` captures plus `/drawio:trace`.
+3. Re-run the captured review/improve argument cases, then the same `/drawio:create` smoke test, and inspect the per-attempt `runtime-output.jsonl` captures plus `/drawio:trace`.
 4. Roll back by reinstalling the previous ZIP if capability detection reports that the corporate fork lacks a required flag.
 
 ## Open Questions

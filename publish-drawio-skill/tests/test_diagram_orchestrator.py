@@ -167,13 +167,16 @@ class DiagramOrchestratorTests(unittest.TestCase):
     def read_events(self, run_dir: Path):
         return [json.loads(line) for line in (run_dir / "run-manifest.jsonl").read_text(encoding="utf-8").splitlines()]
 
-    def run_host(self, *args):
+    def run_host(self, *args, qwen_args=None):
+        env = {**os.environ, "PYTHONPATH": str(SCRIPTS)}
+        if qwen_args is not None:
+            env[orchestrator.command_ux.QWEN_COMMAND_ARGS_ENV] = qwen_args
         return subprocess.run(
             [sys.executable, str(SCRIPTS / "diagram_orchestrator.py"), *map(str, args)],
             text=True,
             capture_output=True,
             check=False,
-            env={**os.environ, "PYTHONPATH": str(SCRIPTS)},
+            env=env,
         )
 
     def test_conversational_create_generates_safe_name_and_short_next_commands(self):
@@ -214,7 +217,10 @@ class DiagramOrchestratorTests(unittest.TestCase):
             run_id="short-resume-run", max_iterations=1,
         )
         self.assertEqual(created["checkpoint"]["kind"], "final_acceptance")
-        resumed = self.run_host("resume", "--workspace", workspace, "--cli", cli, "approve")
+        resumed = self.run_host(
+            "resume", "--workspace", workspace, "--cli", cli,
+            qwen_args="approve",
+        )
         self.assertEqual(resumed.returncode, 0, resumed.stderr)
         resume_result = json.loads(resumed.stdout)
         self.assertEqual(resume_result["status"], "completed")
@@ -236,6 +242,97 @@ class DiagramOrchestratorTests(unittest.TestCase):
         result = json.loads(completed.stdout)
         self.assertEqual(result["command_resolution"]["diagram_selection"], "explicit")
         self.assertEqual(result["command_resolution"]["request_source"], "explicit_flag")
+
+    def test_qwen_raw_args_reconstruct_advanced_create_flags(self):
+        root, workspace, cli = self.create_workspace()
+        completed = self.run_host(
+            "create", "--workspace", workspace, "--cli", cli,
+            qwen_args=(
+                '--diagram "order process.drawio" '
+                '--request "Создай процесс обработки заказа"'
+            ),
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = json.loads(completed.stdout)
+        self.assertEqual(
+            result["command_resolution"]["diagram"],
+            str((workspace / "order process.drawio").resolve()),
+        )
+        self.assertEqual(
+            result["command_resolution"]["request"],
+            "Создай процесс обработки заказа",
+        )
+        self.assertEqual(result["command_resolution"]["request_source"], "explicit_flag")
+
+    def test_qwen_raw_args_select_diagram_in_multi_diagram_improve(self):
+        root, workspace, cli = self.create_workspace()
+        target = workspace / "microservices-istio-kafka.drawio"
+        target.write_text(clean_diagram(), encoding="utf-8")
+        (workspace / "other.drawio").write_text(clean_diagram(), encoding="utf-8")
+        completed = self.run_host(
+            "improve", "--workspace", workspace, "--cli", cli,
+            qwen_args=(
+                '--diagram "microservices-istio-kafka.drawio" '
+                '--request "Исправь найденные валидатором и Reviewer замечания"'
+            ),
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["command_resolution"]["diagram"], str(target.resolve()))
+        self.assertEqual(result["command_resolution"]["diagram_selection"], "explicit")
+        self.assertEqual(
+            result["command_resolution"]["request"],
+            "Исправь найденные валидатором и Reviewer замечания",
+        )
+
+    def test_qwen_raw_resume_feedback_and_explicit_trace_are_tokenized(self):
+        tokens = orchestrator.command_ux.qwen_command_tokens(
+            'continue "учти замечания пользователя"'
+        )
+        self.assertEqual(
+            orchestrator.command_ux.parse_resume(tokens),
+            (None, "continue", "учти замечания пользователя"),
+        )
+
+        root, workspace, cli = self.create_workspace()
+        target = workspace / "trace-command.drawio"
+        created = orchestrator.start_run(
+            "create", target, "Create trace command coverage.", workspace, cli,
+            run_id="qwen-trace-run", max_iterations=1,
+        )
+        traced = self.run_host(
+            "trace", "--workspace", workspace,
+            qwen_args='--run "qwen-trace-run"',
+        )
+        self.assertEqual(traced.returncode, 0, traced.stderr)
+        result = json.loads(traced.stdout)
+        self.assertEqual(result["run_id"], created["run_id"])
+        self.assertEqual(result["command_resolution"]["run_selection"], "explicit")
+
+    def test_qwen_raw_args_reject_host_owned_options_and_malformed_quotes(self):
+        for raw, code in (
+            ("--workspace /tmp", "host_option_forbidden"),
+            ("--cli /tmp/fake", "host_option_forbidden"),
+            ("-- request", "command_arguments_invalid"),
+            ('--request "unterminated', "command_arguments_invalid"),
+        ):
+            with self.subTest(raw=raw):
+                with self.assertRaises(orchestrator.command_ux.CommandUXError) as caught:
+                    orchestrator.command_ux.argv_with_qwen_command_args(
+                        ["create", "--workspace", "/safe", "--cli", "/safe/cli"],
+                        {orchestrator.command_ux.QWEN_COMMAND_ARGS_ENV: raw},
+                    )
+                self.assertEqual(caught.exception.code, code)
+
+        root, workspace, cli = self.create_workspace()
+        completed = self.run_host(
+            "create", "--workspace", workspace, "--cli", cli,
+            qwen_args='--request "unterminated',
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertEqual(
+            json.loads(completed.stderr)["code"], "command_arguments_invalid"
+        )
 
     def test_create_publication_refuses_target_that_appeared_after_start(self):
         root, workspace, cli = self.create_workspace()

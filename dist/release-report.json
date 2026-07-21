@@ -3,7 +3,7 @@
     {
       "archive": "drawio-skill-agent-extension.zip",
       "files": 148,
-      "sha256": "1807f19bd42fc8258b2f42651f2522d0177d0f8c29481e9a1ac808cfde4c157d",
+      "sha256": "6b58a835cc2d192c40fde49ea85cedd1fabd8f7643fff0108e90b72e932f01d0",
       "skill": "drawio",
       "status": "passed"
     }

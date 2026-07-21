@@ -450,14 +450,19 @@ def add_command_guidance(result, resolution, *, persist=True):
         for decision in checkpoint_value.get("allowed_decisions", []):
             short = f"/drawio:resume {decision}"
             if decision == "continue":
-                short += ' "необязательные замечания"'
+                short += " " + command_ux.quote_command_value("необязательные замечания")
             if short_allowed:
                 commands["short"][decision] = short
-            commands["explicit"][decision] = f'/drawio:resume --run "{run_id}" --decision {decision}'
+            commands["explicit"][decision] = (
+                "/drawio:resume --run "
+                f"{command_ux.quote_command_value(run_id)} --decision {decision}"
+            )
         result["short_resume_available"] = short_allowed
     if run_id:
         commands["trace"] = "/drawio:trace"
-        commands["trace_explicit"] = f'/drawio:trace --run "{run_id}"'
+        commands["trace_explicit"] = (
+            "/drawio:trace --run " + command_ux.quote_command_value(run_id)
+        )
     if commands:
         result["next_commands"] = commands
     if persist and result.get("run_dir"):
@@ -1219,8 +1224,8 @@ def main():
     trace.add_argument("run_positional", nargs="?")
     trace.add_argument("--run")
     trace.add_argument("--workspace", default=str(Path.cwd()))
-    args = parser.parse_args()
     try:
+        args = parser.parse_args(command_ux.argv_with_qwen_command_args())
         if args.command in {"create", "improve"}:
             diagram, request = command_ux.split_diagram_request(
                 args.input, diagram=args.diagram, request=args.request,

@@ -68,10 +68,14 @@ Trace re-parses each saved raw CLI result to derive the effective model and
 role output independently of manifest claims.
 
 The command honors `PYTHON_BIN`, `GIGACODE_HOME`, `GIGACODE_EXTENSIONS_DIR`, and
-`GIGACODE_BIN` when those installer-supported overrides are present. Its
-`{{args}}` placeholder is intentionally left to Qwen's custom-command processor,
-which applies shell escaping before `!{...}` execution. A non-zero host exit is
-not suppressed or presented as a successful review.
+`GIGACODE_BIN` when those installer-supported overrides are present. Qwen's
+custom-command processor shell-escapes the complete `{{args}}` expansion as one
+value, so every Draw.io command transports that value through
+`DRAWIO_COMMAND_ARGS` and lets `command_ux.py` reconstruct logical tokens with
+`shlex.split`. The bridge never uses `eval`, rejects host-owned options, accepts
+one leading `@` only for a `.drawio` path, and returns a structured error for
+malformed quoting. A non-zero host exit is not suppressed or presented as a
+successful review.
 
 The main host starts every run with the absolute installed extension path:
 

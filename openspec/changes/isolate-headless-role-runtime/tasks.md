@@ -38,3 +38,11 @@
 - [x] 6.3 Teach host results and `/drawio:trace` to verify and expose the approved degraded path without weakening isolation checks
 - [x] 6.4 Add regression coverage for JSONL model proof, partial turn-limit evidence, one fallback only, fail-closed isolation, and trace integrity
 - [x] 6.5 Bump, build, verify, commit, and publish the side-by-side `1.23.0-corporate.6` ZIP
+
+## 7. Corporate Qwen custom-command argument transport
+
+- [x] 7.1 Specify one shell-escaped raw argument value, safe internal tokenization, Draw.io `@` normalization, and host-owned option rejection
+- [x] 7.2 Apply the bridge to create, improve, review, resume, and trace, and make every generated `next_commands` value executable through it
+- [x] 7.3 Add regression coverage for the exact quoted, `@`-prefixed, advanced-flag, resume-feedback, and explicit-trace cases captured on corporate GigaCode
+- [x] 7.4 Extend installer verification and operator documentation with the command-transport contract
+- [ ] 7.5 Bump, build, verify, commit, and publish the side-by-side `1.23.0-corporate.7` ZIP

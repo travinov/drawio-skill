@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shlex
+import sys
 import unicodedata
 from pathlib import Path
 
@@ -11,6 +14,8 @@ from pathlib import Path
 DECISIONS = (
     "continue", "approve", "approve_with_findings", "pause", "stop", "manual_handoff",
 )
+QWEN_COMMAND_ARGS_ENV = "DRAWIO_COMMAND_ARGS"
+HOST_OWNED_OPTIONS = ("--workspace", "--cli")
 
 
 class CommandUXError(ValueError):
@@ -27,6 +32,57 @@ class CommandUXError(ValueError):
         if self.hint:
             result["hint"] = self.hint
         return result
+
+
+def _normalize_qwen_token(token):
+    """Accept Qwen's file-reference marker only for Draw.io path tokens."""
+    if token.startswith("@") and token[1:].lower().endswith(".drawio"):
+        return token[1:]
+    return token
+
+
+def qwen_command_tokens(raw):
+    """Parse one shell-escaped custom-command transport value without executing it."""
+    try:
+        tokens = shlex.split(raw or "", posix=True)
+    except ValueError as exc:
+        raise CommandUXError(
+            "command_arguments_invalid",
+            f"could not parse command arguments: {exc}",
+            hint="check that every quoted value has a closing quote",
+        ) from exc
+    for token in tokens:
+        option = token.split("=", 1)[0]
+        if token == "--":
+            raise CommandUXError(
+                "command_arguments_invalid",
+                "the argument separator -- is not supported by Draw.io commands",
+            )
+        if option in HOST_OWNED_OPTIONS:
+            raise CommandUXError(
+                "host_option_forbidden",
+                f"{option} is owned by the extension host and cannot be overridden",
+            )
+    return [_normalize_qwen_token(token) for token in tokens]
+
+
+def argv_with_qwen_command_args(argv=None, environ=None):
+    """Insert parsed Qwen arguments before fixed host-owned command arguments."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    environ = os.environ if environ is None else environ
+    if QWEN_COMMAND_ARGS_ENV not in environ:
+        return argv
+    if not argv:
+        raise CommandUXError(
+            "command_arguments_invalid", "Draw.io command name is missing"
+        )
+    tokens = qwen_command_tokens(environ.get(QWEN_COMMAND_ARGS_ENV, ""))
+    return [argv[0], *tokens, *argv[1:]]
+
+
+def quote_command_value(value):
+    """Quote one value for the raw custom-command grammar parsed by shlex."""
+    return shlex.quote(str(value))
 
 
 def workspace_path(workspace):

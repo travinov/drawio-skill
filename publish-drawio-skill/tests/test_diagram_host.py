@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -163,8 +164,9 @@ class DiagramHostTests(unittest.TestCase):
         self.assertTrue(prompt.startswith("---\ndescription:"))
         self.assertIn("!{PYTHON=python3", prompt)
         self.assertIn("scripts/diagram_host.py", prompt)
-        self.assertIn("{{args}}", prompt)
+        self.assertIn("DRAWIO_COMMAND_ARGS={{args}}", prompt)
         self.assertNotIn("--artifact {{args}}", prompt)
+        self.assertNotIn('"$CLI" {{args}}', prompt)
         self.assertIn("Do not call any tools", prompt)
         self.assertIn("GIGACODE_EXTENSIONS_DIR", prompt)
         self.assertIn("GIGACODE_BIN", prompt)
@@ -174,7 +176,7 @@ class DiagramHostTests(unittest.TestCase):
     def test_cli_review_runs_end_to_end_with_gigacode_event_contract(self):
         with tempfile.TemporaryDirectory() as temp:
             workspace = Path(temp)
-            artifact = workspace / "diagram.drawio"
+            artifact = workspace / "diagram with spaces.drawio"
             artifact.write_text(clean_diagram(), encoding="utf-8")
             cli = workspace / "fake-gigacode"
             cli.write_text(
@@ -229,20 +231,41 @@ print(json.dumps(events))
                 capture_output=True,
                 check=False,
                 cwd=workspace,
+                env={
+                    **os.environ,
+                    "DRAWIO_COMMAND_ARGS": '@"diagram with spaces.drawio"',
+                },
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             result = json.loads(completed.stdout)
             self.assertEqual(result["status"], "passed")
             self.assertEqual(result["artifact"]["path"], str(artifact.resolve()))
-            self.assertEqual(result["command_resolution"]["diagram_selection"], "only_drawio_in_workspace")
+            self.assertEqual(result["command_resolution"]["diagram_selection"], "explicit")
             self.assertEqual(result["reviewer"]["resolution_mode"], "isolated_cli")
             self.assertTrue(result["reviewer"]["model_proof"]["verified"])
+            improve = result["next_commands"]["improve"]
+            self.assertTrue(improve.startswith("/drawio:improve --diagram "))
+            improve_tokens = diagram_host.command_ux.qwen_command_tokens(
+                improve.removeprefix("/drawio:improve ")
+            )
+            self.assertEqual(improve_tokens[0], "--diagram")
+            self.assertEqual(improve_tokens[1], str(artifact.resolve()))
+            self.assertEqual(improve_tokens[2], "--request")
             manifest = [
                 json.loads(line)
                 for line in Path(result["evidence"]["manifest"]).read_text(encoding="utf-8").splitlines()
             ]
             self.assertIn("model_resolved", [event["event_type"] for event in manifest])
             self.assertIn("review_verdict", [event["event_type"] for event in manifest])
+
+    def test_all_qwen_commands_use_one_raw_argument_transport(self):
+        for name in ("create", "improve", "review", "resume", "trace"):
+            with self.subTest(name=name):
+                prompt = (
+                    ROOT / "commands" / "drawio" / f"{name}.md"
+                ).read_text(encoding="utf-8")
+                self.assertEqual(prompt.count("{{args}}"), 1)
+                self.assertIn("DRAWIO_COMMAND_ARGS={{args}}", prompt)
 
 
 def jsonschema_validator(schema):

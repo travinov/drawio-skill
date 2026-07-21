@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 EXTENSION_NAME="publish-drawio-skill"
-EXPECTED_VERSION="${DRAWIO_EXTENSION_VERSION:-1.23.0-corporate.6}"
+EXPECTED_VERSION="${DRAWIO_EXTENSION_VERSION:-1.23.0-corporate.7}"
 GIGACODE_HOME="${GIGACODE_HOME:-$HOME/.gigacode}"
 GIGACODE_BIN="${GIGACODE_BIN:-$GIGACODE_HOME/bin/gigacode}"
 GIGACODE_SKILLS_DIR="${GIGACODE_SKILLS_DIR:-$GIGACODE_HOME/skills}"
@@ -147,8 +147,20 @@ def verify_tree(root, label):
         if not (root / relative).is_file():
             fail(f"Missing {label} command host file: {relative}")
     for command_file in COMMAND_FILES:
-        if not (root / command_file).is_file():
+        command_path = root / command_file
+        if not command_path.is_file():
             fail(f"Missing {label} command host file: {command_file}")
+        command_text = command_path.read_text(encoding="utf-8")
+        if command_text.count("{{args}}") != 1:
+            fail(f"{label} {command_file} must contain exactly one {{{{args}}}} placeholder")
+        if "DRAWIO_COMMAND_ARGS={{args}}" not in command_text:
+            fail(f"{label} {command_file} does not use the safe DRAWIO_COMMAND_ARGS bridge")
+    command_ux = (root / "scripts" / "command_ux.py").read_text(encoding="utf-8")
+    for marker in ("shlex.split", "HOST_OWNED_OPTIONS", "DRAWIO_COMMAND_ARGS"):
+        if marker not in command_ux:
+            fail(f"Missing {label} command argument bridge marker: {marker}")
+    if "eval(" in command_ux or "shell=True" in command_ux:
+        fail(f"Unsafe {label} command argument bridge implementation")
     manifest = load_json(root / "gemini-extension.json")
     if manifest.get("name") != "publish-drawio-skill":
         fail(f"Unexpected {label} manifest name: {manifest.get('name')!r}")

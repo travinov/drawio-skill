@@ -2,7 +2,7 @@
 name: drawio-skill
 description: Use when the user requests diagrams, flowcharts, roadmap diagrams, git-flow / branching strategy timelines, architecture diagrams, ER diagrams, UML / sequence / class diagrams, network topology, cloud architecture from Terraform or Kubernetes manifests, ML/DL model figures (Transformer/CNN/LSTM), mind maps, or any visualization. Also use proactively when explaining systems with 3+ components, complex data flows, or relationships that benefit from visual representation. Best suited when the diagram needs custom styling, rich shape vocabulary, swimlanes, precise timeline/lane placement, intake clarification, canonical XLSX/CSV roadmap intake, full milestone revision history, baseline comparison, milestone shift markers, or exportable images (PNG/SVG/PDF/JPG). Generates .drawio XML and exports locally via the native draw.io desktop CLI.
 license: MIT
-metadata: {"openclaw":{"requires":{"anyBins":["draw.io","drawio"]},"emoji":"📐","os":["darwin","linux","win32"],"install":[{"id":"marketplace-drawio","kind":"manual","label":"Install draw.io Desktop from the corporate application marketplace / SberUserSoft","os":["darwin","win32"]},{"id":"graphviz","kind":"manual","label":"Install Graphviz for optional autolayout.py / gitflow.py edge routing if approved in your environment","optional":true}]},"hermes":{"tags":["drawio","diagram","flowchart","git-flow","architecture","visualization","uml"],"category":"design","requires_tools":["drawio","draw.io"],"related_skills":["mermaid","excalidraw","plantuml"]},"author":"Agents365-ai","version":"1.23.0-corporate.6"}
+metadata: {"openclaw":{"requires":{"anyBins":["draw.io","drawio"]},"emoji":"📐","os":["darwin","linux","win32"],"install":[{"id":"marketplace-drawio","kind":"manual","label":"Install draw.io Desktop from the corporate application marketplace / SberUserSoft","os":["darwin","win32"]},{"id":"graphviz","kind":"manual","label":"Install Graphviz for optional autolayout.py / gitflow.py edge routing if approved in your environment","optional":true}]},"hermes":{"tags":["drawio","diagram","flowchart","git-flow","architecture","visualization","uml"],"category":"design","requires_tools":["drawio","draw.io"],"related_skills":["mermaid","excalidraw","plantuml"]},"author":"Agents365-ai","version":"1.23.0-corporate.7"}
 ---
 
 # Draw.io Diagrams
@@ -149,6 +149,11 @@ not conversational requests to list directories or call native agents:
 These conversational forms use the current workspace. Create generates a
 collision-safe target; improve/review auto-select only one root-level `.drawio`;
 resume auto-selects only one pending checkpoint; trace selects the latest run.
+Qwen custom-command arguments cross the shell boundary only through the single
+`DRAWIO_COMMAND_ARGS={{args}}` transport value. `command_ux.py` tokenizes that
+value without shell evaluation, normalizes a leading `@` only on a `.drawio`
+path, and rejects attempts to override the host workspace or CLI. Every
+user-visible `next_commands` value must round-trip through this same grammar.
 Ambiguity fails before role or validator execution. Explicit flags remain
 supported for automation.
 
