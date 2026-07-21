@@ -53,7 +53,7 @@ isolation flags, builds an argument array, disables extensions with
 `--extensions none`, supplies the immutable role contract through
 `--system-prompt`, removes every core tool from discovery with a non-empty
 `--core-tools` sentinel, excludes fork/MCP tools with `--exclude-tools`, applies
-`--max-session-turns`, enforces plan/read-only approval mode, captures output,
+`--max-session-turns`, uses non-interactive default approval, captures output,
 and never executes model output. The canonical runtime JSON alone is supplied
 on stdin. Never concatenate a shell command and never interpolate diagram
 labels, XML, IDs, user text, or links into command metadata.
@@ -72,11 +72,19 @@ python3 scripts/agent_runtime.py reviewer reviewer-input.json \
 ```
 
 The verified upstream Qwen Code 0.13.1 contract supports `--model`, `--prompt`,
-`--output-format json`, `--approval-mode plan`, `--extensions none`,
+`--output-format json`, `--approval-mode default`, `--extensions none`,
 `--system-prompt`, `--max-session-turns`, `--core-tools`, and `--exclude-tools`. Corporate
 GigaCode must advertise the same required isolation controls before a role is
 started. It also supports `--auth-type gigacode`; the adapter adds that auth
 type when CLI help identifies GigaCode.
+
+Do not use `--approval-mode plan` for these tool-free JSON roles. Qwen Code
+0.13.1 injects a Plan-mode reminder that requires the model to call
+`exit_plan_mode`; the isolated registry deliberately contains no such tool, so
+that contradictory contract can repeat until `FatalTurnLimitedError`. Default
+approval avoids the reminder without granting any capability: the non-empty
+`--core-tools` sentinel still removes all core tools, the deny list remains
+active, and the event audit rejects any observed tool call.
 
 Use a bounded timeout, explicit working directory, captured stdout/stderr, and a minimal allowlisted environment. Do not inherit arbitrary API keys, tokens, passwords, or unrelated process secrets. The Reviewer process must receive read-only inputs and no artifact-publication capability. A model response is data for the Supervisor or deterministic tools; it is not permission to run response text as a command.
 

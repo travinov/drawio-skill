@@ -28,6 +28,7 @@ Upstream Qwen Code 0.13.1 provides the compatible controls needed here: `--exten
 5. **Fail closed on missing controls.** Treat `--extensions`, `--system-prompt`, `--max-session-turns`, and `--exclude-tools` as required isolated-role capabilities, alongside the existing model/prompt/output/approval flags.
 6. **Audit customization leakage.** Reject a success stream if system initialization still advertises Draw.io extension commands or diagram custom agents. Preserve raw capture and failure evidence for traceability.
 7. **Capture before interpreting exit status.** Atomically persist stdout and redacted stderr immediately after every completed child process, including non-zero exits, and bind both files into `role_failed` or `role_finished` manifest evidence.
+8. **Do not put tool-free roles in Plan mode.** Use `--approval-mode default` for isolated JSON decisions. Qwen Code 0.13.1 injects an extra user-message reminder in Plan mode that orders the model to call `exit_plan_mode`; that conflicts with the empty tool registry and caused the corporate `.4` Supervisor to retry until exit 53. Default approval does not expose or approve tools because the core-tool sentinel, deny list, and event audit remain authoritative.
 
 ## Risks / Trade-offs
 
@@ -37,11 +38,12 @@ Upstream Qwen Code 0.13.1 provides the compatible controls needed here: `--exten
 - **Role prompt size grows** -> schemas remain in the system prompt while variable runtime JSON stays on stdin, avoiding user data in argv and keeping the current input pipeline.
 - **Turn limit is consumed by denied-tool retries** -> the non-empty `--core-tools` sentinel removes core tool schemas before inference; the limit stays small and any remaining failure is preserved for diagnosis instead of hidden.
 - **Non-zero CLI exit loses structured events** -> capture stdout/stderr before checking the return code and expose their integrity plus isolation audit through `/drawio:trace`.
+- **Default approval appears less restrictive than Plan mode** -> tool availability is controlled independently by the empty core-tool allowlist and deny list; default approval only removes the contradictory Plan-mode reminder.
 
 ## Migration Plan
 
-1. Ship as a new side-by-side `1.23.0-corporate.4` release ZIP and preserve
-   `1.23.0-corporate.3` plus the earlier `.2` package for rollback.
+1. Ship the follow-up as a new side-by-side `1.23.0-corporate.5` release ZIP and preserve
+   `1.23.0-corporate.4` plus the earlier packages for rollback.
 2. Reinstall from the approved local archive on the corporate Mac.
 3. Re-run the same `/drawio:create` smoke test and inspect `runtime-output.json` plus `/drawio:trace`.
 4. Roll back by reinstalling the previous ZIP if capability detection reports that the corporate fork lacks a required flag.

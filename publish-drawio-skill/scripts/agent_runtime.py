@@ -33,6 +33,7 @@ SAFE_ENV_KEYS = {
     "SYSTEMROOT", "TEMP", "TMP", "TMPDIR", "WINDIR",
 }
 ROLE_MAX_SESSION_TURNS = 4
+ROLE_APPROVAL_MODE = "default"
 ROLE_CORE_TOOL_SENTINEL = "__drawio_isolated_role_has_no_tools__"
 ROLE_EXCLUDED_TOOLS = (
     "agent",
@@ -72,6 +73,7 @@ class RoleOutputContractError(SupervisorError):
 
 def role_isolation_controls():
     return {
+        "approval_mode": ROLE_APPROVAL_MODE,
         "extensions": ["none"],
         "core_tools": [ROLE_CORE_TOOL_SENTINEL],
         "excluded_tools": list(ROLE_EXCLUDED_TOOLS),
@@ -186,7 +188,7 @@ def build_gemini_command(cli, model=None, auth_type=None, *, system_prompt):
             "Return exactly one object satisfying the system contract."
         ),
         "--output-format", "json",
-        "--approval-mode", "plan",
+        "--approval-mode", ROLE_APPROVAL_MODE,
     ])
     return command
 

@@ -23,3 +23,10 @@
 - [x] 4.3 Extend `/drawio:trace` and host results with successful isolation proof and failed-role capture diagnostics
 - [x] 4.4 Add regression tests for `FatalTurnLimitedError`, tool-registry isolation, failed captures, and trace evidence
 - [x] 4.5 Bump, build, verify, commit, and publish the side-by-side `1.23.0-corporate.4` ZIP
+
+## 5. Corporate Plan-mode conflict follow-up
+
+- [x] 5.1 Replace Plan approval with default approval only for isolated tool-free JSON roles and record the selected mode in evidence
+- [x] 5.2 Add regression coverage proving the command avoids the Qwen 0.13.1 `exit_plan_mode` reminder contract while retaining zero-tool isolation
+- [x] 5.3 Update the routing and operator contract with the verified Plan-mode root cause
+- [ ] 5.4 Bump, build, verify, commit, and publish the side-by-side `1.23.0-corporate.5` ZIP

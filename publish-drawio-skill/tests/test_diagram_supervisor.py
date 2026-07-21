@@ -1976,6 +1976,9 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertEqual(event["event_type"], "role_failed")
             self.assertEqual(payload["failure_kind"], "turn_limit")
             self.assertEqual(
+                payload["isolation_controls"]["approval_mode"], "default"
+            )
+            self.assertEqual(
                 payload["isolation_controls"]["core_tools"],
                 [agent_runtime.ROLE_CORE_TOOL_SENTINEL],
             )
@@ -2137,8 +2140,10 @@ class AgentRuntimeTests(unittest.TestCase):
                 result["command"][result["command"].index("--model") + 1],
                 "vllm/DeepSeek-V4-Flash-262k",
             )
-            self.assertIn("--approval-mode", result["command"])
-            self.assertIn("plan", result["command"])
+            self.assertEqual(
+                result["command"][result["command"].index("--approval-mode") + 1],
+                agent_runtime.ROLE_APPROVAL_MODE,
+            )
             self.assertEqual(
                 result["command"][result["command"].index("--extensions") + 1],
                 "none",
@@ -2167,11 +2172,95 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertNotIn("-c", result["command"])
             self.assertNotIn("/model", " ".join(result["command"]))
             self.assertEqual(result["resolution"]["resolution_mode"], "isolated_cli")
+            self.assertEqual(result["isolation_controls"]["approval_mode"], "default")
+            self.assertEqual(
+                result["isolation_controls"]["max_session_turns"],
+                agent_runtime.ROLE_MAX_SESSION_TURNS,
+            )
+            self.assertEqual(
+                result["isolation_controls"]["core_tools"],
+                [agent_runtime.ROLE_CORE_TOOL_SENTINEL],
+            )
+            self.assertEqual(
+                result["isolation_controls"]["excluded_tools"],
+                list(agent_runtime.ROLE_EXCLUDED_TOOLS),
+            )
             self.assertFalse(output_path.exists(), "dry-run must not execute or publish model output")
             policy = json.loads(
                 (ROOT / "data" / "model-routing.default.json").read_text(encoding="utf-8")
             )
             self.assertEqual(policy["global_interactive_model"], "preserve")
+
+    def test_invoke_role_uses_default_approval_mode_and_rejects_plan_mode_cli(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            cli = write_text(
+                temp / "approval-mode-cli",
+                f"#!{sys.executable}\n"
+                "import json, sys\n"
+                "if '--help' in sys.argv:\n"
+                "    print('--model --prompt --output-format --approval-mode --extensions --system-prompt --max-session-turns --core-tools --exclude-tools')\n"
+                "    raise SystemExit(0)\n"
+                "if '--version' in sys.argv:\n"
+                "    print('26.5.17-test')\n"
+                "    raise SystemExit(0)\n"
+                "payload=json.loads(sys.stdin.read())\n"
+                "model=sys.argv[sys.argv.index('--model')+1]\n"
+                "approval=sys.argv[sys.argv.index('--approval-mode')+1]\n"
+                "if approval == 'plan':\n"
+                "    print('plan mode is not allowed for isolated roles', file=sys.stderr)\n"
+                "    raise SystemExit(23)\n"
+                "value={'schema_version':1,'verdict_id':'approval-mode','run_id':payload['run_id'],'candidate_sha256':payload['candidate']['sha256'],'report_sha256':payload['validation_report']['sha256'],'receipt_sha256':payload['validation_receipt']['sha256'],'verdict':'approve','reviewed_at':'2026-07-16T00:00:00Z','findings':[]}\n"
+                "encoded=json.dumps(value)\n"
+                "print(json.dumps([{'type':'system','subtype':'init','model':model,'qwen_code_version':'0.13.1','agents':[],'slash_commands':[]},"
+                "{'type':'assistant','message':{'model':model,'content':[{'type':'text','text':encoded}]}},"
+                "{'type':'result','subtype':'success','is_error':False,'result':encoded,'stats':{'models':{model:{'api':{'totalRequests':1}}}}}]))\n",
+            )
+            os.chmod(cli, 0o755)
+            input_path = write_json(
+                temp / "input.json",
+                {
+                    "run_id": "approval-mode-run",
+                    "candidate": {"sha256": "1" * 64},
+                    "validation_report": {"sha256": "2" * 64},
+                    "validation_receipt": {"sha256": "3" * 64},
+                },
+            )
+            output_path = temp / "verdict.json"
+
+            result = agent_runtime.invoke_role(
+                "reviewer",
+                input_path,
+                output_path,
+                cli=str(cli),
+                run_dir=temp / "run",
+            )
+
+            self.assertEqual(result["command"][result["command"].index("--approval-mode") + 1], "default")
+            self.assertEqual(result["runtime_metadata"]["reported_model"], "vllm/DeepSeek-V4-Flash-262k")
+            self.assertTrue(result["runtime_metadata"]["isolation_proof"]["verified"])
+            self.assertEqual(result["runtime_metadata"]["isolation_proof"]["tool_calls"], 0)
+
+            events = [
+                json.loads(line)
+                for line in (temp / "run/run-manifest.jsonl").read_text().splitlines()
+            ]
+            finished = next(event for event in events if event["event_type"] == "role_finished")
+            self.assertEqual(finished["payload"]["isolation_controls"]["approval_mode"], "default")
+            self.assertEqual(
+                finished["payload"]["isolation_controls"]["max_session_turns"],
+                agent_runtime.ROLE_MAX_SESSION_TURNS,
+            )
+            self.assertEqual(
+                finished["payload"]["isolation_controls"]["core_tools"],
+                [agent_runtime.ROLE_CORE_TOOL_SENTINEL],
+            )
+            self.assertEqual(
+                finished["payload"]["isolation_controls"]["excluded_tools"],
+                list(agent_runtime.ROLE_EXCLUDED_TOOLS),
+            )
+            self.assertTrue(output_path.exists())
+            self.assertEqual(json.loads(output_path.read_text())["verdict"], "approve")
 
     def test_gigacode_dry_run_pins_corporate_auth_type_when_supported(self):
         for executable, help_text in (

@@ -17,7 +17,11 @@ The extension SHALL resolve Supervisor, Reviewer, Repair, and Semantic Analyst m
 
 #### Scenario: Isolated role excludes extension context and tools
 - **WHEN** the main host invokes an isolated diagram role
-- **THEN** the headless process disables installed extensions, supplies the role contract as a system prompt, uses a non-empty allowlist sentinel that removes every core tool from the model registry, excludes fork-specific and MCP tools, and applies a bounded turn limit
+- **THEN** the headless process disables installed extensions, supplies the role contract as a system prompt, uses default non-interactive approval without a Plan-mode reminder, uses a non-empty allowlist sentinel that removes every core tool from the model registry, excludes fork-specific and MCP tools, and applies a bounded turn limit
+
+#### Scenario: Tool-free role runs on Qwen Code 0.13.1
+- **WHEN** the isolated role starts on a runtime where Plan approval injects a reminder requiring `exit_plan_mode`
+- **THEN** the adapter selects default approval for that child process and still proves that no tools or Draw.io customizations were exposed or called
 
 #### Scenario: Isolated role attempts delegation or another tool
 - **WHEN** any isolated-role event contains a tool call or still advertises Draw.io custom agents or commands

@@ -19,6 +19,10 @@ The lifecycle host SHALL treat every isolated Supervisor, Semantic Analyst, Repa
 - **WHEN** a corporate model would repeatedly select denied tools instead of returning its JSON decision
 - **THEN** the role invocation advertises no core tools, remains bounded, and preserves the failed runtime if the model still exhausts the limit
 
+#### Scenario: Plan mode conflicts with the empty tool registry
+- **WHEN** Qwen Code Plan mode would instruct the isolated model to finish through `exit_plan_mode`
+- **THEN** the host uses default non-interactive approval for the tool-free child and retains the same empty registry, deny list, turn limit, timeout, and event audit
+
 #### Scenario: Operator traces an unsuccessful role
 - **WHEN** `/drawio:trace` inspects a run containing `role_failed`
 - **THEN** it reports the failed role, failure phase, capture integrity, isolation evidence, and diagnostic without misclassifying an expected failed workflow as a successfully accepted artifact

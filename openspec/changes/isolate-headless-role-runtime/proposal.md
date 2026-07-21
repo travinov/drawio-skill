@@ -10,6 +10,7 @@ Corporate GigaCode 26.5.17 loaded the installed extension and recursively invoke
 - Audit raw GigaCode events for tool calls and loaded custom agents/extensions before accepting role output.
 - Remove all core tools from the isolated model's advertised tool registry, rather than only denying their execution after selection.
 - Preserve stdout, redacted stderr, and isolation evidence even when the headless CLI exits non-zero or exhausts its turn budget.
+- Avoid Qwen 0.13.1 Plan-mode reminders in tool-free role sessions, because they require the deliberately unavailable `exit_plan_mode` tool and can consume the entire turn budget.
 - Add a regression fixture based on the captured corporate runtime failure and report actionable isolation diagnostics.
 
 ## Capabilities
