@@ -104,7 +104,7 @@ def role_body(path):
 
 def role_schema_name(role):
     if role == "reviewer":
-        return "reviewer-verdict.v1.schema.json"
+        return "reviewer-analysis.v1.schema.json"
     if role == "repair":
         return "diagram-patch.v1.schema.json"
     if role == "supervisor":
@@ -147,13 +147,11 @@ def role_output_contract(role, payload):
         "Return exactly one JSON object that validates against this schema. Do not omit required properties.",
         json.dumps(schema, ensure_ascii=False, sort_keys=True),
     ]
-    bindings = reviewer_evidence_bindings(payload) if role == "reviewer" else None
-    if bindings:
+    if role == "reviewer":
         sections.extend(
             [
-                "## Mandatory reviewer evidence bindings",
-                "Copy these four values exactly into the output object; they are not optional and must not be renamed:",
-                json.dumps(bindings, ensure_ascii=False, sort_keys=True),
+                "## Host-owned reviewer evidence bindings",
+                "Return the analytical verdict and findings. Do not copy run_id, candidate_sha256, report_sha256, or receipt_sha256. The deterministic host derives those fields from the validated runtime input and constructs the final hash-bound verdict. Optional legacy declarations are diagnostic only.",
             ]
         )
     return "\n\n".join(sections)
@@ -642,18 +640,45 @@ def validate_role_output(role, parsed):
     return parsed
 
 
-def validate_role_bindings(role, payload, parsed):
-    expected = reviewer_evidence_bindings(payload) if role == "reviewer" else None
+def finalize_role_output(role, payload, parsed):
+    """Construct host-owned envelopes after validating the model decision."""
+    if role != "reviewer":
+        return parsed, None
+    expected = reviewer_evidence_bindings(payload)
     if not expected:
-        return parsed
-    mismatches = [
-        key for key, value in expected.items() if parsed.get(key) != value
-    ]
-    if mismatches:
+        raise SupervisorError("isolated reviewer input has no supported evidence binding")
+    declared = {
+        key: parsed[key] for key in expected if key in parsed
+    }
+    mismatches = sorted(
+        key for key, value in declared.items() if value != expected[key]
+    )
+    final = {
+        key: parsed[key]
+        for key in ("schema_version", "verdict_id", "verdict", "reviewed_at", "findings")
+    }
+    if "reviewer" in parsed:
+        final["reviewer"] = parsed["reviewer"]
+    final.update(expected)
+    schema = load_json(ROOT / "data" / "reviewer-verdict.v1.schema.json")
+    errors = sorted(
+        jsonschema.Draft202012Validator(
+            schema, format_checker=jsonschema.FormatChecker()
+        ).iter_errors(final),
+        key=lambda error: (list(error.path), error.message),
+    )
+    if errors:
         raise SupervisorError(
-            "isolated reviewer output evidence binding mismatch: " + ", ".join(mismatches)
+            f"host-bound reviewer verdict schema failed: {errors[0].message}"
         )
-    return parsed
+    proof = {
+        "source": "validated_role_input",
+        "expected": expected,
+        "model_declared": declared,
+        "declared_mismatches": mismatches,
+        "verified": True,
+    }
+    return final, proof
 
 
 def model_unavailable(stderr):
@@ -948,7 +973,11 @@ def invoke_role(
         )
         try:
             parsed_output = validate_role_output(role, parsed_output)
-            parsed_output = validate_role_bindings(role, payload, parsed_output)
+            parsed_output, binding_proof = finalize_role_output(
+                role, payload, parsed_output
+            )
+            if binding_proof is not None:
+                runtime_metadata["binding_proof"] = binding_proof
         except SupervisorError as exc:
             invalid_output_sha256 = hashlib.sha256(
                 json.dumps(
@@ -1021,6 +1050,7 @@ def invoke_role(
                 "stderr_capture": result["stderr_capture"],
                 "stderr_capture_sha256": capture_evidence["stderr_capture_sha256"],
                 "model_proof": runtime_metadata["model_proof"],
+                "binding_proof": runtime_metadata.get("binding_proof"),
                 "isolation_proof": runtime_metadata.get("isolation_proof"),
                 "isolation_controls": role_isolation_controls(),
                 "runtime_version": runtime_metadata.get("runtime_version"),

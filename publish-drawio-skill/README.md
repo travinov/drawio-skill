@@ -186,6 +186,14 @@ Repair и Reviewer. Repair запускается только при замеч
 Reviewer. Несовместимое с фазой действие и остальные evidence-гейты остаются
 fail-closed.
 
+Reviewer больше не обязан переписывать `run_id` и длинные SHA из входа. Он
+возвращает только аналитическое решение и findings; host формирует финальный
+hash-bound verdict из проверенного input и показывает `binding_proof`. Даже
+если модель вернула устаревший или неверный `receipt_sha256`, это фиксируется в
+`declared_mismatches`, но не подменяет host-derived значение. Read-only review
+теперь содержит `workflow.json`, поэтому `/drawio:trace` выбирает свежий review,
+а не более старый improve.
+
 После перезапуска GigaCode проверяйте работу расширения так:
 
 ```text

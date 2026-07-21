@@ -18,6 +18,8 @@ Corporate GigaCode 26.5.17 loaded the installed extension and recursively invoke
 - Let a bare `/drawio:improve` continue from the latest completed, hash-matching read-only review, or from the only workspace diagram when no review handoff is available, without making the user repeat the diagram path or a generic repair request.
 - Start every isolated role with an explicitly empty MCP-server allowlist so globally configured Jira, Bitbucket, and other MCP servers are removed before their tool schemas reach the model.
 - Treat Supervisor `required_roles` as its advisory downstream selection, retain the raw declaration as evidence, and let the deterministic host add the phase-mandatory lifecycle roles instead of rejecting a usable plan for an omitted role name.
+- Make Reviewer return an analytical decision rather than manually copying host-known run and SHA bindings; the deterministic host constructs the final hash-bound verdict and records normalization evidence.
+- Persist read-only review as a traceable workflow and resolve explicit run UUIDs so `/drawio:trace` cannot silently show an older improve run after a newer review.
 - Add a regression fixture based on the captured corporate runtime failure and report actionable isolation diagnostics.
 
 ## Capabilities
@@ -41,4 +43,5 @@ Corporate GigaCode 26.5.17 loaded the installed extension and recursively invoke
 - Deterministic read-only review handoff discovery and bare improve command resolution.
 - Capability-checked empty MCP discovery for isolated roles, while retaining tool denial and event auditing as defense in depth.
 - Deterministic host-owned role authorization for the complete initial and continuation lifecycle, with model-declared and host-mandatory roles recorded separately.
+- Host-bound Reviewer verdicts and one trace-selection contract shared by read-only review and orchestrated workflows.
 - No change to interactive `/model`; each role retains its explicit primary model mapping and only Supervisor gains a bounded, explicit recovery model.

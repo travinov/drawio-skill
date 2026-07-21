@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agents365.local/drawio-skill/schemas/reviewer-analysis.v1.schema.json",
+  "title": "Independent reviewer analytical decision v1",
+  "type": "object",
+  "required": ["schema_version", "verdict_id", "verdict", "reviewed_at", "findings"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "verdict_id": {"type": "string", "minLength": 1},
+    "verdict": {"enum": ["approve", "reject"]},
+    "reviewed_at": {"type": "string", "format": "date-time"},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["finding_id", "severity", "reason"],
+        "additionalProperties": true,
+        "properties": {
+          "finding_id": {"type": "string", "minLength": 1},
+          "severity": {"enum": ["info", "warning", "error"]},
+          "reason": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "deprecated": true,
+      "description": "Optional legacy declaration; the deterministic host binds the final run_id."
+    },
+    "candidate_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "deprecated": true,
+      "description": "Optional legacy declaration; the deterministic host binds the final candidate hash."
+    },
+    "report_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "deprecated": true,
+      "description": "Optional legacy declaration; the deterministic host binds the final report hash."
+    },
+    "receipt_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "deprecated": true,
+      "description": "Optional legacy declaration; the deterministic host binds the final receipt hash."
+    },
+    "reviewer": {
+      "type": "object",
+      "deprecated": true,
+      "additionalProperties": true,
+      "description": "Optional legacy self-report; runtime model proof remains host-derived."
+    }
+  }
+}

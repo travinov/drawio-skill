@@ -98,7 +98,7 @@ active, and the event audit rejects any observed tool call.
 
 Use a bounded timeout, explicit working directory, captured stdout/stderr, and a minimal allowlisted environment. Do not inherit arbitrary API keys, tokens, passwords, or unrelated process secrets. The Reviewer process must receive read-only inputs and no artifact-publication capability. A model response is data for the Supervisor or deterministic tools; it is not permission to run response text as a command.
 
-Publish role output atomically only after the process exits successfully and its JSON conforms to the role schema: Reviewer uses `reviewer-verdict.v1.schema.json`, Repair uses `diagram-patch.v1.schema.json`, Supervisor uses `supervisor-decision.v1.schema.json`, and Semantic Analyst uses `semantic-plan.v1.schema.json`. Prefer GigaCode `stream-json` when CLI help advertises it and retain buffered event-array compatibility. Reject any `tool_use`, `diagram-*` custom agent, or `drawio:*` command leaked into either format; then require one consistent model in the `system` init event and every assistant message. When `result.stats.models` exists it must match too, but Qwen's streamed result may omit aggregate stats. Stock Gemini JSON output is an outer envelope: reject non-empty `error`/`errors`, extract and JSON-decode `response`, then validate only that inner role payload. Preserve redacted runtime stats/errors as evidence, not as the verdict. Direct top-level role JSON may be parsed for compatibility but cannot publish a successful isolated role because it lacks model proof. On timeout, non-zero exit, tool call, customization leak, invalid output, missing proof, or model mismatch, append `role_failed`; do not create the output file or any role-success event.
+Publish role output atomically only after the process exits successfully and its JSON conforms to the role schema: Reviewer analysis uses `reviewer-analysis.v1.schema.json`, Repair uses `diagram-patch.v1.schema.json`, Supervisor uses `supervisor-decision.v1.schema.json`, and Semantic Analyst uses `semantic-plan.v1.schema.json`. The host then constructs and validates the final `reviewer-verdict.v1.schema.json` from trusted input bindings. Prefer GigaCode `stream-json` when CLI help advertises it and retain buffered event-array compatibility. Reject any `tool_use`, `diagram-*` custom agent, or `drawio:*` command leaked into either format; then require one consistent model in the `system` init event and every assistant message. When `result.stats.models` exists it must match too, but Qwen's streamed result may omit aggregate stats. Stock Gemini JSON output is an outer envelope: reject non-empty `error`/`errors`, extract and JSON-decode `response`, then validate only that inner role payload. Preserve redacted runtime stats/errors as evidence, not as the verdict. Direct top-level role JSON may be parsed for compatibility but cannot publish a successful isolated role because it lacks model proof. On timeout, non-zero exit, tool call, customization leak, invalid output, missing proof, or model mismatch, append `role_failed`; do not create the output file or any role-success event.
 
 The only lifecycle runtime-model recovery is declared in policy: after a
 model-proven, tool-free primary Supervisor attempt ends with
@@ -116,14 +116,16 @@ entire payload consists of the fence and one JSON object. Prose outside the
 fence, multiple fences, an unterminated fence, schema-invalid JSON, or missing
 model proof still fails closed.
 
-The isolated prompt must embed the actual role output Schema. For Reviewer it
-must also embed the exact evidence bindings derived from the runtime input;
-prompt guidance never replaces deterministic equality checks before
-publication. If the runtime proves one consistent model but the returned role
-object fails its Schema or evidence bindings, preserve the bounded model proof
-in `role_failed` and the host result while keeping Reviewer status `failed`.
-This proves which model executed, but it does not make the invalid verdict
-usable and must not emit `model_resolved` or `review_verdict` success events.
+The isolated prompt must embed the actual role output Schema. Reviewer receives
+the complete evidence through runtime input but returns only its analytical
+decision; the host derives `run_id`, candidate SHA, report SHA, and receipt SHA,
+constructs the final verdict, and records both raw capture and `binding_proof`.
+Legacy declared hashes are compared for diagnostics but cannot override the
+validated input. If the runtime proves one consistent model but the analytical
+object fails its Schema, preserve the bounded model proof in `role_failed` and
+the host result while keeping Reviewer status `failed`. This proves which model
+executed, but it does not make the invalid verdict usable and must not emit
+`model_resolved` or `review_verdict` success events.
 
 ### Inherited-model degradation outside lifecycle commands
 

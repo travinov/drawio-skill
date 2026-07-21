@@ -86,7 +86,25 @@ def resolve_run(reference, workspace):
     if candidate.exists():
         run_dir = candidate.resolve()
     else:
-        run_dir = run_dir_for(workspace, reference)
+        direct = run_dir_for(workspace, reference)
+        if direct.is_dir():
+            run_dir = direct
+        else:
+            matches = []
+            root = workspace / ".diagram-runs"
+            if root.is_dir():
+                for workflow_path in root.glob("*/workflow.json"):
+                    try:
+                        value = supervisor.load_json(workflow_path)
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        continue
+                    if value.get("run_id") == reference:
+                        matches.append(workflow_path.parent.resolve())
+            if len(matches) > 1:
+                raise supervisor.SupervisorError(
+                    f"diagram run id is ambiguous: {reference}"
+                )
+            run_dir = matches[0] if matches else direct
     if not run_dir.is_dir() or not (run_dir / WORKFLOW_FILE).is_file():
         raise supervisor.SupervisorError(f"diagram run was not found: {reference}")
     if not _inside(run_dir, workspace):
@@ -395,7 +413,7 @@ def host_result(run_dir, workflow, *, error=None):
                         "stderr_capture_sha256", "isolation_controls",
                         "isolation_proof", "exit_code",
                         "attempted_model", "attempt_id", "output_format",
-                        "degradation_reason",
+                        "degradation_reason", "binding_proof",
                     )
                 })
             elif event.get("event_type") == "role_failed":
@@ -973,13 +991,17 @@ def trace_run(reference, workspace):
             start = started_by_role.get(role, []).pop(0) if started_by_role.get(role) else None
             proof_valid = False
             diagnostic = None
+            binding_proof = None
+            binding_proof_valid = False
             try:
                 if not start or not output_valid or not capture_valid or role not in policy["roles"]:
                     raise supervisor.SupervisorError("role evidence set is incomplete")
                 parsed, metadata = agent_runtime.parse_runtime_output(role, capture_path.read_text(encoding="utf-8"))
                 parsed = agent_runtime.validate_role_output(role, parsed)
                 role_input = supervisor.load_json(start["payload"]["input"])
-                agent_runtime.validate_role_bindings(role, role_input, parsed)
+                parsed, binding_proof = agent_runtime.finalize_role_output(
+                    role, role_input, parsed
+                )
                 if parsed != supervisor.load_json(output_path):
                     raise supervisor.SupervisorError("normalized role output differs from runtime capture")
                 expected_model = policy["roles"][role]["requested_model"]
@@ -1009,6 +1031,11 @@ def trace_run(reference, workspace):
                 expected_proof = metadata.get("model_proof")
                 expected_isolation = metadata.get("isolation_proof")
                 recorded_isolation = payload.get("isolation_proof", expected_isolation)
+                recorded_binding_proof = payload.get("binding_proof")
+                binding_proof_valid = (
+                    recorded_binding_proof is None
+                    or recorded_binding_proof == binding_proof
+                )
                 proof_valid = all((
                     metadata.get("reported_model") == resolved_model,
                     bool(expected_proof and expected_proof.get("verified")),
@@ -1028,6 +1055,7 @@ def trace_run(reference, workspace):
                     == expected_isolation_controls,
                     bool(expected_isolation and expected_isolation.get("verified")),
                     recorded_isolation == expected_isolation,
+                    binding_proof_valid,
                     stderr_valid,
                 ))
                 if not proof_valid:
@@ -1042,6 +1070,8 @@ def trace_run(reference, workspace):
                 "fallback_used": payload.get("fallback_used"),
                 "isolation_controls": payload.get("isolation_controls"),
                 "isolation_proof": payload.get("isolation_proof"),
+                "binding_proof": binding_proof,
+                "binding_proof_valid": binding_proof_valid,
                 "diagnostic": diagnostic,
             })
         if event["event_type"] == "role_failed":
@@ -1179,7 +1209,7 @@ def trace_run(reference, workspace):
         and accepted_receipt_valid
     )
     roles = [
-        {key: event["payload"].get(key) for key in ("role", "requested_model", "resolved_model", "resolution_mode", "fallback_used", "model_proof", "isolation_controls", "isolation_proof", "output_sha256")}
+        {key: event["payload"].get(key) for key in ("role", "requested_model", "resolved_model", "resolution_mode", "fallback_used", "model_proof", "isolation_controls", "isolation_proof", "binding_proof", "output_sha256")}
         for event in events if event["event_type"] == "role_finished"
     ]
     status = (

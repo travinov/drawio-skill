@@ -76,7 +76,9 @@ output. A phase-incompatible action fails closed before another role runs. At se
 approval, the checkpoint, semantic-plan file, exact
 change list, and user decision are hash-bound and supplied unchanged to Repair.
 Trace re-parses each saved raw CLI result to derive the effective model and
-role output independently of manifest claims.
+role output independently of manifest claims. Read-only review persists the
+same workflow selection record, so bare trace includes it and an explicit
+published run UUID resolves even when the directory uses a timestamp slug.
 
 The command honors `PYTHON_BIN`, `GIGACODE_HOME`, `GIGACODE_EXTENSIONS_DIR`, and
 `GIGACODE_BIN` when those installer-supported overrides are present. Qwen's
@@ -191,7 +193,7 @@ python3 scripts/diagram_supervisor.py candidate "$RUN_DIR" \
   --repair-class edge-route
 ```
 
-The Reviewer output must conform to `data/reviewer-verdict.v1.schema.json` and bind `run_id`, candidate hash, report hash, and receipt hash. A missing, rejected, or mismatched verdict cannot promote the candidate. The only bypass is an explicitly recorded `--review-exception approved_degraded_review` or `manual_handoff` decision; never use it silently in a normal run.
+The model Reviewer output must conform to `data/reviewer-analysis.v1.schema.json`. The deterministic host binds `run_id`, candidate hash, report hash, and receipt hash from the validated input, validates the resulting `data/reviewer-verdict.v1.schema.json`, and records `binding_proof`. Optional legacy hashes returned by the model are diagnostic only and cannot override host values. A missing or rejected verdict cannot promote the candidate. The only bypass is an explicitly recorded `--review-exception approved_degraded_review` or `manual_handoff` decision; never use it silently in a normal run.
 
 ## Patch-only repair loop
 

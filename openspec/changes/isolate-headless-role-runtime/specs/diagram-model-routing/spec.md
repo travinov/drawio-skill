@@ -51,6 +51,14 @@ The extension SHALL resolve Supervisor, Reviewer, Repair, and Semantic Analyst m
 - **WHEN** the user starts `/drawio:review` while any supported model is selected in the interactive session
 - **THEN** the command host invokes Reviewer with the routing policy model through the isolated CLI and returns its requested model, resolved model, and verified runtime model proof
 
+#### Scenario: Reviewer returns a mismatched legacy receipt hash
+- **WHEN** a model-proven schema-valid Reviewer decision includes a legacy `receipt_sha256` that differs from the validated role input
+- **THEN** the host records the declared mismatch, derives all final evidence bindings from the trusted input, and publishes a final verdict only if that deterministic envelope validates
+
+#### Scenario: Reviewer omits every evidence binding
+- **WHEN** the isolated Reviewer returns only its analytical verdict metadata and findings
+- **THEN** the host adds `run_id`, candidate, report, and receipt hashes from the validated role input and the final verdict remains traceably hash-bound
+
 #### Scenario: Native supervisor reports completion
 - **WHEN** the native agent tool reports that `diagram-supervisor` completed
 - **THEN** the extension does not treat that status as validation or model-routing evidence

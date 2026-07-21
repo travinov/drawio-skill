@@ -89,6 +89,21 @@ class ContractDocumentationTests(unittest.TestCase):
             schema["properties"]["result"]["properties"]["required_roles"]["description"],
         )
 
+    def test_reviewer_bindings_and_review_trace_are_host_owned(self):
+        skill = self.read("SKILL.md")
+        workflow = self.read("references/diagram-supervisor.md")
+        routing = self.read("references/model-routing.md")
+        prompt = self.read("agents/diagram-reviewer.md")
+        schema = json.loads(self.read("data/reviewer-analysis.v1.schema.json"))
+
+        self.assertIn("reviewer-analysis.v1.schema.json", skill)
+        self.assertIn("binding_proof", skill)
+        self.assertIn("Read-only review persists", workflow)
+        self.assertIn("constructs and validates the final", routing)
+        self.assertIn("Do not copy", prompt)
+        self.assertNotIn("run_id", schema["required"])
+        self.assertNotIn("receipt_sha256", schema["required"])
+
 
 if __name__ == "__main__":
     unittest.main()

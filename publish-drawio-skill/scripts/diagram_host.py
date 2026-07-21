@@ -26,6 +26,11 @@ def utc_slug():
     return f"review-{stamp}-{uuid.uuid4().hex[:8]}"
 
 
+def write_review_workflow(run_dir, workflow):
+    workflow["updated_at"] = supervisor.utc_now()
+    supervisor.write_json(Path(run_dir) / "workflow.json", workflow)
+
+
 def require_workspace_artifact(workspace, artifact):
     workspace = Path(workspace).expanduser().resolve()
     artifact = Path(artifact).expanduser().resolve()
@@ -98,6 +103,18 @@ def run_review(artifact, workspace, cli, *, run_id=None, profile=None, source=No
 
     original_sha256 = supervisor.sha256_file(artifact)
     preflight = supervisor.host_preflight(workspace, run_dir, cli)
+    workflow = {
+        "schema_version": 1,
+        "run_id": preflight["run_id"],
+        "mode": "review",
+        "workspace": str(workspace),
+        "target": str(artifact),
+        "request": "Read-only deterministic validation and independent review",
+        "status": "running",
+        "created_at": supervisor.utc_now(),
+        "checkpoint": None,
+    }
+    write_review_workflow(run_dir, workflow)
     spec_path = run_dir / "diagram-spec.json"
     supervisor.write_json(spec_path, supervisor.make_spec(artifact))
     supervisor.transition(run_dir, "analyzed", artifact=artifact)
@@ -106,6 +123,18 @@ def run_review(artifact, workspace, cli, *, run_id=None, profile=None, source=No
     )
     report_path = run_dir / "attempts" / "baseline" / "validation-report.json"
     receipt_path = run_dir / "attempts" / "baseline" / "validation-receipt.json"
+    workflow["accepted_artifact"] = {
+        "path": str(artifact),
+        "sha256": original_sha256,
+    }
+    workflow["accepted_validation"] = {
+        "report": str(report_path),
+        "report_sha256": supervisor.sha256_file(report_path),
+        "receipt": str(receipt_path),
+        "receipt_sha256": supervisor.sha256_file(receipt_path),
+        "strict_passed": receipt["result"] == "passed",
+    }
+    write_review_workflow(run_dir, workflow)
     reviewer_input_path = run_dir / "reviewer-audit-input.json"
     supervisor.write_json(
         reviewer_input_path,
@@ -139,6 +168,7 @@ def run_review(artifact, workspace, cli, *, run_id=None, profile=None, source=No
             "resolution_mode": runtime["resolution"]["resolution_mode"],
             "fallback_used": runtime["resolution"]["fallback_used"],
             "model_proof": runtime["runtime_metadata"]["model_proof"],
+            "binding_proof": runtime["runtime_metadata"].get("binding_proof"),
             "output": str(reviewer_output_path),
         }
     except agent_runtime.RoleOutputContractError as exc:
@@ -168,6 +198,8 @@ def run_review(artifact, workspace, cli, *, run_id=None, profile=None, source=No
     supervisor.transition(run_dir, "final_review", artifact=artifact)
     validation_passed = receipt["result"] == "passed"
     reviewer_passed = reviewer.get("status") == "completed" and reviewer.get("verdict") == "approve"
+    workflow["status"] = "passed" if validation_passed and reviewer_passed else "findings"
+    write_review_workflow(run_dir, workflow)
     result = {
         "schema_version": 1,
         "mode": "review",
@@ -188,6 +220,7 @@ def run_review(artifact, workspace, cli, *, run_id=None, profile=None, source=No
             "manifest": str(run_dir / "run-manifest.jsonl"),
             "diagram_spec": str(spec_path),
             "reviewer_input": str(reviewer_input_path),
+            "workflow": str(run_dir / "workflow.json"),
         },
         "next_action": (
             "user_final_review"

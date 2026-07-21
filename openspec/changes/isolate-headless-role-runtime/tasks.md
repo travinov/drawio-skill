@@ -76,3 +76,11 @@
 - [x] 11.2 Implement the phase role union while retaining action, schema, isolation, model-proof, and semantic-approval gates
 - [x] 11.3 Add exact corporate-output regressions plus command, operator, and installer verification contracts
 - [x] 11.4 Bump, build, verify, commit, and publish the side-by-side `1.23.0-corporate.11` ZIP
+
+## 12. Host-bound Reviewer verdict and unified trace selection
+
+- [x] 12.1 Specify deterministic Reviewer evidence binding and first-class read-only review tracing
+- [x] 12.2 Implement Reviewer analytical output normalization with preserved raw and binding evidence
+- [x] 12.3 Persist review workflow state and resolve trace references by directory or persisted run ID
+- [x] 12.4 Add corporate-export regressions, verifier markers, and operator documentation
+- [ ] 12.5 Bump, build, verify, commit, and publish the side-by-side `1.23.0-corporate.12` ZIP

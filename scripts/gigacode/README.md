@@ -105,6 +105,13 @@ create/improve always authorizes Semantic Analyst, conditional Repair, and
 Reviewer; resume authorizes conditional Repair and Reviewer. Incompatible
 actions and all isolation, schema, and model-proof gates still fail closed.
 
+In `1.23.0-corporate.12` and newer, Reviewer returns analysis rather than
+copying host-known run and SHA fields. The host publishes the final hash-bound
+verdict and exposes `binding_proof`; a legacy declared mismatch is diagnostic,
+not an opportunity to replace the trusted input value. Read-only review also
+persists `workflow.json`, so bare and explicit `/drawio:trace` select that same
+fresh review instead of an older improve run.
+
 `./install/rollback_drawio_agent_extension.sh --backup PATH` selects a specific backup.
 Backups are stored under
 `~/.gigacode/backups/drawio-agent-extension/<UTC timestamp>`.

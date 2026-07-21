@@ -3,8 +3,8 @@ set -Eeuo pipefail
 
 EXTENSION_NAME="publish-drawio-skill"
 ARCHIVE_NAME="drawio-skill-agent-extension.zip"
-DEFAULT_VERSION="1.23.0-corporate.11"
-DEFAULT_BRANCH="codex/drawio-host-owned-role-policy-v1.23.0-corporate.11"
+DEFAULT_VERSION="1.23.0-corporate.12"
+DEFAULT_BRANCH="codex/drawio-host-bound-review-trace-v1.23.0-corporate.12"
 DEFAULT_BASE_URL="https://raw.githubusercontent.com/travinov/corporate-agent-skills/refs/heads/${DEFAULT_BRANCH}/dist"
 
 GIGACODE_HOME="${GIGACODE_HOME:-$HOME/.gigacode}"

@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 EXTENSION_NAME="publish-drawio-skill"
-EXPECTED_VERSION="${DRAWIO_EXTENSION_VERSION:-1.23.0-corporate.11}"
+EXPECTED_VERSION="${DRAWIO_EXTENSION_VERSION:-1.23.0-corporate.12}"
 GIGACODE_HOME="${GIGACODE_HOME:-$HOME/.gigacode}"
 GIGACODE_BIN="${GIGACODE_BIN:-$GIGACODE_HOME/bin/gigacode}"
 GIGACODE_SKILLS_DIR="${GIGACODE_SKILLS_DIR:-$GIGACODE_HOME/skills}"
@@ -168,6 +168,9 @@ def verify_tree(root, label):
     review_host = (root / "scripts" / "diagram_host.py").read_text(encoding="utf-8")
     if '"improve": "/drawio:improve"' not in review_host:
         fail(f"Missing {label} zero-argument review-to-improve handoff")
+    for marker in ('write_review_workflow', '"workflow.json"'):
+        if marker not in review_host:
+            fail(f"Missing {label} traceable review workflow marker: {marker}")
     orchestrator = (root / "scripts" / "diagram_orchestrator.py").read_text(encoding="utf-8")
     for marker in (
         'workflow["supervisor_declared_roles"]',
@@ -178,6 +181,8 @@ def verify_tree(root, label):
             fail(f"Missing {label} host-owned role policy marker: {marker}")
     if "Supervisor decision must retain the supervisor role" in orchestrator:
         fail(f"Obsolete {label} Supervisor self-membership rejection remains active")
+    if 'value.get("run_id") == reference' not in orchestrator:
+        fail(f"Missing {label} persisted run-id trace resolution")
     agent_runtime = (root / "scripts" / "agent_runtime.py").read_text(encoding="utf-8")
     for marker in (
         '"--allowed-mcp-server-names", ""',
@@ -186,6 +191,15 @@ def verify_tree(root, label):
     ):
         if marker not in agent_runtime:
             fail(f"Missing {label} empty MCP discovery marker: {marker}")
+    for marker in (
+        'return "reviewer-analysis.v1.schema.json"',
+        "def finalize_role_output",
+        '"source": "validated_role_input"',
+    ):
+        if marker not in agent_runtime:
+            fail(f"Missing {label} host-bound Reviewer marker: {marker}")
+    if not (root / "data" / "reviewer-analysis.v1.schema.json").is_file():
+        fail(f"Missing {label} Reviewer analytical output Schema")
     manifest = load_json(root / "gemini-extension.json")
     if manifest.get("name") != "publish-drawio-skill":
         fail(f"Unexpected {label} manifest name: {manifest.get('name')!r}")

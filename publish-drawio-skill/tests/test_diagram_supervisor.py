@@ -1812,7 +1812,7 @@ class AgentRuntimeTests(unittest.TestCase):
             ):
                 agent_runtime.parse_runtime_output("reviewer", json.dumps(events))
 
-    def test_baseline_reviewer_prompt_embeds_schema_and_exact_hash_bindings(self):
+    def test_baseline_reviewer_prompt_assigns_hash_bindings_to_host(self):
         payload = {
             "schema_version": 1,
             "review_kind": "baseline_audit",
@@ -1827,21 +1827,20 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertIn("## Required output JSON Schema", contract)
         schema_text = contract.split(
             "Do not omit required properties.\n\n", 1
-        )[1].split("\n\n## Mandatory reviewer evidence bindings", 1)[0]
+        )[1].split("\n\n## Host-owned reviewer evidence bindings", 1)[0]
         self.assertEqual(
             json.loads(schema_text),
-            json.loads((ROOT / "data/reviewer-verdict.v1.schema.json").read_text()),
+            json.loads((ROOT / "data/reviewer-analysis.v1.schema.json").read_text()),
         )
-        self.assertIn("## Mandatory reviewer evidence bindings", contract)
-        self.assertIn('"run_id": "review-contract-test"', contract)
-        self.assertIn('"candidate_sha256": "' + "a" * 64 + '"', contract)
-        self.assertIn('"report_sha256": "' + "b" * 64 + '"', contract)
-        self.assertIn('"receipt_sha256": "' + "c" * 64 + '"', contract)
+        self.assertIn("## Host-owned reviewer evidence bindings", contract)
+        self.assertIn("Do not copy run_id", contract)
+        self.assertNotIn('"run_id": "review-contract-test"', contract)
+        self.assertNotIn('"candidate_sha256": "' + "a" * 64 + '"', contract)
 
         candidate_contract = agent_runtime.role_output_contract(
             "reviewer", self.reviewer_input()
         )
-        self.assertIn('"candidate_sha256": "' + "1" * 64 + '"', candidate_contract)
+        self.assertNotIn('"candidate_sha256": "' + "1" * 64 + '"', candidate_contract)
 
     @staticmethod
     def fake_cli(path, behavior):
@@ -2296,7 +2295,7 @@ class AgentRuntimeTests(unittest.TestCase):
                 error.invalid_output_sha256,
             )
 
-    def test_reviewer_hash_binding_mismatch_is_not_published(self):
+    def test_reviewer_hash_binding_mismatch_is_recorded_and_host_normalized(self):
         with tempfile.TemporaryDirectory() as temp:
             temp = Path(temp)
             verdict = self.reviewer_verdict("wrong-binding")
@@ -2304,20 +2303,47 @@ class AgentRuntimeTests(unittest.TestCase):
             cli = self.fake_cli(temp / "wrong-binding-cli", f"emit({verdict!r})\n")
             output = temp / "verdict.json"
 
-            with self.assertRaisesRegex(
-                agent_runtime.RoleOutputContractError, "evidence binding mismatch"
-            ):
-                agent_runtime.invoke_role(
-                    "reviewer", write_json(temp / "input.json", self.reviewer_input()),
-                    output, cli=str(cli), run_dir=temp / "run",
-                )
+            result = agent_runtime.invoke_role(
+                "reviewer", write_json(temp / "input.json", self.reviewer_input()),
+                output, cli=str(cli), run_dir=temp / "run",
+            )
 
-            self.assertFalse(output.exists())
+            self.assertTrue(output.exists())
+            normalized = supervisor.load_json(output)
+            self.assertEqual(normalized["candidate_sha256"], "1" * 64)
+            self.assertEqual(normalized.get("reviewer"), verdict.get("reviewer"))
+            proof = result["runtime_metadata"]["binding_proof"]
+            self.assertEqual(proof["declared_mismatches"], ["candidate_sha256"])
+            self.assertEqual(proof["model_declared"]["candidate_sha256"], "f" * 64)
+            self.assertEqual(proof["expected"]["candidate_sha256"], "1" * 64)
             events = [
                 json.loads(line)
                 for line in (temp / "run/run-manifest.jsonl").read_text().splitlines()
             ]
-            self.assertEqual([event["event_type"] for event in events], ["role_started", "role_failed"])
+            self.assertIn("role_finished", [event["event_type"] for event in events])
+            finished = next(event for event in events if event["event_type"] == "role_finished")
+            self.assertEqual(finished["payload"]["binding_proof"], proof)
+
+    def test_reviewer_may_omit_all_host_owned_bindings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            verdict = self.reviewer_verdict("analytical-only")
+            for key in ("run_id", "candidate_sha256", "report_sha256", "receipt_sha256", "reviewer"):
+                verdict.pop(key, None)
+            cli = self.fake_cli(temp / "analytical-only-cli", f"emit({verdict!r})\n")
+            output = temp / "verdict.json"
+
+            result = agent_runtime.invoke_role(
+                "reviewer", write_json(temp / "input.json", self.reviewer_input()),
+                output, cli=str(cli), run_dir=temp / "run",
+            )
+
+            normalized = supervisor.load_json(output)
+            self.assertEqual(normalized["run_id"], "run-1")
+            self.assertEqual(normalized["receipt_sha256"], "1" * 64)
+            proof = result["runtime_metadata"]["binding_proof"]
+            self.assertEqual(proof["model_declared"], {})
+            self.assertEqual(proof["declared_mismatches"], [])
 
     def test_requested_model_unavailable_falls_back_to_inherited_current(self):
         with tempfile.TemporaryDirectory() as temp:

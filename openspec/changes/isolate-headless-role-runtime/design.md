@@ -38,6 +38,8 @@ Upstream Qwen Code 0.13.1 provides the compatible controls needed here: `--exten
 15. **Remove global MCP servers before discovery.** Pass `--allowed-mcp-server-names` with one empty string on every isolated role invocation. Qwen Code 0.13.1 interprets the present-but-empty CLI allowlist as allowing no MCP servers, so globally configured Jira, Bitbucket, and other MCP tool schemas never enter the child role registry. Require the flag in capability detection and installer verification; retain `mcp__*` exclusion plus event auditing as defense in depth.
 16. **Do not make a Supervisor repeat its own identity in sibling routing.** The top-level schema, runtime model proof, and `role_finished` evidence already prove that Supervisor executed. Interpret `result.required_roles` as the model-declared downstream role set and preserve that original decision unchanged.
 17. **Make lifecycle topology host-owned.** The deterministic host, not one stochastic model response, authorizes every role required by the current phase. Initial create/improve authorizes Supervisor, Semantic Analyst, Repair, and Reviewer; continuation authorizes Supervisor, Repair, and Reviewer. Repair remains conditional on deterministic validation or independent-review findings, and Semantic Analyst is not rerun after its approved initial plan. Record `supervisor_declared_roles`, `host_mandatory_roles`, and their effective `required_roles` union separately. Keep phase-incompatible actions, unknown schema roles, semantic mutations without approval, isolation failures, and model-proof failures fail closed.
+18. **Bind Reviewer evidence in the deterministic host.** The model returns a schema-valid analytical decision containing verdict metadata and findings. It is not required to copy `run_id`, candidate, report, or receipt hashes. The host derives those fields only from the validated role input, constructs the final `reviewer-verdict.v1` envelope, records a binding proof, and preserves the raw model response in the hashed runtime capture. Optional legacy model-declared binding fields are diagnostic only and cannot override host values.
+19. **Make read-only review a first-class trace workflow.** Persist its source artifact and accepted validation receipt in `workflow.json`. Resolve an explicit reference by directory name or the persisted `run_id`, and let bare trace select the newest workflow regardless of whether it came from review, create, or improve. Generated explicit trace commands must resolve to the same run.
 
 ## Risks / Trade-offs
 
@@ -56,11 +58,13 @@ Upstream Qwen Code 0.13.1 provides the compatible controls needed here: `--exten
 - **The GigaCode fork omits or changes the empty MCP allowlist flag** -> require the exact option in CLI capability detection and installation verification, fail before invoking a role, and require a corporate runtime retest before acceptance.
 - **A fork exposes an MCP tool despite the empty allowlist** -> retain wildcard MCP exclusion and reject every observed role tool call through the existing event audit.
 - **Host-owned role authorization could hide the model's incomplete plan** -> preserve the raw Supervisor decision and its declared roles separately, publish the host-mandatory set explicitly, and keep action/schema/isolation/model-proof invariants fail closed.
+- **Host binding could disguise a Reviewer that evaluated different evidence** -> retain the exact role input hash and raw runtime capture, record any legacy declared-binding mismatch, validate the final envelope independently, and never let model-supplied hashes override the input-derived values.
+- **A review workflow could displace an unrelated trace target** -> select by persisted workflow modification time for bare trace, expose `command_resolution`, and make an explicit run UUID resolve deterministically across directory names.
 
 ## Migration Plan
 
-1. Ship the follow-up as a new side-by-side `1.23.0-corporate.11` release ZIP and preserve
-   `1.23.0-corporate.10` plus the earlier packages for rollback.
+1. Ship the follow-up as a new side-by-side `1.23.0-corporate.12` release ZIP and preserve
+   `1.23.0-corporate.11` plus the earlier packages for rollback.
 2. Reinstall from the approved local archive on the corporate Mac.
 3. Re-run the captured review/improve argument cases, then the same `/drawio:create` smoke test, and inspect the per-attempt `runtime-output.jsonl` captures plus `/drawio:trace`.
 4. Roll back by reinstalling the previous ZIP if capability detection reports that the corporate fork lacks a required flag.

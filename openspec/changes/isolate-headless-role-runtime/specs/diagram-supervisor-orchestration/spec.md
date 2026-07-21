@@ -51,6 +51,14 @@ The lifecycle host SHALL treat every isolated Supervisor, Semantic Analyst, Repa
 - **WHEN** `/drawio:trace` inspects a run containing `role_failed`
 - **THEN** it reports the failed role, failure phase, capture integrity, isolation evidence, and diagnostic without misclassifying an expected failed workflow as a successfully accepted artifact
 
+#### Scenario: Bare trace follows a newer read-only review
+- **WHEN** a completed read-only review is newer than existing create or improve workflows
+- **THEN** bare `/drawio:trace` selects that review workflow and reports its validator, Reviewer, model, binding, and failure evidence instead of an older run
+
+#### Scenario: Explicit trace uses the published review run ID
+- **WHEN** the user executes the exact `/drawio:trace --run <run_id>` command published by review
+- **THEN** the host resolves the persisted UUID even when the run directory has a timestamp-based name and traces that same review
+
 #### Scenario: Supervisor primary attempt is recovered by policy
 - **WHEN** a nonterminal `role_failed` event for Supervisor is followed by a schema-valid, model-proven fallback `role_finished` event
 - **THEN** the workflow continues, `/drawio:trace` validates both attempts, and host results report the run as model-diversity degraded rather than terminally failed

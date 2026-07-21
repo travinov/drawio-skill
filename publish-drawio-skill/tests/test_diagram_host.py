@@ -14,6 +14,7 @@ SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import diagram_host
+import diagram_orchestrator
 import diagram_supervisor as supervisor
 
 
@@ -94,6 +95,12 @@ class DiagramHostTests(unittest.TestCase):
             self.assertTrue(supervisor.verify_host_preflight(run_dir)["valid"])
             self.assertEqual(supervisor.load_state(run_dir)["state"], "final_review")
             self.assertEqual(supervisor.load_json(run_dir / "host-result.json"), result)
+            workflow = supervisor.load_json(run_dir / "workflow.json")
+            self.assertEqual(workflow["mode"], "review")
+            self.assertEqual(workflow["accepted_artifact"]["sha256"], original)
+            self.assertEqual(
+                result["evidence"]["workflow"], str((run_dir / "workflow.json").resolve())
+            )
             audit = supervisor.load_json(run_dir / "reviewer-audit-input.json")
             schema = supervisor.load_json(ROOT / "data" / "reviewer-audit-input.v1.schema.json")
             self.assertFalse(list(jsonschema_validator(schema).iter_errors(audit)))
@@ -201,7 +208,7 @@ verdict = {
     'run_id': payload['run_id'],
     'candidate_sha256': payload['artifact']['sha256'],
     'report_sha256': payload['report']['sha256'],
-    'receipt_sha256': payload['receipt']['sha256'],
+    'receipt_sha256': 'f' * 64,
     'verdict': 'approve',
     'reviewed_at': '2026-07-20T12:00:00+00:00',
     'reviewer': {'resolved_model': model, 'provider': 'vllm', 'resolution_mode': 'isolated_cli'},
@@ -247,6 +254,13 @@ print(json.dumps(events))
             self.assertEqual(result["command_resolution"]["diagram_selection"], "explicit")
             self.assertEqual(result["reviewer"]["resolution_mode"], "isolated_cli")
             self.assertTrue(result["reviewer"]["model_proof"]["verified"])
+            binding = result["reviewer"]["binding_proof"]
+            self.assertTrue(binding["verified"])
+            self.assertEqual(binding["declared_mismatches"], ["receipt_sha256"])
+            self.assertEqual(
+                supervisor.load_json(result["reviewer"]["output"])["receipt_sha256"],
+                binding["expected"]["receipt_sha256"],
+            )
             improve = result["next_commands"]["improve"]
             self.assertEqual(improve, "/drawio:improve")
             explicit = result["next_commands"]["improve_explicit"]
@@ -263,6 +277,20 @@ print(json.dumps(events))
             ]
             self.assertIn("model_resolved", [event["event_type"] for event in manifest])
             self.assertIn("review_verdict", [event["event_type"] for event in manifest])
+            selected, selection = diagram_host.command_ux.select_latest_run(workspace)
+            self.assertEqual(Path(selected), Path(result["run_dir"]))
+            self.assertEqual(selection, "latest_updated_run")
+            trace = diagram_orchestrator.trace_run(result["run_id"], workspace)
+            self.assertTrue(trace["valid"])
+            self.assertEqual(trace["terminal_result"], "passed")
+            self.assertEqual([role["role"] for role in trace["roles"]], ["reviewer"])
+            self.assertEqual(
+                trace["role_checks"][0]["binding_proof"]["declared_mismatches"],
+                ["receipt_sha256"],
+            )
+            self.assertTrue(trace["role_checks"][0]["binding_proof_valid"])
+            trace_command = result["next_commands"]["trace"]
+            self.assertEqual(trace_command, f"/drawio:trace --run {result['run_id']}")
 
     def test_all_qwen_commands_use_one_raw_argument_transport(self):
         for name in ("create", "improve", "review", "resume", "trace"):

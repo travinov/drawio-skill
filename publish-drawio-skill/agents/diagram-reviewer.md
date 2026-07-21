@@ -51,14 +51,12 @@ Deterministic validation is authoritative for structure and geometry. Visual ins
 
 ## Output contract
 
-Return only JSON conforming to `data/reviewer-verdict.v1.schema.json`. The verdict is `approve` or `reject` and is hash-bound to the exact run, candidate, validation report, and validation receipt supplied as input. Each finding contains:
-
-The isolated runtime appends the complete output Schema and an explicit
-four-field binding object for each supported review mode. Copy `run_id`,
-`candidate_sha256`, `report_sha256`, and `receipt_sha256` from that binding
-object exactly. Do not rename or omit them. Set every other required Schema
-property, including `schema_version`, `verdict_id`, `verdict`, `reviewed_at`,
-and `findings`, even when `findings` is empty.
+Return only JSON conforming to `data/reviewer-analysis.v1.schema.json`. The
+model decision contains `schema_version`, `verdict_id`, `verdict`,
+`reviewed_at`, and `findings`, even when `findings` is empty. Do not copy
+`run_id`, `candidate_sha256`, `report_sha256`, or `receipt_sha256`: the
+deterministic host derives them from the validated input, constructs the final
+`reviewer-verdict.v1` envelope, and records a binding proof. Each finding contains:
 
 - stable finding ID;
 - severity and category;
