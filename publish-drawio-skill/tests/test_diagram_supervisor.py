@@ -1684,7 +1684,7 @@ class AgentRuntimeTests(unittest.TestCase):
             return [event for event in self.gigacode_events(verdict) if event["type"] != event_type]
 
         cases = {
-            "missing-system": (without("system"), "model proof is ambiguous"),
+            "missing-system": (without("system"), "expected exactly one system init"),
             "missing-assistant": (without("assistant"), "model proof is ambiguous"),
             "missing-result": (without("result"), "has no result event"),
             "empty-stats-models": (
@@ -1701,7 +1701,7 @@ class AgentRuntimeTests(unittest.TestCase):
                     {**base[0], "model": "other-model"},
                     *base[1:],
                 ],
-                "model proof is ambiguous",
+                "expected exactly one system init",
             ),
             "ambiguous-assistant": (
                 [
@@ -1784,7 +1784,7 @@ class AgentRuntimeTests(unittest.TestCase):
             f"#!{sys.executable}\n"
             "import json, os, sys\n"
             "if '--help' in sys.argv:\n"
-            "    print('--model --prompt --output-format --approval-mode --extensions --system-prompt --max-session-turns --exclude-tools')\n"
+            "    print('--model --prompt --output-format --approval-mode --extensions --system-prompt --max-session-turns --core-tools --exclude-tools')\n"
             "    raise SystemExit(0)\n"
             "def emit(value):\n"
             "    model=sys.argv[sys.argv.index('--model')+1]\n"
@@ -1833,6 +1833,10 @@ class AgentRuntimeTests(unittest.TestCase):
                 [event["event_type"] for event in events],
                 ["role_started", "model_resolved", "role_finished", "review_verdict"],
             )
+            finished = events[2]["payload"]
+            self.assertTrue(finished["isolation_proof"]["verified"])
+            self.assertEqual(finished["isolation_proof"]["tool_calls"], 0)
+            self.assertTrue(Path(finished["stderr_capture"]).is_file())
 
     def test_gigacode_model_proof_mismatch_or_missing_proof_is_not_published(self):
         valid = (
@@ -1936,6 +1940,58 @@ class AgentRuntimeTests(unittest.TestCase):
                 events = [json.loads(line) for line in (temp / "run/run-manifest.jsonl").read_text().splitlines()]
                 self.assertEqual([event["event_type"] for event in events], ["role_started", "role_failed"])
 
+    def test_turn_limit_failure_preserves_redacted_runtime_and_isolation_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            cli = self.fake_cli(
+                temp / "turn-limited-cli",
+                "model=sys.argv[sys.argv.index('--model')+1]\n"
+                "print(json.dumps(["
+                "{'type':'system','subtype':'init','model':model,'qwen_code_version':'0.13.1','agents':[],'slash_commands':[]},"
+                "{'type':'assistant','message':{'model':model,'content':[{'type':'text','text':'still deciding'}]}},"
+                "{'type':'result','subtype':'error','is_error':True,'error':'FatalTurnLimitedError'}"
+                "]))\n"
+                "print('FatalTurnLimitedError API_KEY=must-not-survive', file=sys.stderr)\n"
+                "raise SystemExit(2)\n",
+            )
+            output = temp / "verdict.json"
+
+            with self.assertRaisesRegex(
+                supervisor.SupervisorError,
+                "exhausted its command-line turn budget; do not change global",
+            ):
+                agent_runtime.invoke_role(
+                    "reviewer",
+                    write_json(temp / "input.json", self.reviewer_input()),
+                    output,
+                    cli=str(cli),
+                    run_dir=temp / "run",
+                )
+
+            self.assertFalse(output.exists())
+            event = json.loads(
+                (temp / "run/run-manifest.jsonl").read_text().splitlines()[-1]
+            )
+            payload = event["payload"]
+            self.assertEqual(event["event_type"], "role_failed")
+            self.assertEqual(payload["failure_kind"], "turn_limit")
+            self.assertEqual(
+                payload["isolation_controls"]["core_tools"],
+                [agent_runtime.ROLE_CORE_TOOL_SENTINEL],
+            )
+            self.assertTrue(payload["isolation_proof"]["verified"])
+            self.assertEqual(payload["isolation_proof"]["tool_calls"], 0)
+            runtime_capture = Path(payload["runtime_capture"])
+            stderr_capture = Path(payload["stderr_capture"])
+            self.assertTrue(runtime_capture.is_file())
+            self.assertTrue(stderr_capture.is_file())
+            self.assertEqual(
+                hashlib.sha256(runtime_capture.read_bytes()).hexdigest(),
+                payload["runtime_capture_sha256"],
+            )
+            self.assertIn("FatalTurnLimitedError", stderr_capture.read_text())
+            self.assertNotIn("must-not-survive", stderr_capture.read_text())
+
     def test_schema_failure_preserves_proven_model_without_publishing_invalid_json(self):
         with tempfile.TemporaryDirectory() as temp:
             temp = Path(temp)
@@ -2029,7 +2085,7 @@ class AgentRuntimeTests(unittest.TestCase):
                 f"#!{sys.executable}\n"
                 "import json, sys\n"
                 "if '--help' in sys.argv:\n"
-                "    print('--prompt --output-format --approval-mode --extensions --system-prompt --max-session-turns --exclude-tools')\n"
+                "    print('--prompt --output-format --approval-mode --extensions --system-prompt --max-session-turns --core-tools --exclude-tools')\n"
                 "    raise SystemExit(0)\n"
                 "payload=json.loads(sys.stdin.read())\n"
                 "d=payload['candidate']['sha256']\n"
@@ -2060,7 +2116,7 @@ class AgentRuntimeTests(unittest.TestCase):
                 f"#!{sys.executable}\n"
                 "import sys\n"
                 "if '--help' in sys.argv:\n"
-                "    print('--model --prompt --output-format --approval-mode --extensions --system-prompt --max-session-turns --exclude-tools')\n"
+                "    print('--model --prompt --output-format --approval-mode --extensions --system-prompt --max-session-turns --core-tools --exclude-tools')\n"
                 "    raise SystemExit(0)\n"
                 "raise SystemExit(99)\n",
             )
@@ -2091,6 +2147,10 @@ class AgentRuntimeTests(unittest.TestCase):
                 result["command"][result["command"].index("--max-session-turns") + 1],
                 str(agent_runtime.ROLE_MAX_SESSION_TURNS),
             )
+            self.assertEqual(
+                result["command"][result["command"].index("--core-tools") + 1],
+                agent_runtime.ROLE_CORE_TOOL_SENTINEL,
+            )
             excluded = result["command"][
                 result["command"].index("--exclude-tools") + 1
             ].split(",")
@@ -2117,13 +2177,13 @@ class AgentRuntimeTests(unittest.TestCase):
         for executable, help_text in (
             (
                 "gigacode",
-                "--model --prompt --output-format --approval-mode --auth-type --extensions --system-prompt --max-session-turns --exclude-tools",
+                "--model --prompt --output-format --approval-mode --auth-type --extensions --system-prompt --max-session-turns --core-tools --exclude-tools",
             ),
             (
                 "corporate-wrapper",
                 "GigaCode - CLI --model --prompt --output-format --approval-mode "
                 "--auth-type choices: gigacode --extensions --system-prompt "
-                "--max-session-turns --exclude-tools",
+                "--max-session-turns --core-tools --exclude-tools",
             ),
         ):
             with self.subTest(executable=executable), tempfile.TemporaryDirectory() as temp:
@@ -2156,7 +2216,7 @@ class AgentRuntimeTests(unittest.TestCase):
                 f"#!{sys.executable}\n"
                 "import sys\n"
                 "if '--help' in sys.argv:\n"
-                "    print('GigaCode --model --prompt --output-format --approval-mode --auth-type gigacode --extensions --system-prompt --max-session-turns --exclude-tools')\n"
+                "    print('GigaCode --model --prompt --output-format --approval-mode --auth-type gigacode --extensions --system-prompt --max-session-turns --core-tools --exclude-tools')\n"
                 "    raise SystemExit(0)\n"
                 "raise SystemExit(99)\n",
             )

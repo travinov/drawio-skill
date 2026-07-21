@@ -23,10 +23,11 @@ Upstream Qwen Code 0.13.1 provides the compatible controls needed here: `--exten
 
 1. **Use extension-free headless sessions.** Pass `--extensions none` on every isolated role invocation. This is preferred over changing installed extension state because it is process-local and reversible.
 2. **Separate instructions from data.** Pass the agent role body and required output schema through `--system-prompt`; pass only the canonical runtime input JSON through stdin. The short `--prompt` tells the model to consume stdin and return one object.
-3. **Disable tools twice.** Pass `--exclude-tools` for all known core role-visible tools, then audit the returned event array and reject any `tool_use` content regardless of name. The event audit covers fork-specific or MCP tools that were not in the static deny list.
-4. **Bound the run.** Pass a small `--max-session-turns` value and retain the existing subprocess timeout. This protects both API usage and wall-clock time.
+3. **Remove tools, deny tools, then audit.** Pass `--core-tools` with a deliberately nonexistent sentinel so Qwen's non-empty allowlist removes every core tool from the advertised registry. Retain `--exclude-tools` for known, fork-specific, and MCP tools, then audit the returned event array and reject any `tool_use` content regardless of name.
+4. **Bound the run.** Pass a small `--max-session-turns` value and retain the existing subprocess timeout. The turn limit remains a safety fuse; removing tools from the registry prevents denied-tool retries from consuming it during a valid one-decision role.
 5. **Fail closed on missing controls.** Treat `--extensions`, `--system-prompt`, `--max-session-turns`, and `--exclude-tools` as required isolated-role capabilities, alongside the existing model/prompt/output/approval flags.
 6. **Audit customization leakage.** Reject a success stream if system initialization still advertises Draw.io extension commands or diagram custom agents. Preserve raw capture and failure evidence for traceability.
+7. **Capture before interpreting exit status.** Atomically persist stdout and redacted stderr immediately after every completed child process, including non-zero exits, and bind both files into `role_failed` or `role_finished` manifest evidence.
 
 ## Risks / Trade-offs
 
@@ -34,11 +35,13 @@ Upstream Qwen Code 0.13.1 provides the compatible controls needed here: `--exten
 - **A model returns invalid JSON without tools** -> existing strict JSON/schema validation remains fail closed; no prose scraping is added.
 - **Static tool deny list misses a new tool** -> any observed `tool_use` event is rejected independent of its name.
 - **Role prompt size grows** -> schemas remain in the system prompt while variable runtime JSON stays on stdin, avoiding user data in argv and keeping the current input pipeline.
-- **Turn limit is too small for a weak model** -> roles are intentionally one-decision JSON producers; a model that cannot comply within the bounded budget is not safe for this workflow.
+- **Turn limit is consumed by denied-tool retries** -> the non-empty `--core-tools` sentinel removes core tool schemas before inference; the limit stays small and any remaining failure is preserved for diagnosis instead of hidden.
+- **Non-zero CLI exit loses structured events** -> capture stdout/stderr before checking the return code and expose their integrity plus isolation audit through `/drawio:trace`.
 
 ## Migration Plan
 
-1. Ship as a new side-by-side release ZIP and preserve `1.23.0-corporate.2` for rollback.
+1. Ship as a new side-by-side `1.23.0-corporate.4` release ZIP and preserve
+   `1.23.0-corporate.3` plus the earlier `.2` package for rollback.
 2. Reinstall from the approved local archive on the corporate Mac.
 3. Re-run the same `/drawio:create` smoke test and inspect `runtime-output.json` plus `/drawio:trace`.
 4. Roll back by reinstalling the previous ZIP if capability detection reports that the corporate fork lacks a required flag.

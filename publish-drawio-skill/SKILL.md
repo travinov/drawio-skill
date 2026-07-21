@@ -2,7 +2,7 @@
 name: drawio-skill
 description: Use when the user requests diagrams, flowcharts, roadmap diagrams, git-flow / branching strategy timelines, architecture diagrams, ER diagrams, UML / sequence / class diagrams, network topology, cloud architecture from Terraform or Kubernetes manifests, ML/DL model figures (Transformer/CNN/LSTM), mind maps, or any visualization. Also use proactively when explaining systems with 3+ components, complex data flows, or relationships that benefit from visual representation. Best suited when the diagram needs custom styling, rich shape vocabulary, swimlanes, precise timeline/lane placement, intake clarification, canonical XLSX/CSV roadmap intake, full milestone revision history, baseline comparison, milestone shift markers, or exportable images (PNG/SVG/PDF/JPG). Generates .drawio XML and exports locally via the native draw.io desktop CLI.
 license: MIT
-metadata: {"openclaw":{"requires":{"anyBins":["draw.io","drawio"]},"emoji":"📐","os":["darwin","linux","win32"],"install":[{"id":"marketplace-drawio","kind":"manual","label":"Install draw.io Desktop from the corporate application marketplace / SberUserSoft","os":["darwin","win32"]},{"id":"graphviz","kind":"manual","label":"Install Graphviz for optional autolayout.py / gitflow.py edge routing if approved in your environment","optional":true}]},"hermes":{"tags":["drawio","diagram","flowchart","git-flow","architecture","visualization","uml"],"category":"design","requires_tools":["drawio","draw.io"],"related_skills":["mermaid","excalidraw","plantuml"]},"author":"Agents365-ai","version":"1.23.0-corporate.3"}
+metadata: {"openclaw":{"requires":{"anyBins":["draw.io","drawio"]},"emoji":"📐","os":["darwin","linux","win32"],"install":[{"id":"marketplace-drawio","kind":"manual","label":"Install draw.io Desktop from the corporate application marketplace / SberUserSoft","os":["darwin","win32"]},{"id":"graphviz","kind":"manual","label":"Install Graphviz for optional autolayout.py / gitflow.py edge routing if approved in your environment","optional":true}]},"hermes":{"tags":["drawio","diagram","flowchart","git-flow","architecture","visualization","uml"],"category":"design","requires_tools":["drawio","draw.io"],"related_skills":["mermaid","excalidraw","plantuml"]},"author":"Agents365-ai","version":"1.23.0-corporate.4"}
 ---
 
 # Draw.io Diagrams
@@ -168,10 +168,13 @@ presents the structured result. A native agent result such as `completed` is
 not evidence that validation or model isolation occurred.
 
 Each child role runs with extensions disabled, a dedicated role system prompt,
-all role-visible tools excluded, and a bounded turn budget. Reject a child that
+a non-empty sentinel core-tool allowlist that advertises no core tools, a
+fork/MCP deny list, and a bounded turn budget. Reject a child that
 calls any tool, asks an interactive question, recursively delegates to a native
 agent, or still advertises `diagram-*` agents / `drawio:*` commands. Preserve
-its `runtime-output.json` as failure evidence and do not start the next role.
+its `runtime-output.json` and redacted `runtime-stderr.txt` as hashed failure
+evidence and do not start the next role. A `FatalTurnLimitedError` is owned by
+the command-line role budget; never advise changing global `maxSessionTurns`.
 
 Before inspecting the diagram, run this from the main session and keep its
 evidence under the user's project, never under the installed extension:

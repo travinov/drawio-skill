@@ -33,6 +33,7 @@ SAFE_ENV_KEYS = {
     "SYSTEMROOT", "TEMP", "TMP", "TMPDIR", "WINDIR",
 }
 ROLE_MAX_SESSION_TURNS = 4
+ROLE_CORE_TOOL_SENTINEL = "__drawio_isolated_role_has_no_tools__"
 ROLE_EXCLUDED_TOOLS = (
     "agent",
     "task",
@@ -67,6 +68,15 @@ class RoleOutputContractError(SupervisorError):
         self.resolution = resolution
         self.runtime_metadata = runtime_metadata
         self.invalid_output_sha256 = invalid_output_sha256
+
+
+def role_isolation_controls():
+    return {
+        "extensions": ["none"],
+        "core_tools": [ROLE_CORE_TOOL_SENTINEL],
+        "excluded_tools": list(ROLE_EXCLUDED_TOOLS),
+        "max_session_turns": ROLE_MAX_SESSION_TURNS,
+    }
 
 
 def redact(text):
@@ -169,6 +179,7 @@ def build_gemini_command(cli, model=None, auth_type=None, *, system_prompt):
         "--extensions", "none",
         "--system-prompt", system_prompt,
         "--max-session-turns", str(ROLE_MAX_SESSION_TURNS),
+        "--core-tools", ROLE_CORE_TOOL_SENTINEL,
         "--exclude-tools", ",".join(ROLE_EXCLUDED_TOOLS),
         "--prompt", (
             "Process the canonical runtime JSON supplied on standard input. "
@@ -184,6 +195,36 @@ def minimal_environment():
     return {key: value for key, value in os.environ.items() if key in SAFE_ENV_KEYS}
 
 
+def _atomic_write_text(path, text):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, delete=False
+    ) as tmp:
+        tmp.write(text)
+        tmp.flush()
+        os.fsync(tmp.fileno())
+        temp_name = tmp.name
+    os.replace(temp_name, path)
+    return path
+
+
+def persist_runtime_captures(output_path, stdout, stderr):
+    output_path = Path(output_path)
+    runtime_capture = _atomic_write_text(
+        output_path.with_name("runtime-output.json"), stdout or ""
+    )
+    stderr_capture = _atomic_write_text(
+        output_path.with_name("runtime-stderr.txt"), redact(stderr or "")
+    )
+    return {
+        "runtime_capture": str(runtime_capture.resolve()),
+        "runtime_capture_sha256": hashlib.sha256(runtime_capture.read_bytes()).hexdigest(),
+        "stderr_capture": str(stderr_capture.resolve()),
+        "stderr_capture_sha256": hashlib.sha256(stderr_capture.read_bytes()).hexdigest(),
+    }
+
+
 def detect_cli_capabilities(cli):
     completed = subprocess.run(
         [cli, "--help"], text=True, capture_output=True, check=False, timeout=30,
@@ -191,7 +232,8 @@ def detect_cli_capabilities(cli):
     )
     help_text = completed.stdout + completed.stderr
     isolation_required = (
-        "--extensions", "--system-prompt", "--max-session-turns", "--exclude-tools",
+        "--extensions", "--system-prompt", "--max-session-turns", "--core-tools",
+        "--exclude-tools",
     )
     base_required = (
         "--prompt", "--output-format", "--approval-mode", *isolation_required,
@@ -249,43 +291,119 @@ def _parse_json_role_text(role, value, source):
     return parsed
 
 
-def _parse_gigacode_events(role, events):
+def _gigacode_isolation_proof(role, events):
     if not events or not all(isinstance(event, dict) for event in events):
-        raise SupervisorError(f"isolated {role} GigaCode event output must be a non-empty object array")
+        return {
+            "verified": False,
+            "tool_calls": None,
+            "tool_names": [],
+            "drawio_agents": [],
+            "drawio_commands": [],
+            "system_init_events": 0,
+            "diagnostic": (
+                f"isolated {role} GigaCode event output must be a non-empty "
+                "object array"
+            ),
+        }
+
+    leaked_agents = set()
+    leaked_commands = set()
+    tool_calls = []
+    init_events = 0
+    for event in events:
+        if event.get("type") == "system" and event.get("subtype") == "init":
+            init_events += 1
+            agents = event.get("agents") if isinstance(event.get("agents"), list) else []
+            commands = (
+                event.get("slash_commands")
+                if isinstance(event.get("slash_commands"), list)
+                else []
+            )
+            leaked_agents.update(
+                value for value in agents
+                if isinstance(value, str) and value.startswith("diagram-")
+            )
+            leaked_commands.update(
+                value for value in commands
+                if isinstance(value, str) and value.startswith("drawio:")
+            )
+        if event.get("type") == "assistant" and isinstance(event.get("message"), dict):
+            content = event["message"].get("content")
+        else:
+            content = None
+        if isinstance(content, list):
+            tool_calls.extend(
+                item.get("name") or "unknown"
+                for item in content
+                if isinstance(item, dict) and item.get("type") == "tool_use"
+            )
+
+    diagnostics = []
+    if init_events != 1:
+        diagnostics.append(
+            f"expected exactly one system init event, observed {init_events}"
+        )
+    if leaked_agents or leaked_commands:
+        diagnostics.append(
+            "customization isolation failed: "
+            f"agents={sorted(leaked_agents)}, commands={sorted(leaked_commands)}"
+        )
+    if tool_calls:
+        diagnostics.append(
+            "violated the tool-free role contract: "
+            + ", ".join(map(str, tool_calls[:10]))
+        )
+    return {
+        "verified": not diagnostics,
+        "tool_calls": len(tool_calls),
+        "tool_names": list(map(str, tool_calls[:10])),
+        "drawio_agents": sorted(leaked_agents),
+        "drawio_commands": sorted(leaked_commands),
+        "system_init_events": init_events,
+        "diagnostic": "; ".join(diagnostics) if diagnostics else None,
+    }
+
+
+def inspect_runtime_isolation(role, output):
+    try:
+        outer = json.loads(output)
+    except json.JSONDecodeError as exc:
+        return {
+            "verified": False,
+            "tool_calls": None,
+            "tool_names": [],
+            "drawio_agents": [],
+            "drawio_commands": [],
+            "system_init_events": 0,
+            "diagnostic": f"runtime capture is not valid JSON: {exc}",
+        }
+    if not isinstance(outer, list):
+        return {
+            "verified": False,
+            "tool_calls": None,
+            "tool_names": [],
+            "drawio_agents": [],
+            "drawio_commands": [],
+            "system_init_events": 0,
+            "diagnostic": "runtime capture is not a GigaCode event array",
+        }
+    return _gigacode_isolation_proof(role, outer)
+
+
+def _parse_gigacode_events(role, events):
+    isolation_proof = _gigacode_isolation_proof(role, events)
+    if not isolation_proof["verified"]:
+        raise SupervisorError(
+            f"isolated {role} GigaCode {isolation_proof['diagnostic']}"
+        )
 
     system_models = {
         event.get("model")
         for event in events
         if event.get("type") == "system" and event.get("subtype") == "init" and event.get("model")
     }
-    leaked_agents = set()
-    leaked_commands = set()
-    for event in events:
-        if event.get("type") != "system" or event.get("subtype") != "init":
-            continue
-        agents = event.get("agents") if isinstance(event.get("agents"), list) else []
-        commands = (
-            event.get("slash_commands")
-            if isinstance(event.get("slash_commands"), list)
-            else []
-        )
-        leaked_agents.update(
-            value for value in agents
-            if isinstance(value, str) and value.startswith("diagram-")
-        )
-        leaked_commands.update(
-            value for value in commands
-            if isinstance(value, str) and value.startswith("drawio:")
-        )
-    if leaked_agents or leaked_commands:
-        raise SupervisorError(
-            f"isolated {role} GigaCode customization isolation failed: "
-            f"agents={sorted(leaked_agents)}, commands={sorted(leaked_commands)}"
-        )
-
     assistant_models = set()
     assistant_texts = []
-    tool_calls = []
     for event in events:
         if event.get("type") != "assistant" or not isinstance(event.get("message"), dict):
             continue
@@ -294,22 +412,12 @@ def _parse_gigacode_events(role, events):
             assistant_models.add(message["model"])
         content = message.get("content")
         if isinstance(content, list):
-            tool_calls.extend(
-                item.get("name") or "unknown"
-                for item in content
-                if isinstance(item, dict) and item.get("type") == "tool_use"
-            )
             text_parts = [
                 item.get("text") for item in content
                 if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str)
             ]
             if text_parts:
                 assistant_texts.append("".join(text_parts))
-    if tool_calls:
-        raise SupervisorError(
-            f"isolated {role} violated the tool-free role contract: "
-            + ", ".join(map(str, tool_calls[:10]))
-        )
 
     results = [event for event in events if event.get("type") == "result"]
     if not results:
@@ -354,12 +462,7 @@ def _parse_gigacode_events(role, events):
             "assistant_model": assistant_model,
             "stats_models": sorted(stats_models),
         },
-        "isolation_proof": {
-            "verified": True,
-            "tool_calls": 0,
-            "drawio_agents": [],
-            "drawio_commands": [],
-        },
+        "isolation_proof": isolation_proof,
         "runtime_version": next(
             (
                 event.get("qwen_code_version")
@@ -452,12 +555,14 @@ def model_unavailable(stderr):
 def record_failure(
     run_dir, role, phase, requested_model, *, exit_code=None, diagnostic=None,
     resolved_model=None, model_proof=None, reported_model=None, runtime_version=None,
-    invalid_output_sha256=None,
+    invalid_output_sha256=None, failure_kind=None, capture_evidence=None,
+    isolation_proof=None,
 ):
     if run_dir:
         payload = {
             "role": role, "phase": phase, "requested_model": requested_model,
             "exit_code": exit_code, "diagnostic": redact(diagnostic or "")[-1000:],
+            "isolation_controls": role_isolation_controls(),
         }
         if resolved_model is not None:
             payload["resolved_model"] = resolved_model
@@ -469,6 +574,12 @@ def record_failure(
             payload["runtime_version"] = runtime_version
         if invalid_output_sha256 is not None:
             payload["invalid_output_sha256"] = invalid_output_sha256
+        if failure_kind is not None:
+            payload["failure_kind"] = failure_kind
+        if capture_evidence:
+            payload.update(capture_evidence)
+        if isolation_proof is not None:
+            payload["isolation_proof"] = sanitized_metadata(isolation_proof)
         append_event(
             run_dir, "role_failed",
             payload,
@@ -522,6 +633,7 @@ def invoke_role(
         "command": command,
         "resolution": resolution,
         "capabilities": capabilities,
+        "isolation_controls": role_isolation_controls(),
         "started_at": utc_now(),
         "dry_run": dry_run,
     }
@@ -540,6 +652,7 @@ def invoke_role(
                 "requested_model": config["requested_model"],
                 "resolution_mode": resolution["resolution_mode"],
                 "fallback_used": resolution["fallback_used"],
+                "isolation_controls": role_isolation_controls(),
             },
             actor={"kind": "system", "id": "diagram-orchestrator", "model": None},
         )
@@ -578,25 +691,33 @@ def invoke_role(
         result["command"] = command
         result["resolution"] = resolution
         result["fallback_from"] = config["requested_model"]
+    capture_evidence = persist_runtime_captures(
+        output_path, completed.stdout, completed.stderr
+    )
+    runtime_capture_path = Path(capture_evidence["runtime_capture"])
+    stderr_capture_path = Path(capture_evidence["stderr_capture"])
+    isolation_proof = inspect_runtime_isolation(role, completed.stdout or "")
     if completed.returncode != 0:
         failure_diagnostic = (completed.stderr or "") + "\n" + (completed.stdout or "")
+        turn_limited = "FatalTurnLimitedError" in failure_diagnostic
         record_failure(
             run_dir, role, "execution", config["requested_model"],
             exit_code=completed.returncode, diagnostic=failure_diagnostic,
+            failure_kind="turn_limit" if turn_limited else "process_exit",
+            capture_evidence=capture_evidence,
+            isolation_proof=isolation_proof,
         )
+        if turn_limited:
+            raise SupervisorError(
+                f"isolated {role} exhausted its command-line turn budget; "
+                f"do not change global maxSessionTurns. Runtime evidence: "
+                f"{runtime_capture_path}; stderr: {stderr_capture_path}"
+            )
         raise SupervisorError(
             f"isolated {role} process failed with exit code {completed.returncode}: "
-            f"{redact(failure_diagnostic[-1000:])}"
+            f"{redact(failure_diagnostic[-1000:])}. Runtime evidence: "
+            f"{runtime_capture_path}; stderr: {stderr_capture_path}"
         )
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    runtime_capture_path = output_path.with_name("runtime-output.json")
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=output_path.parent, delete=False) as tmp:
-        tmp.write(completed.stdout)
-        tmp.flush()
-        os.fsync(tmp.fileno())
-        runtime_capture_temp = tmp.name
-    os.replace(runtime_capture_temp, runtime_capture_path)
     parsed_output = None
     runtime_metadata = None
     try:
@@ -642,6 +763,11 @@ def invoke_role(
             reported_model=(runtime_metadata.get("reported_model") if runtime_metadata else None),
             runtime_version=(runtime_metadata.get("runtime_version") if runtime_metadata else None),
             invalid_output_sha256=getattr(exc, "invalid_output_sha256", None),
+            capture_evidence=capture_evidence,
+            isolation_proof=(
+                runtime_metadata.get("isolation_proof")
+                if runtime_metadata else isolation_proof
+            ),
         )
         raise
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=output_path.parent, delete=False) as tmp:
@@ -656,6 +782,7 @@ def invoke_role(
         "exit_code": completed.returncode,
         "output": str(output_path.resolve()),
         "runtime_capture": str(runtime_capture_path.resolve()),
+        "stderr_capture": str(stderr_capture_path.resolve()),
         "stderr": redact(completed.stderr[-4000:]),
         "runtime_metadata": runtime_metadata,
     })
@@ -676,8 +803,12 @@ def invoke_role(
                 "output": result["output"],
                 "output_sha256": hashlib.sha256(output_path.read_bytes()).hexdigest(),
                 "runtime_capture": result["runtime_capture"],
-                "runtime_capture_sha256": hashlib.sha256(runtime_capture_path.read_bytes()).hexdigest(),
+                "runtime_capture_sha256": capture_evidence["runtime_capture_sha256"],
+                "stderr_capture": result["stderr_capture"],
+                "stderr_capture_sha256": capture_evidence["stderr_capture_sha256"],
                 "model_proof": runtime_metadata["model_proof"],
+                "isolation_proof": runtime_metadata.get("isolation_proof"),
+                "isolation_controls": role_isolation_controls(),
                 "runtime_version": runtime_metadata.get("runtime_version"),
                 "exit_code": completed.returncode,
             },

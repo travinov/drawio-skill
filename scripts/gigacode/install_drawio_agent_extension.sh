@@ -3,8 +3,8 @@ set -Eeuo pipefail
 
 EXTENSION_NAME="publish-drawio-skill"
 ARCHIVE_NAME="drawio-skill-agent-extension.zip"
-DEFAULT_VERSION="1.23.0-corporate.3"
-DEFAULT_BRANCH="codex/drawio-headless-role-isolation-v1.23.0-corporate.3"
+DEFAULT_VERSION="1.23.0-corporate.4"
+DEFAULT_BRANCH="codex/drawio-headless-runtime-evidence-v1.23.0-corporate.4"
 DEFAULT_BASE_URL="https://raw.githubusercontent.com/travinov/corporate-agent-skills/refs/heads/${DEFAULT_BRANCH}/dist"
 
 GIGACODE_HOME="${GIGACODE_HOME:-$HOME/.gigacode}"
@@ -143,7 +143,7 @@ extensions_supports_validate() {
 verify_role_runtime_capabilities() {
   local help_text flag missing=()
   help_text="$($GIGACODE_BIN --help 2>&1 || true)"
-  for flag in --model --prompt --output-format --approval-mode --extensions --system-prompt --max-session-turns --exclude-tools; do
+  for flag in --model --prompt --output-format --approval-mode --extensions --system-prompt --max-session-turns --core-tools --exclude-tools; do
     grep -Fq -- "$flag" <<<"$help_text" || missing+=("$flag")
   done
   ((${#missing[@]} == 0)) || die "GigaCode CLI lacks required isolated-role flags: ${missing[*]}"

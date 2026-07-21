@@ -8,6 +8,8 @@ Corporate GigaCode 26.5.17 loaded the installed extension and recursively invoke
 - Separate the role system contract from the runtime JSON input and prohibit all role tool calls, native agent delegation, interactive questions, and slash-command execution.
 - Bound isolated role turns/tool usage and fail closed when the CLI cannot provide the required isolation surface.
 - Audit raw GigaCode events for tool calls and loaded custom agents/extensions before accepting role output.
+- Remove all core tools from the isolated model's advertised tool registry, rather than only denying their execution after selection.
+- Preserve stdout, redacted stderr, and isolation evidence even when the headless CLI exits non-zero or exhausts its turn budget.
 - Add a regression fixture based on the captured corporate runtime failure and report actionable isolation diagnostics.
 
 ## Capabilities
@@ -26,4 +28,5 @@ Corporate GigaCode 26.5.17 loaded the installed extension and recursively invoke
 - `publish-drawio-skill/scripts/agent_runtime.py` command construction, capability detection, event auditing, and diagnostics.
 - Role prompts and runtime tests for Supervisor, Reviewer, Repair, and Semantic Analyst.
 - Corporate installation/release package version and verification expectations.
+- `/drawio:trace` output for both successful and failed role invocations.
 - No change to interactive `/model`; each role retains its existing explicit model mapping.

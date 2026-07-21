@@ -363,6 +363,7 @@ def checkpoint(run_dir, workflow, kind, summary, findings, allowed, *, evidence=
 def host_result(run_dir, workflow, *, error=None):
     state = supervisor.load_state(run_dir)
     role_runs = []
+    failed_role_runs = []
     manifest_path = Path(run_dir) / "run-manifest.jsonl"
     if manifest_path.is_file():
         for line in manifest_path.read_text(encoding="utf-8").splitlines():
@@ -373,7 +374,21 @@ def host_result(run_dir, workflow, *, error=None):
                     for key in (
                         "role", "requested_model", "resolved_model", "resolution_mode",
                         "fallback_used", "model_proof", "output", "output_sha256",
-                        "runtime_capture", "runtime_capture_sha256", "exit_code",
+                        "runtime_capture", "runtime_capture_sha256", "stderr_capture",
+                        "stderr_capture_sha256", "isolation_controls",
+                        "isolation_proof", "exit_code",
+                    )
+                })
+            elif event.get("event_type") == "role_failed":
+                failed_role_runs.append({
+                    key: event["payload"].get(key)
+                    for key in (
+                        "role", "phase", "failure_kind", "requested_model",
+                        "resolved_model", "reported_model", "runtime_version",
+                        "exit_code", "diagnostic", "runtime_capture",
+                        "runtime_capture_sha256", "stderr_capture",
+                        "stderr_capture_sha256", "isolation_controls",
+                        "isolation_proof",
                     )
                 })
     result = {
@@ -384,6 +399,7 @@ def host_result(run_dir, workflow, *, error=None):
         "accepted_artifact": workflow.get("accepted_artifact"),
         "accepted_validation": workflow.get("accepted_validation"),
         "role_runs": role_runs,
+        "failed_role_runs": failed_role_runs,
         "checkpoint": workflow.get("checkpoint"),
         "evidence": {
             "manifest": str(manifest_path.resolve()),
@@ -897,8 +913,10 @@ def trace_run(reference, workspace):
         events.append(event)
     artifact_checks = []
     role_checks = []
+    failed_roles = []
     started_by_role = {}
     policy = supervisor.load_json(agent_runtime.DEFAULT_POLICY)
+    expected_isolation_controls = agent_runtime.role_isolation_controls()
     for event in events:
         if event["event_type"] == "role_started":
             path = Path(event["payload"]["input"])
@@ -910,10 +928,17 @@ def trace_run(reference, workspace):
             role = payload.get("role")
             output_path = Path(payload.get("output", ""))
             capture_path = Path(payload.get("runtime_capture", ""))
+            stderr_path = Path(payload.get("stderr_capture", ""))
             output_valid = output_path.is_file() and supervisor.sha256_file(output_path) == payload.get("output_sha256")
             capture_valid = capture_path.is_file() and supervisor.sha256_file(capture_path) == payload.get("runtime_capture_sha256")
+            stderr_valid = (
+                stderr_path.is_file()
+                and supervisor.sha256_file(stderr_path) == payload.get("stderr_capture_sha256")
+            ) if payload.get("stderr_capture") else True
             artifact_checks.append({"kind": "role_output", "path": str(output_path), "valid": output_valid})
             artifact_checks.append({"kind": "runtime_capture", "path": str(capture_path), "valid": capture_valid})
+            if payload.get("stderr_capture"):
+                artifact_checks.append({"kind": "runtime_stderr", "path": str(stderr_path), "valid": stderr_valid})
             start = started_by_role.get(role, []).pop(0) if started_by_role.get(role) else None
             proof_valid = False
             diagnostic = None
@@ -928,6 +953,8 @@ def trace_run(reference, workspace):
                     raise supervisor.SupervisorError("normalized role output differs from runtime capture")
                 expected_model = policy["roles"][role]["requested_model"]
                 expected_proof = metadata.get("model_proof")
+                expected_isolation = metadata.get("isolation_proof")
+                recorded_isolation = payload.get("isolation_proof", expected_isolation)
                 proof_valid = all((
                     metadata.get("reported_model") == expected_model,
                     bool(expected_proof and expected_proof.get("verified")),
@@ -939,6 +966,13 @@ def trace_run(reference, workspace):
                     event.get("actor", {}).get("model") == expected_model,
                     start["payload"].get("requested_model") == expected_model,
                     start["payload"].get("fallback_used") is False,
+                    start["payload"].get("isolation_controls")
+                    == expected_isolation_controls,
+                    payload.get("isolation_controls")
+                    == expected_isolation_controls,
+                    bool(expected_isolation and expected_isolation.get("verified")),
+                    recorded_isolation == expected_isolation,
+                    stderr_valid,
                 ))
                 if not proof_valid:
                     raise supervisor.SupervisorError("role model proof does not match the trusted routing policy and raw runtime capture")
@@ -949,12 +983,77 @@ def trace_run(reference, workspace):
                 "role": role, "valid": proof_valid,
                 "requested_model": payload.get("requested_model"),
                 "resolved_model": payload.get("resolved_model"),
+                "isolation_controls": payload.get("isolation_controls"),
+                "isolation_proof": payload.get("isolation_proof"),
                 "diagnostic": diagnostic,
             })
         if event["event_type"] == "role_failed":
             role = event["payload"].get("role")
             if started_by_role.get(role):
                 started_by_role[role].pop(0)
+            payload = event["payload"]
+            capture_path = Path(payload.get("runtime_capture", ""))
+            stderr_path = Path(payload.get("stderr_capture", ""))
+            capture_valid = (
+                capture_path.is_file()
+                and supervisor.sha256_file(capture_path)
+                == payload.get("runtime_capture_sha256")
+            )
+            stderr_valid = (
+                stderr_path.is_file()
+                and supervisor.sha256_file(stderr_path)
+                == payload.get("stderr_capture_sha256")
+            )
+            if payload.get("runtime_capture"):
+                artifact_checks.append({
+                    "kind": "failed_role_runtime_capture",
+                    "path": str(capture_path),
+                    "valid": capture_valid,
+                })
+            if payload.get("stderr_capture"):
+                artifact_checks.append({
+                    "kind": "failed_role_runtime_stderr",
+                    "path": str(stderr_path),
+                    "valid": stderr_valid,
+                })
+            computed_isolation = (
+                agent_runtime.inspect_runtime_isolation(
+                    role, capture_path.read_text(encoding="utf-8")
+                )
+                if capture_valid else None
+            )
+            recorded_isolation = payload.get("isolation_proof")
+            controls_valid = (
+                payload.get("isolation_controls") == expected_isolation_controls
+            )
+            failed_roles.append({
+                "role": role,
+                "phase": payload.get("phase"),
+                "failure_kind": payload.get("failure_kind"),
+                "exit_code": payload.get("exit_code"),
+                "diagnostic": payload.get("diagnostic"),
+                "runtime_capture": str(capture_path) if payload.get("runtime_capture") else None,
+                "runtime_capture_valid": capture_valid,
+                "stderr_capture": str(stderr_path) if payload.get("stderr_capture") else None,
+                "stderr_capture_valid": stderr_valid,
+                "isolation_proof": computed_isolation or recorded_isolation,
+                "isolation_controls": payload.get("isolation_controls"),
+                "isolation_controls_valid": controls_valid,
+                "isolation_evidence_valid": bool(
+                    computed_isolation
+                    and recorded_isolation == computed_isolation
+                ),
+                "evidence_valid": (
+                    payload.get("phase") == "capability_detection"
+                    or bool(
+                        capture_valid
+                        and stderr_valid
+                        and controls_valid
+                        and computed_isolation
+                        and recorded_isolation == computed_isolation
+                    )
+                ),
+            })
         if event["event_type"] == "validation_receipt" and event["payload"].get("receipt"):
             path = Path(event["payload"]["receipt"])
             verification = supervisor.verify_receipt(path) if path.is_file() else {"valid": False}
@@ -999,26 +1098,37 @@ def trace_run(reference, workspace):
             and supervisor.sha256_file(accepted_receipt_path) == accepted_validation.get("receipt_sha256")
         )
     preflight = supervisor.verify_host_preflight(run_dir)
-    valid = (
+    integrity_valid = (
         bool(events)
         and all(item["schema_valid"] and item["chain_valid"] for item in checks)
         and all(item["valid"] for item in artifact_checks)
         and all(item["valid"] for item in role_checks)
-        and accepted_valid
-        and accepted_receipt_valid
+        and all(item["evidence_valid"] for item in failed_roles)
         and preflight["valid"]
     )
+    valid = (
+        integrity_valid
+        and not failed_roles
+        and accepted_valid
+        and accepted_receipt_valid
+    )
     roles = [
-        {key: event["payload"].get(key) for key in ("role", "requested_model", "resolved_model", "resolution_mode", "fallback_used", "model_proof", "output_sha256")}
+        {key: event["payload"].get(key) for key in ("role", "requested_model", "resolved_model", "resolution_mode", "fallback_used", "model_proof", "isolation_controls", "isolation_proof", "output_sha256")}
         for event in events if event["event_type"] == "role_finished"
     ]
+    status = (
+        "verified" if valid
+        else "failed_verified" if integrity_valid and failed_roles
+        else "tampered_or_incomplete"
+    )
     result = {
-        "schema_version": 1, "status": "verified" if valid else "tampered_or_incomplete",
+        "schema_version": 1, "status": status,
         "valid": valid, "run_id": workflow["run_id"], "run_dir": str(run_dir),
         "state": (supervisor.load_state(run_dir) or {}).get("state"),
         "event_count": len(events), "event_checks": checks, "artifact_checks": artifact_checks,
         "accepted_artifact_valid": accepted_valid, "accepted_receipt_valid": accepted_receipt_valid,
         "host_preflight": preflight, "role_checks": role_checks,
+        "failed_roles": failed_roles, "integrity_valid": integrity_valid,
         "roles": roles, "terminal_result": workflow.get("status"),
         "trust_scope": "local runtime capture and configured routing policy; no external cryptographic attestation",
     }

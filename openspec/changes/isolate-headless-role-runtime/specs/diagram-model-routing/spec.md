@@ -17,15 +17,19 @@ The extension SHALL resolve Supervisor, Reviewer, Repair, and Semantic Analyst m
 
 #### Scenario: Isolated role excludes extension context and tools
 - **WHEN** the main host invokes an isolated diagram role
-- **THEN** the headless process disables installed extensions, supplies the role contract as a system prompt, excludes role-visible tools, and applies a bounded turn limit
+- **THEN** the headless process disables installed extensions, supplies the role contract as a system prompt, uses a non-empty allowlist sentinel that removes every core tool from the model registry, excludes fork-specific and MCP tools, and applies a bounded turn limit
 
 #### Scenario: Isolated role attempts delegation or another tool
 - **WHEN** any isolated-role event contains a tool call or still advertises Draw.io custom agents or commands
 - **THEN** the role fails closed without publishing its output or invoking the next lifecycle role
 
 #### Scenario: Required isolation controls are unavailable
-- **WHEN** the CLI does not advertise the required extension-disable, system-prompt, tool-exclusion, or turn-limit control
+- **WHEN** the CLI does not advertise the required extension-disable, system-prompt, core-tool allowlist, tool-exclusion, or turn-limit control
 - **THEN** capability detection fails before model execution with an actionable diagnostic
+
+#### Scenario: Isolated role exits before returning a decision
+- **WHEN** the CLI exits non-zero, reports `FatalTurnLimitedError`, or returns invalid role output
+- **THEN** stdout, redacted stderr, their hashes, and any independently auditable isolation evidence are persisted and exposed by the run trace
 
 #### Scenario: Review slash command invokes isolated Reviewer
 - **WHEN** the user starts `/drawio:review` while any supported model is selected in the interactive session

@@ -34,7 +34,7 @@ import sys
 
 HELP = (
     "GigaCode --model --prompt --output-format --approval-mode --auth-type "
-    "--extensions --system-prompt --max-session-turns --exclude-tools"
+    "--extensions --system-prompt --max-session-turns --core-tools --exclude-tools"
 )
 
 
@@ -373,6 +373,57 @@ class DiagramOrchestratorTests(unittest.TestCase):
         self.assertFalse(trace["valid"])
         self.assertEqual(trace["status"], "tampered_or_incomplete")
         self.assertTrue(any(not item["valid"] for item in trace["artifact_checks"]))
+
+    def test_trace_verifies_failed_turn_limit_capture_and_isolation_evidence(self):
+        root, workspace, _ = self.create_workspace()
+        cli = root / "turn-limited-gigacode.py"
+        cli.write_text(
+            f"#!{sys.executable}\n"
+            "import json, sys\n"
+            "if '--help' in sys.argv:\n"
+            "    print('GigaCode --model --prompt --output-format --approval-mode --auth-type --extensions --system-prompt --max-session-turns --core-tools --exclude-tools')\n"
+            "    raise SystemExit(0)\n"
+            "if '--version' in sys.argv:\n"
+            "    print('26.5.17-test')\n"
+            "    raise SystemExit(0)\n"
+            "model=sys.argv[sys.argv.index('--model')+1]\n"
+            "print(json.dumps([\n"
+            "  {'type':'system','subtype':'init','model':model,'qwen_code_version':'0.13.1','agents':[],'slash_commands':[]},\n"
+            "  {'type':'assistant','message':{'model':model,'content':[{'type':'text','text':'bounded failure'}]}},\n"
+            "  {'type':'result','subtype':'error','is_error':True,'error':'FatalTurnLimitedError'}\n"
+            "]))\n"
+            "print('FatalTurnLimitedError', file=sys.stderr)\n"
+            "raise SystemExit(2)\n",
+            encoding="utf-8",
+        )
+        cli.chmod(0o755)
+        completed = self.run_host(
+            "create", "--workspace", workspace, "--cli", cli,
+            "--run-id", "turn-limited-run", "Create a bounded failure diagram.",
+        )
+        self.assertEqual(completed.returncode, 2)
+        run_dir = workspace / ".diagram-runs" / "turn-limited-run"
+        host_result = json.loads((run_dir / "host-result.json").read_text())
+        self.assertEqual(len(host_result["failed_role_runs"]), 1)
+        self.assertEqual(
+            host_result["failed_role_runs"][0]["failure_kind"], "turn_limit"
+        )
+
+        trace = orchestrator.trace_run(run_dir, workspace)
+
+        self.assertFalse(trace["valid"])
+        self.assertTrue(trace["integrity_valid"])
+        self.assertEqual(trace["status"], "failed_verified")
+        self.assertEqual(trace["roles"], [])
+        self.assertEqual(len(trace["failed_roles"]), 1)
+        failed = trace["failed_roles"][0]
+        self.assertEqual(failed["role"], "supervisor")
+        self.assertTrue(failed["runtime_capture_valid"])
+        self.assertTrue(failed["stderr_capture_valid"])
+        self.assertTrue(failed["isolation_controls_valid"])
+        self.assertTrue(failed["isolation_evidence_valid"])
+        self.assertTrue(failed["isolation_proof"]["verified"])
+        self.assertEqual(failed["isolation_proof"]["tool_calls"], 0)
 
     def test_trace_detects_tampered_model_proof_after_manifest_chain_is_rehashed(self):
         root, workspace, cli = self.create_workspace()

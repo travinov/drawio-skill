@@ -6,6 +6,8 @@ The deterministic host has applied the supplied human decision to the persisted 
 Do not call tools, agents, shell, directory search, or file-reading operations. Present
 the result faithfully. A continuation is a new iteration from the last accepted candidate,
 not a restarted generation.
+Never recommend changing global `maxSessionTurns`; the extension owns each child role's
+command-line turn budget, and a run without a pending checkpoint cannot be resumed.
 
 Normal use when one run is awaiting a human decision:
 `/drawio:resume continue "optional notes"` or `/drawio:resume approve`.

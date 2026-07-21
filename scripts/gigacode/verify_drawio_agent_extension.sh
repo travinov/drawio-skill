@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 EXTENSION_NAME="publish-drawio-skill"
-EXPECTED_VERSION="${DRAWIO_EXTENSION_VERSION:-1.23.0-corporate.3}"
+EXPECTED_VERSION="${DRAWIO_EXTENSION_VERSION:-1.23.0-corporate.4}"
 GIGACODE_HOME="${GIGACODE_HOME:-$HOME/.gigacode}"
 GIGACODE_BIN="${GIGACODE_BIN:-$GIGACODE_HOME/bin/gigacode}"
 GIGACODE_SKILLS_DIR="${GIGACODE_SKILLS_DIR:-$GIGACODE_HOME/skills}"
@@ -42,7 +42,7 @@ extensions_supports_validate() {
 verify_role_runtime_capabilities() {
   local help_text flag missing=()
   help_text="$($GIGACODE_BIN --help 2>&1 || true)"
-  for flag in --model --prompt --output-format --approval-mode --extensions --system-prompt --max-session-turns --exclude-tools; do
+  for flag in --model --prompt --output-format --approval-mode --extensions --system-prompt --max-session-turns --core-tools --exclude-tools; do
     grep -Fq -- "$flag" <<<"$help_text" || missing+=("$flag")
   done
   ((${#missing[@]} == 0)) || die "GigaCode CLI lacks required isolated-role flags: ${missing[*]}"

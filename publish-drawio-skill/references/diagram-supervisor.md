@@ -18,9 +18,10 @@ lifecycle. It invokes Supervisor as a separate proven-model process; the main
 interactive session only invokes the command and presents its result.
 
 Every isolated role is a bounded, tool-free JSON decision. The adapter disables
-installed extensions for that child process, excludes agent/question/todo/read/
-shell tools, and rejects the raw event stream if any tool call or Draw.io custom
-agent/command still appears. A role must not ask for confirmation inside the
+installed extensions for that child process, supplies a nonexistent non-empty
+`--core-tools` allowlist so no core tool is advertised to the model, retains a
+deny list for fork/MCP tools, and rejects the raw event stream if any tool call
+or Draw.io custom agent/command still appears. A role must not ask for confirmation inside the
 headless child; required human input is returned as a typed checkpoint for the
 main lifecycle host.
 
@@ -106,7 +107,8 @@ Create a run directory outside the skill installation, for example `.diagram-run
 - `diagram-spec.json` — semantic working model and source references;
 - `state.json` — resumable state and last accepted artifact;
 - `run-manifest.jsonl` — append-only event ledger;
-- `roles/*/runtime-output.json` — raw isolated CLI evidence used to re-derive model proof;
+- `roles/*/runtime-output.json` — raw isolated CLI evidence saved on success and failure;
+- `roles/*/runtime-stderr.txt` — redacted child stderr saved before exit handling;
 - patch proposals and candidate `.drawio` files;
 - `validation-report.json`, captured stdout/stderr, and `validation-receipt.json`.
 

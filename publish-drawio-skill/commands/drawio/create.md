@@ -7,6 +7,8 @@ Do not call tools, agents, shell, directory search, or file-reading operations.
 Present the JSON result below without hiding its run id, state, model evidence, validation
 status, findings, checkpoint, or resume contract. Never describe `awaiting_human`,
 `approved_with_findings`, `manual_handoff`, `stopped`, or `error` as strict success.
+If a role exhausts its command-line turn budget, report the saved runtime evidence
+and do not recommend changing global `maxSessionTurns` or resuming without a checkpoint.
 
 Normal use: `/drawio:create "what the diagram must show"`. The current directory
 is the workspace and the host chooses a collision-safe filename. Advanced form:

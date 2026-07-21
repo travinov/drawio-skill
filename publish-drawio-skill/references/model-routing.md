@@ -51,7 +51,8 @@ to start a separate non-interactive process with the role's requested model.
 The adapter probes the CLI for the required headless/model/output/approval and
 isolation flags, builds an argument array, disables extensions with
 `--extensions none`, supplies the immutable role contract through
-`--system-prompt`, excludes role-visible tools with `--exclude-tools`, applies
+`--system-prompt`, removes every core tool from discovery with a non-empty
+`--core-tools` sentinel, excludes fork/MCP tools with `--exclude-tools`, applies
 `--max-session-turns`, enforces plan/read-only approval mode, captures output,
 and never executes model output. The canonical runtime JSON alone is supplied
 on stdin. Never concatenate a shell command and never interpolate diagram
@@ -72,7 +73,7 @@ python3 scripts/agent_runtime.py reviewer reviewer-input.json \
 
 The verified upstream Qwen Code 0.13.1 contract supports `--model`, `--prompt`,
 `--output-format json`, `--approval-mode plan`, `--extensions none`,
-`--system-prompt`, `--max-session-turns`, and `--exclude-tools`. Corporate
+`--system-prompt`, `--max-session-turns`, `--core-tools`, and `--exclude-tools`. Corporate
 GigaCode must advertise the same required isolation controls before a role is
 started. It also supports `--auth-type gigacode`; the adapter adds that auth
 type when CLI help identifies GigaCode.
@@ -143,12 +144,16 @@ Append one `model_resolved` event per activated role to `run-manifest.jsonl`. Th
 
 Do not infer success from the requested value. A resolution is complete only after the role process succeeds, its output validates, and the runtime reports or the adapter can otherwise prove which model was used. Append `model_resolved` only at that point.
 
-Persist the successful CLI stdout as `runtime-output.json` and bind its SHA-256
-in `role_finished`. `/drawio:trace` must re-parse that capture, re-derive the
+Persist CLI stdout as `runtime-output.json` and redacted stderr as
+`runtime-stderr.txt` before interpreting the exit code. Bind both hashes in
+`role_finished` or `role_failed`. `/drawio:trace` must re-parse a successful
+capture, re-derive the
 reported model/proof, validate the typed role output and compare the model with
 `model-routing.default.json`. It must not accept edited `resolved_model` or
 `model_proof` manifest fields as independent evidence. This is a local evidence
-check, not a remote signature or hardware-backed attestation.
+check, not a remote signature or hardware-backed attestation. A failed but
+untampered child appears as `failed_verified` with `valid: false`, its failure
+phase, capture integrity, and isolation evidence; this is not workflow success.
 
 `/stats model` in the parent session describes the parent process and is not
 proof for an isolated role. Inspect `run-manifest.jsonl` instead: a successful

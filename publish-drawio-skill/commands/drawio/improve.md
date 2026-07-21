@@ -7,6 +7,8 @@ Do not call tools, agents, shell, directory search, or file-reading operations.
 Present the JSON result below faithfully, including the semantic comparison checkpoint,
 last accepted candidate, role models, validation and review evidence, and resume contract.
 The source diagram remains unchanged until explicit final approval.
+If a role exhausts its command-line turn budget, report the saved runtime evidence
+and do not recommend changing global `maxSessionTurns` or resuming without a checkpoint.
 
 Normal use when the workspace contains one `.drawio`:
 `/drawio:improve "requirements or corrections"`. Advanced form:
