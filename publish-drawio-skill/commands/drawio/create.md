@@ -9,6 +9,9 @@ status, findings, checkpoint, or resume contract. Never describe `awaiting_human
 `approved_with_findings`, `manual_handoff`, `stopped`, or `error` as strict success.
 Publication is journaled: create is no-clobber, improve is compare-and-swap, and
 a target conflict must remain a resumable checkpoint rather than an overwrite.
+Recoverable Repair/Reviewer contract, scope, and deterministic-tool failures are
+handled by the bounded host loop; do not ask the user to enter `continue` unless
+the JSON actually contains a human checkpoint.
 If a role exhausts its command-line turn budget, report the saved runtime evidence
 and do not recommend changing global `maxSessionTurns` or resuming without a checkpoint.
 If `model_diversity_degraded` is true, state that Supervisor recovered once on

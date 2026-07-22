@@ -2,7 +2,7 @@
 name: drawio-skill
 description: Use when the user requests diagrams, flowcharts, roadmap diagrams, git-flow / branching strategy timelines, architecture diagrams, ER diagrams, UML / sequence / class diagrams, network topology, cloud architecture from Terraform or Kubernetes manifests, ML/DL model figures (Transformer/CNN/LSTM), mind maps, or any visualization. Also use proactively when explaining systems with 3+ components, complex data flows, or relationships that benefit from visual representation. Best suited when the diagram needs custom styling, rich shape vocabulary, swimlanes, precise timeline/lane placement, intake clarification, canonical XLSX/CSV roadmap intake, full milestone revision history, baseline comparison, milestone shift markers, or exportable images (PNG/SVG/PDF/JPG). Generates .drawio XML and exports locally via the native draw.io desktop CLI.
 license: MIT
-metadata: {"openclaw":{"requires":{"anyBins":["draw.io","drawio"]},"emoji":"📐","os":["darwin","linux","win32"],"install":[{"id":"marketplace-drawio","kind":"manual","label":"Install draw.io Desktop from the corporate application marketplace / SberUserSoft","os":["darwin","win32"]},{"id":"graphviz","kind":"manual","label":"Install Graphviz for optional autolayout.py / gitflow.py edge routing if approved in your environment","optional":true}]},"hermes":{"tags":["drawio","diagram","flowchart","git-flow","architecture","visualization","uml"],"category":"design","requires_tools":["drawio","draw.io"],"related_skills":["mermaid","excalidraw","plantuml"]},"author":"Agents365-ai","version":"1.24.0-corporate.3"}
+metadata: {"openclaw":{"requires":{"anyBins":["draw.io","drawio"]},"emoji":"📐","os":["darwin","linux","win32"],"install":[{"id":"marketplace-drawio","kind":"manual","label":"Install draw.io Desktop from the corporate application marketplace / SberUserSoft","os":["darwin","win32"]},{"id":"graphviz","kind":"manual","label":"Install Graphviz for optional autolayout.py / gitflow.py edge routing if approved in your environment","optional":true}]},"hermes":{"tags":["drawio","diagram","flowchart","git-flow","architecture","visualization","uml"],"category":"design","requires_tools":["drawio","draw.io"],"related_skills":["mermaid","excalidraw","plantuml"]},"author":"Agents365-ai","version":"1.24.0-corporate.4"}
 ---
 
 # Draw.io Diagrams
@@ -165,8 +165,11 @@ execution. Explicit flags remain supported for automation.
 
 `diagram_orchestrator.py` creates `.diagram-runs/<run-id>`, invokes isolated
 Supervisor and Semantic Analyst, renders or imports a baseline, validates it,
-and invokes Repair/Reviewer only when their state requires them. Resume applies
-human feedback to that same run. New mutable runs use the strict v2 control
+and invokes Repair/Reviewer only when their state requires them. It owns a
+bounded automatic repair loop: default four iterations, at most one retry after
+the first occurrence of the same normalized recoverable contract/scope/tool
+failure, and no automatic retry for evidence-integrity or isolation failures.
+Resume applies human feedback to that same run. New mutable runs use the strict v2 control
 plane under `lifecycle-v2/`: immutable source, implementation, state,
 checkpoint, decision, receipt, Reviewer, and publication snapshots are bound to
 `run-manifest.v2.jsonl`. The v1 `run-manifest.jsonl` and other v1 files remain a compatibility shadow for proven
@@ -230,6 +233,10 @@ page-scoped structure, parents, styles, routes, assumptions, and human
 questions. It does not calculate evidence hashes or semantic operation IDs.
 The host binds the actual source bundle and baseline and deterministically
 normalizes the result into canonical `semantic-plan.v2` plus a typed delta.
+An unambiguous layout-only clarification is classified by deterministic
+vocabulary and explicit stable IDs, bypasses Semantic Analyst, and becomes a
+narrow Repair scope. Mixed or semantic feedback always returns to Semantic
+Analyst. Never reuse an older layout scope for a semantic clarification.
 
 Before inspecting the diagram, run this from the main session and keep its
 evidence under the user's project, never under the installed extension:
@@ -248,16 +255,24 @@ missing evidence. Do not turn a child-agent status or prose assertion into a
 successful run.
 
 Use patch-only candidates with stable `mxCell` IDs and preconditions. Validate
-each candidate strictly, compare it with the last accepted report, and accept it
+each candidate strictly, compare it with the last working report, and promote it
 only as a monotonic improvement. Never use a rejected candidate as the next
-baseline. Persist state and evidence so user feedback resumes the same run.
-Request human input only for source conflicts, semantic changes, a plateau, or
+baseline. Keep model `output.json` immutable; execute only a separately stored
+host-bound patch whose baseline SHA, semantic digest, page, targets, and allowed
+operation types were derived by the Host. Persist state and evidence so user
+feedback resumes the same run. Request human input only for source conflicts,
+semantic changes, repeated/bounded plateau, evidence-integrity failures, or
 final review. The user can continue, approve, stop, pause/resume, accept with
-findings, or take the last accepted artifact for manual completion. A non-empty
+findings, or take the last working artifact for manual completion. A non-empty
 resume comment becomes a hash-bound confirmed clarification and triggers
-bounded reconciliation from the last accepted artifact. `approve_with_findings`
-is offered only when evidence integrity and structural safety are valid and no
-error-level finding remains; it never pretends that strict validation passed.
+bounded reconciliation from the last working artifact. `approve_with_findings`
+is offered only after strict validation passes, Reviewer approves, evidence
+integrity is valid, and no error-level finding remains.
+
+Keep `working_artifact`, `publishable_candidate`, and
+`final_artifact`/`published_artifact` distinct. A strict-failed working candidate
+may be the next repair baseline but is never sent to Reviewer, never offered for
+approval, and never published.
 
 Logical roles are Supervisor and read-only Independent Reviewer during a normal
 run, plus on-demand Repair and Semantic Analyst roles. Resolve models per role;

@@ -64,7 +64,7 @@ to guess an ambiguous file or run.
 Create and improve invoke isolated Supervisor and Semantic Analyst, then
 deterministic rendering/import and strict validation. Repair is invoked only
 for findings, and Reviewer independently gates candidates. Resume continues
-the same persisted run from the last accepted candidate. Trace invokes no model.
+the same persisted run from the last working candidate. Trace invokes no model.
 The host consumes Supervisor `action`, `required_roles`, and `max_iterations`.
 It preserves the model array as `supervisor_declared_roles`, records its own
 phase policy as `host_mandatory_roles`, and records their union as effective
@@ -266,12 +266,13 @@ python3 scripts/diagram_supervisor.py candidate <run-dir> candidate.drawio \
   --reviewer-verdict <run-dir>/reviewer-verdict.json
 ```
 
-The ordered vector is semantic violations, structural errors, route-through-node, container/lane violations, crossings, overlaps, routing uncertainty, text overflow, and route complexity. Route complexity prioritizes explicit bend count, then rounded route length. Compare lexicographically: the first changed category decides; no lower-priority gain can compensate for a higher-priority regression. Reject a candidate if semantics or untouched regions changed unexpectedly or nothing improves. A rejected candidate never becomes the baseline. Start every retry from the last accepted candidate and treat repeated hashes/vectors as cycle or plateau evidence. The `candidate` command verifies the patch, affected region, report and strict receipt, persists the decision, and automatically moves a repeated artifact hash, quality vector, exhausted repair class, or configured attempt limit to `plateau`.
+The ordered vector is semantic violations, structural errors, route-through-node, container/lane violations, crossings, overlaps, routing uncertainty, text overflow, and route complexity. Route complexity prioritizes explicit bend count, then rounded route length. Compare lexicographically: the first changed category decides; no lower-priority gain can compensate for a higher-priority regression. Reject a candidate if semantics or untouched regions changed unexpectedly or nothing improves. A rejected candidate never becomes the baseline. Start every retry from the last working candidate and treat repeated hashes/vectors as cycle or plateau evidence. The `candidate` command verifies the host-bound patch, affected region, report and strict receipt, persists the decision, and automatically moves a repeated artifact hash, quality vector, failure signature, exhausted repair class, or configured attempt limit to `plateau`.
 
 A partial improvement may still have a non-zero strict validator exit because
 some findings remain. Its receipt can be cryptographically valid while
 `passed: false`; the candidate gate may accept it as the next baseline after a
-lexicographic improvement. Only final `completed` requires `passed: true`.
+lexicographic improvement. It remains a `working_artifact`; Reviewer and
+publication are skipped until a candidate has `passed: true`.
 
 Vision review is supplemental. It cannot override a deterministic failure or a mismatched receipt.
 
@@ -288,10 +289,9 @@ Present semantic and layout diffs separately. At a checkpoint, offer only
 decisions with executable state transitions: continuation, approval,
 pause/resume, stop, manual handoff, or explicit approval with findings. A
 non-empty continuation comment is stored as a confirmed clarification and
-reconciled against the same last accepted artifact. `approve_with_findings` is
-available only for an integrity-valid, structurally safe candidate without
-error-level findings and retains `strict_passed: false` plus unresolved
-findings. A manual handoff returns the last accepted file, remaining findings,
+reconciled against the same last working artifact. `approve_with_findings` is
+available only for an integrity-valid strict-pass candidate with Reviewer
+approve and without error-level findings. A manual handoff returns the last working file, remaining findings,
 and receipt status so the user can finish by hand.
 `manual_handoff` never promotes the pending unreviewed candidate.
 

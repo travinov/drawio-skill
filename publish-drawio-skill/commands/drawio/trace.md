@@ -15,6 +15,9 @@ succeeded; present its failed role, capture paths, isolation proof, and diagnost
 Treat a nonterminal Supervisor `role_failed` followed by an approved fallback
 `role_finished` as recovered evidence, not as a hidden failure; report
 `model_diversity_degraded` explicitly.
+Also distinguish `working_artifact`, `publishable_candidate`, and final/published
+artifacts, and show `internal_feedback_created`, `auto_retry_scheduled`, and
+`patch_bound` evidence when present.
 
 Normal use: `/drawio:trace` selects the most recently updated workflow.
 Advanced form: `--run "run-id-or-directory"`.

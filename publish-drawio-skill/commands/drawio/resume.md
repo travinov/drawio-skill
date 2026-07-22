@@ -4,15 +4,16 @@ description: Resume the same draw.io agent run with a human decision or feedback
 
 The deterministic host has applied the supplied human decision to the persisted run.
 Do not call tools, agents, shell, directory search, or file-reading operations. Present
-the result faithfully. A continuation is a new iteration from the last accepted candidate,
+the result faithfully. A continuation is a new iteration from the last working candidate,
 not a restarted generation.
 Non-empty feedback becomes a hash-bound confirmed clarification and triggers
-bounded semantic reconciliation in this same run. Decisions are idempotent;
+deterministic layout scoping or bounded semantic reconciliation in this same run.
+Decisions are idempotent;
 report `already_applied` faithfully instead of claiming another iteration ran.
 Never recommend changing global `maxSessionTurns`; the extension owns each child role's
 command-line turn budget, and a run without a pending checkpoint cannot be resumed.
-Only present `approve_with_findings` when the host offers it for an
-integrity-valid, structurally safe candidate without error findings. A legacy
+Only present `approve_with_findings` when the host offers it after strict pass,
+Reviewer approve, valid integrity, and no error findings. A legacy
 v1 checkpoint is trace/manual-handoff only and cannot be resumed.
 
 Normal use when one run is awaiting a human decision:

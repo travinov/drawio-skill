@@ -36,6 +36,7 @@
         "model_resolved",
         "state_transition",
         "patch_proposed",
+        "patch_bound",
         "patch_applied",
         "candidate_accepted",
         "candidate_rejected",
@@ -44,6 +45,9 @@
         "user_decision",
         "validation_receipt",
         "review_verdict",
+        "review_skipped",
+        "internal_feedback_created",
+        "auto_retry_scheduled",
         "role_failed",
         "run_resumed",
         "terminal_state"

@@ -35,7 +35,7 @@ Two evidence modes are supported:
 - User intent, explicitly supplied user documents, and recorded source precedence:
   `explicit_user_decision > confirmed_clarification > original_user_request > explicit_user_document > existing_diagram > agent_assumption`.
   Here `explicit_user_document` means an explicitly supplied user document.
-- Hash-bound accepted baseline artifact/report/receipt and candidate artifact/report/receipt.
+- Hash-bound working baseline artifact/report/receipt and candidate artifact/report/receipt.
 - Baseline and candidate `DiagramSpec` documents.
 - Separate semantic and layout diffs.
 - Patch transaction and affected region.
@@ -58,6 +58,10 @@ Deterministic validation is authoritative for structure and geometry. Visual ins
 5. Check that loops, branches, directions, labels, and relationships still match the approved process.
 6. Check that the receipt hashes the candidate and captured outputs, uses strict mode, and has an exit code consistent with its result.
 7. Report suspicious agreement, missing evidence, unresolved source conflict, or degraded model diversity.
+
+Candidate review is invoked only after strict deterministic validation passes.
+Never turn a strict-failed candidate into an approval; the Host keeps such a
+candidate only as a possible working repair baseline and skips Reviewer.
 
 ## Output contract
 

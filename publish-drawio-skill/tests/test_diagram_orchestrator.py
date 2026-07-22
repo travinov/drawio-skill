@@ -29,6 +29,25 @@ def clean_diagram():
 """
 
 
+def routed_diagram():
+    return """<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net">
+  <diagram id="page-1" name="Page-1"><mxGraphModel><root>
+    <mxCell id="0"/><mxCell id="1" parent="0"/>
+    <mxCell id="source" value="Source" parent="1" vertex="1">
+      <mxGeometry x="0" y="0" width="80" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="target" value="Target" parent="1" vertex="1">
+      <mxGeometry x="300" y="0" width="80" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="e-2" value="flow" style="html=1;" parent="1" source="source" target="target" edge="1">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+  </root></mxGraphModel></diagram>
+</mxfile>
+"""
+
+
 FAKE_GIGACODE = """#!/usr/bin/env python3
 import json
 import sys
@@ -788,6 +807,51 @@ Route approved payments to settlement.
         self.assertTrue(trace["valid"])
         self.assertTrue(all(not role["fallback_used"] for role in trace["roles"]))
 
+    def test_create_baseline_reviewer_needs_human_checkpoints_without_repair(self):
+        root, workspace, _ = self.create_workspace()
+        cli = root / "needs-human-reviewer.py"
+        cli.write_text(
+            FAKE_GIGACODE.replace(
+                '"role": "reviewer",\n        "status": "ok",',
+                '"role": "reviewer",\n        "status": "needs_human",',
+                1,
+            ).replace(
+                '"analysis_id": "review-test",\n        "verdict": "approve",',
+                '"analysis_id": "review-test",\n        "verdict": "needs_human",',
+                1,
+            ),
+            encoding="utf-8",
+        )
+        cli.chmod(0o755)
+        target = workspace / "needs-human.drawio"
+
+        result = orchestrator.start_run(
+            "create",
+            target,
+            "Create a diagram whose meaning needs human review.",
+            workspace,
+            cli,
+            run_id="baseline-needs-human-run",
+            max_iterations=4,
+        )
+
+        self.assertEqual(result["status"], "awaiting_human")
+        self.assertEqual(result["state"], "awaiting_feedback")
+        self.assertEqual(result["checkpoint"]["kind"], "feedback")
+        self.assertEqual(
+            result["checkpoint"]["evidence"]["failure_class"],
+            "reviewer_needs_human",
+        )
+        self.assertIsNone(result["publishable_candidate"])
+        self.assertFalse(target.exists())
+        self.assertNotIn(
+            "repair",
+            {
+                role["role"]
+                for role in result["role_runs"]
+            },
+        )
+
     def test_publication_recovery_continues_an_interrupted_publish_transaction(self):
         root, workspace, cli = self.create_workspace()
         target = workspace / "recoverable.drawio"
@@ -855,6 +919,36 @@ Route approved payments to settlement.
         accepted_descriptor = orchestrator.lifecycle_v2.make_file_descriptor(accepted, root=run_dir)
         report_descriptor = orchestrator.lifecycle_v2.make_file_descriptor(report, root=run_dir)
         receipt_descriptor = orchestrator.lifecycle_v2.make_file_descriptor(receipt_v2_path, root=run_dir)
+        reviewer_v2_path = run_dir / "reviewer-verdict.v2.json"
+        reviewer_v2 = {
+            "schema_version": 2,
+            "verdict_id": "review-v2-bytes-published",
+            "analysis_id": "analysis-v2-bytes-published",
+            "run_id": "bytes-published-run",
+            "analysis_sha256": "1" * 64,
+            "role_input_sha256": orchestrator.supervisor.sha256_file(receipt_v2_path),
+            "role_output_sha256": "3" * 64,
+            "bindings": {
+                "candidate_sha256": orchestrator.supervisor.sha256_file(accepted),
+                "report_sha256": orchestrator.supervisor.sha256_file(report),
+                "receipt_sha256": orchestrator.supervisor.sha256_file(receipt_v2_path),
+                "source_bundle_sha256": "6" * 64,
+                "semantic_plan_sha256": None,
+                "semantic_delta_sha256": None,
+            },
+            "runtime_proof": {
+                "requested_model": "vllm/DeepSeek-V4-Flash-262k",
+                "resolved_model": "vllm/DeepSeek-V4-Flash-262k",
+                "provider": "vllm",
+                "resolution_mode": "isolated_cli",
+                "attempt_id": "bytes-published-review-1",
+                "evidence_sha256": "5" * 64,
+            },
+            "verdict": "approve",
+            "reviewed_at": "2026-07-22T12:00:00+00:00",
+            "findings": [],
+        }
+        reviewer_v2_path.write_text(json.dumps(reviewer_v2, ensure_ascii=False), encoding="utf-8")
         orchestrator.lifecycle_v2.transition(
             run_dir,
             "final_review",
@@ -900,6 +994,7 @@ Route approved payments to settlement.
                     accepted_artifact=accepted,
                     validation_report=report,
                     validation_receipt=receipt_v2_path,
+                    reviewer_verdict=reviewer_v2_path,
                     decision="approve",
                 )
 
@@ -921,6 +1016,637 @@ Route approved payments to settlement.
         self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(), target_hash_before)
         self.assertEqual(target.stat().st_mtime_ns, target_mtime_before)
         self.assertEqual(recovered["published_sha256"], target_hash_before)
+
+    def test_publish_transaction_rejects_approve_with_findings_when_error_findings_remain(self):
+        _, workspace, _ = self.create_workspace()
+        target = workspace / "findings-blocked.drawio"
+        run_dir = workspace / ".diagram-runs" / "findings-blocked-run"
+        orchestrator.lifecycle_v2.initialize(
+            run_dir=run_dir,
+            workspace=workspace,
+            target=target,
+            run_id="findings-blocked-run",
+            mode="create",
+            request="Create a findings-blocked publication diagram.",
+            extension_root=ROOT,
+            explicit_documents=(),
+        )
+        accepted = run_dir / "accepted" / "baseline.drawio"
+        accepted.parent.mkdir(parents=True, exist_ok=True)
+        accepted.write_text(clean_diagram(), encoding="utf-8")
+        orchestrator.supervisor.run_validation(accepted, run_dir, attempt_id="baseline")
+        report = run_dir / "attempts" / "baseline" / "validation-report.json"
+        legacy_receipt = run_dir / "attempts" / "baseline" / "validation-receipt.json"
+        receipt_v2, receipt_v2_path = orchestrator.lifecycle_v2.mirror_validation_receipt(
+            run_dir,
+            legacy_receipt_path=legacy_receipt,
+        )
+        report_value = orchestrator.supervisor.load_json(report)
+        report_value["findings"].append(
+            {
+                "layer": "artifact-parse",
+                "severity": "error",
+                "code": "artifact.id.duplicate",
+                "path": "/pages/0",
+                "message": "duplicate id",
+            }
+        )
+        report.write_text(json.dumps(report_value, ensure_ascii=False), encoding="utf-8")
+        stdout_path = run_dir / "attempts" / "baseline" / "validator.stdout"
+        stdout_path.write_text(json.dumps(report_value, ensure_ascii=False), encoding="utf-8")
+        receipt_v2["run_id"] = "final-approval-run"
+        receipt_v2["outputs"]["report"]["sha256"] = orchestrator.supervisor.sha256_file(report)
+        receipt_v2["outputs"]["stdout"]["sha256"] = orchestrator.supervisor.sha256_file(stdout_path)
+        receipt_v2["outputs"]["report"]["byte_length"] = report.stat().st_size
+        receipt_v2["outputs"]["stdout"]["byte_length"] = stdout_path.stat().st_size
+        receipt_v2_path.write_text(json.dumps(receipt_v2, ensure_ascii=False), encoding="utf-8")
+        receipt_v2_verification = orchestrator.lifecycle_v2.verify_v2_receipt(run_dir, receipt_v2_path)
+        accepted_descriptor = orchestrator.lifecycle_v2.make_file_descriptor(accepted, root=run_dir)
+        report_descriptor = orchestrator.lifecycle_v2.make_file_descriptor(report, root=run_dir)
+        receipt_descriptor = orchestrator.lifecycle_v2.make_file_descriptor(receipt_v2_path, root=run_dir)
+        orchestrator.lifecycle_v2.transition(
+            run_dir,
+            "final_review",
+            accepted_artifact=accepted_descriptor,
+            validation_report=report_descriptor,
+            validation_receipt=receipt_descriptor,
+        )
+        workflow, _ = orchestrator.lifecycle_v2.latest_document(run_dir, "workflow")
+        workflow["status"] = "final_review"
+        workflow["accepted_artifact"] = accepted_descriptor
+        workflow["accepted_validation"] = {
+            "report": str(report.resolve()),
+            "receipt": str(receipt_v2_path.resolve()),
+            "report_sha256": report_descriptor["sha256"],
+            "receipt_sha256": receipt_descriptor["sha256"],
+            "strict_passed": receipt_v2_verification["strict_passed"],
+        }
+        workflow["validation_receipt_v2"] = receipt_descriptor
+        orchestrator.write_workflow(run_dir, workflow)
+
+        with self.assertRaisesRegex(orchestrator.lifecycle_v2.ContractError, "approve_with_findings requires strict pass with warnings only"):
+            orchestrator.lifecycle_v2.publish_transaction(
+                run_dir,
+                accepted_artifact=accepted,
+                validation_report=report,
+                validation_receipt=receipt_v2_path,
+                decision="approve_with_findings",
+            )
+
+    def test_final_approval_eligibility_allows_only_approve_with_findings_for_warning_only_findings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            run_dir = temp / "run"
+            orchestrator.lifecycle_v2.initialize(
+                run_dir=run_dir,
+                workspace=temp,
+                target=temp / "diagram.drawio",
+                run_id="final-approval-run",
+                mode="create",
+                request="Create a diagram with warning-only findings.",
+                extension_root=ROOT,
+                explicit_documents=(),
+            )
+            accepted = run_dir / "accepted" / "baseline.drawio"
+            accepted.parent.mkdir(parents=True, exist_ok=True)
+            accepted.write_text(clean_diagram(), encoding="utf-8")
+            orchestrator.supervisor.run_validation(accepted, run_dir, attempt_id="baseline")
+            report = run_dir / "attempts" / "baseline" / "validation-report.json"
+            legacy_receipt = run_dir / "attempts" / "baseline" / "validation-receipt.json"
+            receipt_v2, receipt_v2_path = orchestrator.lifecycle_v2.mirror_validation_receipt(
+                run_dir,
+                legacy_receipt_path=legacy_receipt,
+            )
+            receipt_v2["run_id"] = "final-approval-run"
+            report_value = orchestrator.supervisor.load_json(report)
+            report_value["findings"] = [
+                {
+                    "layer": "layout",
+                    "severity": "warning",
+                    "code": "test.warning",
+                    "path": "/pages/0",
+                    "message": "warning-only finding",
+                },
+                {
+                    "layer": "layout",
+                    "severity": "info",
+                    "code": "test.info",
+                    "path": "/pages/0",
+                    "message": "info-only finding",
+                },
+            ]
+            report.write_text(json.dumps(report_value, ensure_ascii=False), encoding="utf-8")
+            stdout_path = run_dir / "attempts" / "baseline" / "validator.stdout"
+            stdout_path.write_text(json.dumps(report_value, ensure_ascii=False), encoding="utf-8")
+            receipt_v2["outputs"]["report"]["sha256"] = orchestrator.supervisor.sha256_file(report)
+            receipt_v2["outputs"]["stdout"]["sha256"] = orchestrator.supervisor.sha256_file(stdout_path)
+            receipt_v2["outputs"]["report"]["byte_length"] = report.stat().st_size
+            receipt_v2["outputs"]["stdout"]["byte_length"] = stdout_path.stat().st_size
+            receipt_v2_path.write_text(json.dumps(receipt_v2, ensure_ascii=False), encoding="utf-8")
+            receipt_v2_verification = orchestrator.lifecycle_v2.verify_v2_receipt(run_dir, receipt_v2_path)
+            accepted_descriptor = orchestrator.lifecycle_v2.make_file_descriptor(accepted, root=run_dir)
+            report_descriptor = orchestrator.lifecycle_v2.make_file_descriptor(report, root=run_dir)
+            receipt_descriptor = orchestrator.lifecycle_v2.make_file_descriptor(receipt_v2_path, root=run_dir)
+            accepted_descriptor["path"] = str(accepted.resolve())
+            receipt_descriptor["path"] = str(receipt_v2_path.resolve())
+            verdict_v2_path = receipt_v2_path.with_name("reviewer-verdict.v2.json")
+            source_bundle_path = run_dir / "source-bundle.v2.json"
+            source_bundle_value = {"schema_version": 2, "bundle": "test"}
+            source_bundle_path.write_text(json.dumps(source_bundle_value, ensure_ascii=False), encoding="utf-8")
+            source_bundle_descriptor = orchestrator.lifecycle_v2.make_file_descriptor(source_bundle_path, root=run_dir)
+            candidate_spec_path = run_dir / "candidate-spec.v2.json"
+            baseline_spec_path = run_dir / "baseline-spec.v2.json"
+            patch_path = run_dir / "patch.v1.json"
+            semantic_plan_path = run_dir / "semantic-plan.v2.json"
+            for path, value in (
+                (candidate_spec_path, {"schema_version": 2, "diagram_id": "candidate"}),
+                (baseline_spec_path, {"schema_version": 2, "diagram_id": "baseline"}),
+                (patch_path, {"schema_version": 1, "patch_id": "test-patch"}),
+                (semantic_plan_path, {"schema_version": 2, "role": "semantic_analyst"}),
+            ):
+                path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+            candidate_spec_descriptor = orchestrator.lifecycle_v2.make_file_descriptor(candidate_spec_path, root=run_dir)
+            baseline_spec_descriptor = orchestrator.lifecycle_v2.make_file_descriptor(baseline_spec_path, root=run_dir)
+            patch_descriptor = orchestrator.lifecycle_v2.make_file_descriptor(patch_path, root=run_dir)
+            semantic_plan_descriptor = orchestrator.lifecycle_v2.make_file_descriptor(semantic_plan_path, root=run_dir)
+            run_root = run_dir.resolve()
+            review_input_path = run_dir / "reviewer-input.v2.json"
+            review_input_value = {
+                "schema_version": 2,
+                "run_id": "final-approval-run",
+                "review_kind": "candidate_review",
+                "baseline": {
+                    "artifact": {"path": str(accepted.resolve().relative_to(run_root)), "sha256": orchestrator.supervisor.sha256_file(accepted), "byte_length": accepted.stat().st_size},
+                    "report": {"path": str(report.resolve().relative_to(run_root)), "sha256": orchestrator.supervisor.sha256_file(report), "byte_length": report.stat().st_size},
+                    "receipt": {"path": str(receipt_v2_path.resolve().relative_to(run_root)), "sha256": orchestrator.supervisor.sha256_file(receipt_v2_path), "byte_length": receipt_v2_path.stat().st_size},
+                    "strict_passed": True,
+                },
+                "candidate": {
+                    "artifact": {"path": str(accepted.resolve().relative_to(run_root)), "sha256": orchestrator.supervisor.sha256_file(accepted), "byte_length": accepted.stat().st_size},
+                    "report": {"path": str(report.resolve().relative_to(run_root)), "sha256": orchestrator.supervisor.sha256_file(report), "byte_length": report.stat().st_size},
+                    "receipt": {"path": str(receipt_v2_path.resolve().relative_to(run_root)), "sha256": orchestrator.supervisor.sha256_file(receipt_v2_path), "byte_length": receipt_v2_path.stat().st_size},
+                    "strict_passed": True,
+                },
+                "baseline_spec": {"path": str(baseline_spec_path.resolve().relative_to(run_root)), "sha256": orchestrator.supervisor.sha256_file(baseline_spec_path), "content": {"schema_version": 2, "diagram_id": "baseline"}},
+                "candidate_spec": {"path": str(candidate_spec_path.resolve().relative_to(run_root)), "sha256": orchestrator.supervisor.sha256_file(candidate_spec_path), "content": {"schema_version": 2, "diagram_id": "candidate"}},
+                "patch": {"path": str(patch_path.resolve().relative_to(run_root)), "sha256": orchestrator.supervisor.sha256_file(patch_path), "content": {"schema_version": 1, "patch_id": "test-patch"}},
+                "semantic_plan": {"path": str(semantic_plan_path.resolve().relative_to(run_root)), "sha256": orchestrator.supervisor.sha256_file(semantic_plan_path), "content": {"schema_version": 2, "role": "semantic_analyst"}},
+                "semantic_delta": None,
+                "source_bundle": {"path": str(source_bundle_path.resolve().relative_to(run_root)), "sha256": orchestrator.supervisor.sha256_file(source_bundle_path), "content": source_bundle_value},
+                "comparison": None,
+                "model_resolutions": [],
+            }
+            review_input_path.write_text(json.dumps(review_input_value, ensure_ascii=False), encoding="utf-8")
+            review_input_descriptor = orchestrator.lifecycle_v2.make_file_descriptor(review_input_path, root=run_dir)
+            verdict_v2 = {
+                "schema_version": 2,
+                "verdict_id": "review-v2-candidate",
+                "analysis_id": "analysis-v2-candidate",
+                "run_id": "final-approval-run",
+                "analysis_sha256": "1" * 64,
+                "role_input_sha256": orchestrator.supervisor.sha256_file(review_input_path),
+                "role_output_sha256": "3" * 64,
+                "bindings": {
+                    "candidate_sha256": orchestrator.supervisor.sha256_file(accepted),
+                    "report_sha256": orchestrator.supervisor.sha256_file(report),
+                    "receipt_sha256": orchestrator.supervisor.sha256_file(receipt_v2_path),
+                    "source_bundle_sha256": orchestrator.canonical_json_sha256(source_bundle_value),
+                    "semantic_plan_sha256": None,
+                    "semantic_delta_sha256": None,
+                },
+                "runtime_proof": {
+                    "requested_model": "vllm/DeepSeek-V4-Flash-262k",
+                    "resolved_model": "vllm/DeepSeek-V4-Flash-262k",
+                    "provider": "vllm",
+                    "resolution_mode": "isolated_cli",
+                    "attempt_id": "candidate-review-1",
+                    "evidence_sha256": "5" * 64,
+                },
+                "verdict": "approve",
+                "reviewed_at": "2026-07-22T12:00:00+00:00",
+                "findings": [],
+            }
+            verdict_v2_path.write_text(json.dumps(verdict_v2, ensure_ascii=False), encoding="utf-8")
+            verdict_descriptor = orchestrator.lifecycle_v2.make_file_descriptor(verdict_v2_path, root=run_dir)
+            verdict_descriptor["path"] = str(verdict_v2_path.resolve())
+            workflow = {
+                "run_id": "final-approval-run",
+                "workspace": str(temp),
+                "publishable_candidate": None,
+                "validation_receipt_v2": receipt_descriptor,
+                "accepted_artifact": accepted_descriptor,
+                "accepted_validation": {
+                    "report": str(report.resolve()),
+                    "receipt": str(receipt_v2_path.resolve()),
+                    "report_sha256": report_descriptor["sha256"],
+                    "receipt_sha256": receipt_descriptor["sha256"],
+                    "strict_passed": receipt_v2_verification["strict_passed"],
+                },
+                "candidate_reviewer_verdict_v2": {
+                    "path": str(verdict_v2_path.resolve()),
+                    "sha256": verdict_descriptor["sha256"],
+                },
+                "candidate_review_input_v2": review_input_descriptor,
+            }
+            workflow["working_artifact"] = accepted_descriptor
+            workflow["working_validation"] = {
+                "report": str(report.resolve()),
+                "receipt": str(receipt_v2_path.resolve()),
+                "report_sha256": report_descriptor["sha256"],
+                "receipt_sha256": receipt_descriptor["sha256"],
+                "strict_passed": receipt_v2_verification["strict_passed"],
+            }
+            with mock.patch.object(orchestrator, "_reviewer_gate_binding_error", return_value=None):
+                orchestrator._set_publishable_candidate(
+                    workflow,
+                    artifact=accepted_descriptor,
+                    validation={
+                        "report": str(report.resolve()),
+                        "receipt": str(receipt_v2_path.resolve()),
+                        "report_sha256": report_descriptor["sha256"],
+                        "receipt_sha256": receipt_descriptor["sha256"],
+                        "strict_passed": receipt_v2_verification["strict_passed"],
+                    },
+                    receipt_v2=receipt_descriptor,
+                    verdict_v2=verdict_descriptor,
+                )
+                workflow["candidate_review_input_v2"] = review_input_descriptor
+                eligibility = orchestrator._final_approval_eligibility(run_dir, workflow)
+
+        self.assertFalse(eligibility["approve"])
+        self.assertTrue(eligibility["approve_with_findings"])
+        self.assertTrue(eligibility["strict_passed"])
+        self.assertEqual(eligibility["reason"], None)
+
+    def test_publication_requires_reviewer_approve_for_every_approval_decision(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp) / "run"
+            run_dir.mkdir()
+            accepted = run_dir / "candidate.drawio"
+            report = run_dir / "validation-report.json"
+            receipt = run_dir / "validation-receipt.v2.json"
+            reviewer = run_dir / "reviewer-verdict.v2.json"
+            accepted.write_text(clean_diagram(), encoding="utf-8")
+            artifact_sha = orchestrator.lifecycle_v2.file_sha256(accepted)
+            report.write_text(json.dumps({
+                "artifact_sha256": artifact_sha,
+                "findings": [{"severity": "warning", "code": "layout.warning"}],
+            }), encoding="utf-8")
+            receipt.write_text(json.dumps({
+                "schema_version": 2,
+                "result": "passed",
+                "bindings": {"candidate_sha256": artifact_sha},
+            }), encoding="utf-8")
+
+            def descriptor(path):
+                return {
+                    "path": path.relative_to(run_dir).as_posix(),
+                    "sha256": orchestrator.lifecycle_v2.file_sha256(path),
+                }
+
+            publication = {
+                "run_id": "publication-reviewer-run",
+                "decision": "approve_with_findings",
+                "accepted_artifact": descriptor(accepted),
+                "validation_report": descriptor(report),
+                "validation_receipt": descriptor(receipt),
+                "reviewer_verdict": None,
+                "strict_passed": True,
+                "source_bundle_sha256": "6" * 64,
+            }
+            replayed = {
+                "latest_snapshots": {
+                    "source-bundle": {"canonical_sha256": "6" * 64},
+                }
+            }
+            receipt_check = {
+                "valid": True,
+                "integrity_valid": True,
+                "strict_passed": True,
+                "diagnostics": [],
+            }
+            with mock.patch.object(
+                orchestrator.lifecycle_v2, "require_mutable", return_value=replayed,
+            ), mock.patch.object(
+                orchestrator.lifecycle_v2, "verify_v2_receipt", return_value=receipt_check,
+            ), mock.patch.object(
+                orchestrator.lifecycle_v2, "require_valid_contract",
+            ):
+                with self.assertRaisesRegex(
+                    orchestrator.lifecycle_v2.ContractError,
+                    "requires a hash-bound Reviewer approve verdict",
+                ):
+                    orchestrator.lifecycle_v2._validate_publication_evidence(
+                        run_dir, publication, require_current_source=False,
+                    )
+
+                for verdict in ("reject", "needs_human"):
+                    with self.subTest(verdict=verdict):
+                        reviewer_value = {
+                            "schema_version": 2,
+                            "run_id": publication["run_id"],
+                            "bindings": {
+                                "candidate_sha256": artifact_sha,
+                                "report_sha256": orchestrator.lifecycle_v2.file_sha256(report),
+                                "receipt_sha256": orchestrator.lifecycle_v2.file_sha256(receipt),
+                            },
+                            "verdict": verdict,
+                            "findings": [],
+                        }
+                        reviewer.write_text(json.dumps(reviewer_value), encoding="utf-8")
+                        publication["reviewer_verdict"] = descriptor(reviewer)
+                        with self.assertRaisesRegex(
+                            orchestrator.lifecycle_v2.ContractError,
+                            "requires Reviewer approve",
+                        ):
+                            orchestrator.lifecycle_v2._validate_publication_evidence(
+                                run_dir, publication, require_current_source=False,
+                            )
+
+                reviewer_value["verdict"] = "approve"
+                reviewer.write_text(json.dumps(reviewer_value), encoding="utf-8")
+                publication["reviewer_verdict"] = descriptor(reviewer)
+                accepted_path, report_path, receipt_path = (
+                    orchestrator.lifecycle_v2._validate_publication_evidence(
+                        run_dir, publication, require_current_source=False,
+                    )
+                )
+                self.assertEqual(accepted_path, accepted.resolve())
+                self.assertEqual(report_path, report.resolve())
+                self.assertEqual(receipt_path, receipt.resolve())
+
+    def test_legacy_reviewer_analysis_status_matches_needs_human_only(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp) / "run"
+            attempt_dir = run_dir / "roles" / "reviewer"
+            attempt_dir.mkdir(parents=True)
+            candidate = attempt_dir / "candidate.drawio"
+            report = attempt_dir / "report.json"
+            receipt = attempt_dir / "receipt.json"
+            input_path = attempt_dir / "input.json"
+            runtime_capture = attempt_dir / "runtime.jsonl"
+            for path, value in (
+                (candidate, clean_diagram()),
+                (report, "{}"),
+                (receipt, "{}"),
+                (input_path, "{}"),
+                (runtime_capture, "{}\n"),
+            ):
+                path.write_text(value, encoding="utf-8")
+            runtime = {
+                "resolution": {
+                    "requested_model": "vllm/DeepSeek-V4-Flash-262k",
+                    "resolved_model": "vllm/DeepSeek-V4-Flash-262k",
+                    "provider": "vllm",
+                    "resolution_mode": "isolated_cli",
+                },
+                "runtime_capture": str(runtime_capture),
+                "attempt_id": "legacy-reviewer-test",
+            }
+            workflow = {"run_id": "legacy-reviewer-run"}
+            replayed = {
+                "latest_snapshots": {
+                    "source-bundle": {"canonical_sha256": "6" * 64},
+                }
+            }
+            with mock.patch.object(
+                orchestrator.lifecycle_v2, "require_mutable", return_value=replayed,
+            ), mock.patch.object(orchestrator, "require_valid_contract"):
+                for verdict, expected_status in (
+                    ("reject", "ok"),
+                    ("needs_human", "needs_human"),
+                ):
+                    with self.subTest(verdict=verdict):
+                        output_path = attempt_dir / f"{verdict}.json"
+                        output_path.write_text("{}", encoding="utf-8")
+                        legacy = {
+                            "schema_version": 1,
+                            "verdict_id": f"legacy-{verdict}",
+                            "verdict": verdict,
+                            "reviewed_at": "2026-07-22T12:00:00Z",
+                            "findings": [],
+                        }
+                        orchestrator._bind_reviewer_v2(
+                            run_dir,
+                            workflow,
+                            legacy,
+                            runtime,
+                            input_path,
+                            output_path,
+                            candidate,
+                            report,
+                            receipt,
+                        )
+                        analysis = json.loads(
+                            output_path.with_name("analysis.v2.json").read_text(
+                                encoding="utf-8"
+                            )
+                        )
+                        self.assertEqual(analysis["status"], expected_status)
+                        self.assertEqual(analysis["verdict"], verdict)
+
+    def test_layout_feedback_uses_exact_route_scope_and_skips_semantic_analyst(self):
+        _, workspace, _ = self.create_workspace()
+        run_dir = workspace / ".diagram-runs" / "layout-feedback-run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        workflow = {
+            "run_id": "layout-feedback-run",
+            "request": "Fix only edge e-2 with orthogonal waypoints.",
+            "repair_scope": {
+                "source": "typed_findings",
+                "allowed_targets": ["e-2"],
+                "allowed_operations": ["set_edge_route", "set_edge_pins"],
+                "finding_ids": ["route-through"],
+                "semantic_targets": [],
+            },
+            "findings": [],
+        }
+
+        with mock.patch.object(orchestrator.lifecycle_v2, "add_feedback_source"), \
+             mock.patch.object(orchestrator.supervisor, "append_event"), \
+             mock.patch.object(orchestrator.supervisor, "load_state", return_value={"state": "patching"}), \
+             mock.patch.object(orchestrator, "write_workflow"), \
+             mock.patch.object(orchestrator, "role_call", side_effect=AssertionError("semantic_analyst should not be called")):
+            result = orchestrator._reconcile_feedback(
+                run_dir,
+                workflow,
+                "Fix only edge e-2 with orthogonal waypoints.",
+                "decision-1",
+                workspace,
+                sys.executable,
+                600,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(workflow["repair_scope"]["allowed_targets"], ["e-2"])
+        self.assertEqual(
+            workflow["machine_repair_feedback"]["content"]["repair_scope"]["allowed_operations"],
+            ["set_edge_pins", "set_edge_route"],
+        )
+        self.assertFalse(workflow["semantic_authorized"])
+        self.assertNotIn("pending_semantic_approval", workflow)
+        self.assertNotIn("approved_semantic_change", workflow)
+
+    def test_layout_and_semantic_feedback_are_classified_differently(self):
+        _, workspace, _ = self.create_workspace()
+        workflow = {
+            "run_id": "feedback-classification-run",
+            "request": "Fix the route.",
+            "repair_scope": {
+                "source": "typed_findings",
+                "allowed_targets": ["e-2"],
+                "allowed_operations": ["set_edge_route", "set_edge_pins"],
+                "finding_ids": ["route-through"],
+                "semantic_targets": [],
+            },
+            "findings": [],
+        }
+        self.assertEqual(
+            orchestrator._layout_feedback_scope(workflow, "Fix only edge e-2 with orthogonal waypoints."),
+            {
+                "source": "explicit_layout_feedback",
+                "allowed_targets": ["e-2"],
+                "allowed_operations": ["set_edge_pins", "set_edge_route"],
+                "finding_ids": ["route-through"],
+                "semantic_targets": [],
+                "feedback": "Fix only edge e-2 with orthogonal waypoints.",
+            },
+        )
+        self.assertIsNone(
+            orchestrator._layout_feedback_scope(
+                workflow,
+                "Fix the edge route and also rename the process label.",
+            )
+        )
+        self.assertIsNone(
+            orchestrator._layout_feedback_scope(
+                workflow,
+                "Fix the route using orthogonal waypoints.",
+            )
+        )
+
+    def test_finding_targets_for_route_through_keeps_the_edge_only(self):
+        finding = {
+            "code": "artifact.readability.route_through",
+            "element": "e-2",
+            "elements": [{"cell_id": "n-decision"}, {"cell_id": "e-2"}],
+            "message": "edge 'e-2' routes through vertex 'n-decision'",
+        }
+        self.assertEqual(orchestrator._finding_targets(finding), ["e-2"])
+
+    def test_host_bound_patch_rewrites_baseline_hashes_and_rejects_out_of_scope_target(self):
+        _, workspace, _ = self.create_workspace()
+        source = workspace / "route.drawio"
+        source.write_text(routed_diagram(), encoding="utf-8")
+        run_dir = workspace / ".diagram-runs" / "host-bound-run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        accepted = run_dir / "accepted" / "baseline.drawio"
+        accepted.parent.mkdir(parents=True, exist_ok=True)
+        accepted.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        workflow = {
+            "run_id": "host-bound-run",
+            "request": "Route e-2.",
+            "accepted_artifact": {
+                "path": str(accepted.resolve()),
+                "sha256": orchestrator.supervisor.sha256_file(accepted),
+            },
+            "repair_scope": {
+                "source": "typed_findings",
+                "allowed_targets": ["e-2"],
+                "allowed_operations": ["set_edge_route", "set_edge_pins"],
+                "finding_ids": ["route-through"],
+                "semantic_targets": [],
+            },
+            "findings": [],
+        }
+        patch = orchestrator.supervisor.route_patch(source, "e-2", ["route-through"])
+        patch["baseline"]["artifact_sha256"] = "0" * 64
+        patch["baseline"]["semantic_digest"] = "bogus"
+        raw_patch_path = workspace / "raw-patch.json"
+        raw_patch_path.write_text(json.dumps(patch, ensure_ascii=False), encoding="utf-8")
+        raw_patch_sha256 = orchestrator.supervisor.sha256_file(raw_patch_path)
+
+        with mock.patch.object(orchestrator.supervisor, "load_state", return_value={"state": "patching"}), \
+             mock.patch.object(orchestrator.supervisor, "append_event"):
+            bound_patch, bound_path = orchestrator._host_bind_patch(run_dir, workflow, patch, raw_patch_path)
+        self.assertEqual(orchestrator.supervisor.sha256_file(raw_patch_path), raw_patch_sha256)
+        self.assertEqual(bound_patch["baseline"]["artifact_sha256"], orchestrator.supervisor.sha256_file(source))
+        self.assertEqual(bound_patch["baseline"]["semantic_digest"], orchestrator.supervisor.artifact_invariants(source)[0])
+        self.assertTrue(bound_path.is_file())
+
+        forbidden = json.loads(json.dumps(patch))
+        forbidden["operations"][0]["target_id"] = "e-3"
+        forbidden["operations"][1]["target_id"] = "e-3"
+        forbidden["affected_region"]["cell_ids"] = ["e-3"]
+        with mock.patch.object(orchestrator.supervisor, "load_state", return_value={"state": "patching"}), \
+             mock.patch.object(orchestrator.supervisor, "append_event"):
+            with self.assertRaisesRegex(orchestrator.supervisor.SupervisorError, "outside host scope"):
+                orchestrator._host_bind_patch(run_dir, workflow, forbidden, raw_patch_path)
+
+    def test_internal_repair_feedback_retries_once_for_same_failure_without_user_decision(self):
+        _, workspace, _ = self.create_workspace()
+        run_dir = workspace / ".diagram-runs" / "retry-run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        workflow = {
+            "run_id": "retry-run",
+            "iteration": 1,
+            "max_iterations": 4,
+            "repair_scope": {
+                "source": "typed_findings",
+                "allowed_targets": ["e-2"],
+                "allowed_operations": ["set_edge_route", "set_edge_pins"],
+                "finding_ids": ["route-through"],
+                "semantic_targets": [],
+            },
+            "failure_signatures": {},
+        }
+        events = []
+
+        def record_event(run_dir, event_type, payload, **kwargs):
+            events.append(event_type)
+
+        with mock.patch.object(orchestrator.supervisor, "append_event", side_effect=record_event), \
+             mock.patch.object(orchestrator.supervisor, "load_state", return_value={"state": "retrying"}):
+            retry1, descriptor1 = orchestrator._record_internal_repair_feedback(
+                run_dir,
+                workflow,
+                failure_class="deterministic_tool",
+                message="validator failed on attempt-1",
+                evidence={"attempt_id": "iteration-1"},
+            )
+            retry2, descriptor2 = orchestrator._record_internal_repair_feedback(
+                run_dir,
+                workflow,
+                failure_class="deterministic_tool",
+                message="validator failed on attempt-1",
+                evidence={"attempt_id": "iteration-1"},
+            )
+
+        self.assertTrue(retry1)
+        self.assertFalse(retry2)
+        self.assertEqual(workflow["failure_signatures"][descriptor1["content"]["failure_signature"]], 2)
+        self.assertEqual(descriptor1["content"]["failure_signature"], descriptor2["content"]["failure_signature"])
+        self.assertIn("internal_feedback_created", events)
+        self.assertIn("auto_retry_scheduled", events)
+        self.assertNotIn("user_decision", events)
+
+    def test_strict_failed_working_candidate_clears_publishable_candidate(self):
+        workflow = {
+            "publishable_candidate": {
+                "artifact": {"path": "/tmp/candidate.drawio", "sha256": "a" * 64},
+                "validation": {"report": "/tmp/report.json", "receipt": "/tmp/receipt.json"},
+            },
+            "accepted_artifact": {"path": "/tmp/candidate.drawio", "sha256": "a" * 64},
+            "accepted_validation": {"strict_passed": False},
+        }
+        orchestrator._set_workflow_accepted(
+            workflow,
+            {
+                "accepted_artifact": workflow["accepted_artifact"],
+                "accepted_validation": workflow["accepted_validation"],
+            },
+        )
+        self.assertIsNone(workflow["publishable_candidate"])
 
     def test_improve_pauses_for_semantic_approval_without_overwriting_source(self):
         root, workspace, cli = self.create_workspace()

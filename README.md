@@ -4,7 +4,7 @@
 
 | Extension | Версия | Назначение |
 |---|---:|---|
-| [`drawio-skill`](publish-drawio-skill/) | `1.24.0-corporate.3` | Редактируемые draw.io-диаграммы с безопасным Qwen command-input bridge, zero-argument review-to-improve handoff, изолированным multi-model create/improve/resume/trace циклом, потоковой трассировкой ролей, roadmap, git-flow и архитектурными схемами |
+| [`drawio-skill`](publish-drawio-skill/) | `1.24.0-corporate.4` | Редактируемые draw.io-диаграммы с безопасным Qwen command-input bridge, автономным bounded multi-model repair loop, строгим разделением working/publishable/final, потоковой трассировкой ролей, roadmap, git-flow и архитектурными схемами |
 | [`bpmn-architect`](publish-bpmn-skill/) | `0.3.0` | Семантические BPMN 2.0 модели с многоуровневой раскладкой collaboration, spatial validation и round-trip проверкой |
 
 Extension не вложены друг в друга и могут устанавливаться отдельно.

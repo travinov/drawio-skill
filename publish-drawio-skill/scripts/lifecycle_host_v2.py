@@ -831,18 +831,40 @@ def _validate_publication_evidence(
     for path, expected, code in evidence_files:
         if not path.is_file() or file_sha256(path) != expected:
             raise ContractError(code, f"publication evidence changed: {path}")
+    report_value = json.loads(report.read_text(encoding="utf-8"))
+    if publication["decision"] == "approve_with_findings" and any(
+        item.get("severity") == "error"
+        for item in report_value.get("findings", [])
+    ):
+        raise ContractError(
+            "publication.structural_findings_forbidden",
+            "approve_with_findings requires strict pass with warnings only",
+        )
+    receipt_value = json.loads(receipt.read_text(encoding="utf-8"))
+    if receipt_value.get("result") != "passed":
+        raise ContractError(
+            "publication.strict_validation_required",
+            (
+                "approve requires a passed strict receipt"
+                if publication["decision"] == "approve"
+                else "approve_with_findings requires a passed strict receipt"
+            ),
+        )
     receipt_verification = verify_v2_receipt(run_dir, receipt)
     if not receipt_verification["valid"]:
         raise ContractError(
             "publication.receipt_invalid",
             f"validation receipt failed immediately before publication: {receipt_verification['diagnostics']}",
         )
-    receipt_value = json.loads(receipt.read_text(encoding="utf-8"))
     if publication.get("strict_passed") is not None and publication["strict_passed"] != receipt_verification["strict_passed"]:
         raise ContractError("publication.strict_result_mismatch", "publication strict_passed differs from verified receipt result")
+    if not receipt_verification["strict_passed"]:
+        raise ContractError(
+            "publication.strict_validation_required",
+            "publication requires a passed strict validation receipt",
+        )
     if receipt_value["bindings"]["candidate_sha256"] != file_sha256(accepted):
         raise ContractError("publication.receipt_candidate_mismatch", "receipt is not bound to accepted artifact")
-    report_value = json.loads(report.read_text(encoding="utf-8"))
     structural_errors = [
         item for item in report_value.get("findings", [])
         if item.get("severity") == "error" and (
@@ -855,6 +877,11 @@ def _validate_publication_evidence(
         )
     ]
     reviewer_value = None
+    if reviewer is None:
+        raise ContractError(
+            "publication.reviewer_approval_required",
+            "publication requires a hash-bound Reviewer approve verdict",
+        )
     if reviewer is not None:
         reviewer_value = json.loads(reviewer.read_text(encoding="utf-8"))
         require_valid_contract(reviewer_value, "reviewer-verdict", 2)
@@ -871,14 +898,19 @@ def _validate_publication_evidence(
         ]
         if reviewer_blockers:
             raise ContractError("publication.reviewer_findings_forbidden", "Reviewer integrity/error findings forbid publication")
-        if publication["decision"] == "approve" and reviewer_value["verdict"] != "approve":
-            raise ContractError("publication.reviewer_approval_required", "approve requires Reviewer approve")
-    if publication["decision"] == "approve" and receipt_value["result"] != "passed":
-        raise ContractError("publication.strict_validation_required", "approve requires a passed strict receipt")
-    if publication["decision"] == "approve_with_findings" and structural_errors:
+        if reviewer_value["verdict"] != "approve":
+            raise ContractError(
+                "publication.reviewer_approval_required",
+                f"{publication['decision']} requires Reviewer approve",
+            )
+    error_findings = [
+        item for item in report_value.get("findings", [])
+        if item.get("severity") == "error"
+    ]
+    if publication["decision"] == "approve_with_findings" and (structural_errors or error_findings):
         raise ContractError(
             "publication.structural_findings_forbidden",
-            "approve_with_findings cannot publish while structural error findings remain",
+            "approve_with_findings requires strict pass with warnings only",
         )
     if require_current_source:
         current_source = replayed["latest_snapshots"]["source-bundle"]["canonical_sha256"]

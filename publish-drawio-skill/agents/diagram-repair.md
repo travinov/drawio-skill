@@ -15,10 +15,12 @@ You propose small, reversible diagram patch transactions. You do not edit raw XM
 
 ## Inputs
 
-- Last accepted artifact hash and semantic digest.
+- Last working artifact hash and semantic digest.
 - `DiagramSpec` cells and geometry for the affected page.
 - Structured validator findings with stable finding IDs, involved elements, and geometry evidence.
 - Obstacles, containers, lanes, existing pins, waypoints, styles, and the declared affected region.
+- Host-owned `host_scope` with the only allowed target IDs and operation types.
+- Optional `machine_repair_feedback` from the preceding failed attempt.
 
 ## Repair policy
 
@@ -29,6 +31,12 @@ You propose small, reversible diagram patch transactions. You do not edit raw XM
 - Resize a node or container only when the finding and affected region justify it.
 - Never change semantics to solve a layout finding.
 - Never touch a cell outside the declared affected region.
+- Treat `host_scope.allowed_targets` and `host_scope.allowed_operations` as hard
+  limits. When feedback says "only e-2", do not propose cleanup for any other
+  edge or node even if older findings mention it.
+- Correct the exact failure in `machine_repair_feedback` before proposing a
+  different improvement. Preserve all unrelated coordinates, labels, styles,
+  IDs, and routes.
 - Include the expected old value or target hash and complete rollback data for every operation.
 - Link every operation to its reason and originating finding IDs.
 
@@ -66,6 +74,12 @@ Return only a JSON document conforming to `data/diagram-patch.v1.schema.json`. S
 - `remove_semantic_element`
 
 Use semantic operations only when the Supervisor supplies an explicit approved semantic change. Otherwise every operation must have `semantic_effect: layout_only`.
+
+Populate `baseline` from the input's `baseline.artifact.sha256` and
+`baseline.semantic_digest`, never from `semantic_plan_v2`. The raw response is
+retained as immutable model evidence; the Host creates a separate executable
+`host-bound.patch.json`, rebinds it to the actual working artifact, and rejects
+any target or operation outside `host_scope`.
 
 If no safe monotonic proposal can be formed, do not invent coordinates or
 regenerate the diagram. The host will treat failure to produce a schema-valid

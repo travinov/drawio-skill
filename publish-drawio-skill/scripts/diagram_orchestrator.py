@@ -56,7 +56,8 @@ ROOT = Path(__file__).resolve().parent.parent
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 WORKFLOW_FILE = "workflow.json"
 CHECKPOINT_FILE = "pending-checkpoint.json"
-DEFAULT_MAX_ITERATIONS = 3
+DEFAULT_MAX_ITERATIONS = 4
+MAX_IDENTICAL_FAILURES = 2
 
 
 def utc_slug(prefix):
@@ -68,6 +69,53 @@ def canonical_hash(value):
     return hashlib.sha256(
         json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def _working_artifact(workflow):
+    """Return the canonical best working artifact, reading legacy v1 runs."""
+    return workflow.get("working_artifact") or workflow.get("accepted_artifact") or {}
+
+
+def _working_validation(workflow):
+    """Return validation for the best working artifact, reading legacy v1 runs."""
+    return workflow.get("working_validation") or workflow.get("accepted_validation") or {}
+
+
+def _sync_working_candidate(workflow, artifact, validation):
+    """Persist canonical working state and its backward-compatible v1 mirrors."""
+    workflow["working_artifact"] = copy.deepcopy(artifact)
+    workflow["working_validation"] = copy.deepcopy(validation)
+    workflow["accepted_artifact"] = copy.deepcopy(artifact)
+    workflow["accepted_validation"] = copy.deepcopy(validation)
+
+
+def _clear_publishable_candidate(workflow):
+    workflow["publishable_candidate"] = None
+    workflow.pop("final_approval_eligibility", None)
+
+
+def _set_publishable_candidate(workflow, *, artifact, validation, receipt_v2, verdict_v2):
+    """Bind a publishable candidate only from strict-pass and Reviewer approve."""
+    if not validation.get("strict_passed"):
+        _clear_publishable_candidate(workflow)
+        return None
+    verdict_path = Path(verdict_v2.get("path", ""))
+    if not verdict_path.is_file() or supervisor.sha256_file(verdict_path) != verdict_v2.get("sha256"):
+        _clear_publishable_candidate(workflow)
+        return None
+    verdict = supervisor.load_json(verdict_path)
+    require_valid_contract(verdict, "reviewer-verdict", 2)
+    if verdict.get("verdict") != "approve":
+        _clear_publishable_candidate(workflow)
+        return None
+    value = {
+        "artifact": copy.deepcopy(artifact),
+        "validation": copy.deepcopy(validation),
+        "validation_receipt_v2": copy.deepcopy(receipt_v2),
+        "reviewer_verdict_v2": copy.deepcopy(verdict_v2),
+    }
+    workflow["publishable_candidate"] = value
+    return value
 
 
 def _inside(path, parent):
@@ -579,6 +627,13 @@ def _finish_checkpointed_create(
     )
     workflow.pop("pending_semantic_approval", None)
     write_workflow(run_dir, workflow)
+    if not _working_validation(workflow).get("strict_passed"):
+        _clear_publishable_candidate(workflow)
+        workflow["findings"] = supervisor.load_json(
+            _working_validation(workflow)["report"]
+        ).get("findings", [])
+        write_workflow(run_dir, workflow)
+        return repair_loop(run_dir, workflow, cli, timeout)
     try:
         verdict, _ = baseline_review(run_dir, workflow, cli, timeout)
     except supervisor.SupervisorError as exc:
@@ -591,6 +646,34 @@ def _finish_checkpointed_create(
             workflow["findings"], ["continue", "pause", "stop", "manual_handoff"],
         )
     workflow["findings"] = verdict.get("findings", [])
+    if verdict.get("verdict") == "needs_human":
+        supervisor.transition(
+            run_dir,
+            "final_review",
+            artifact=Path(_working_artifact(workflow)["path"]),
+        )
+        supervisor.transition(
+            run_dir,
+            "awaiting_feedback",
+            reason="Reviewer found an ambiguity in the baseline",
+        )
+        write_workflow(run_dir, workflow)
+        return checkpoint(
+            run_dir,
+            workflow,
+            "feedback",
+            "Reviewer found a real ambiguity that requires human judgment; no automatic repair was started.",
+            workflow["findings"],
+            ["continue", "pause", "stop", "manual_handoff"],
+            evidence={"failure_class": "reviewer_needs_human"},
+        )
+    _set_publishable_candidate(
+        workflow,
+        artifact=_working_artifact(workflow),
+        validation=_working_validation(workflow),
+        receipt_v2=workflow["validation_receipt_v2"],
+        verdict_v2=workflow["reviewer_verdict_v2"],
+    )
     write_workflow(run_dir, workflow)
     eligibility = _final_approval_eligibility(run_dir, workflow)
     allowed_final = []
@@ -621,7 +704,40 @@ def _reconcile_feedback(
     *, approved_proposal=None,
 ):
     lifecycle_v2.add_feedback_source(run_dir, feedback, decision_id)
-    accepted_descriptor = workflow.get("accepted_artifact") or {}
+    layout_scope = _layout_feedback_scope(workflow, feedback)
+    if layout_scope is not None:
+        workflow["repair_scope"] = layout_scope
+        workflow["machine_repair_feedback"] = {
+            "content": {
+                "schema_version": 1,
+                "kind": "explicit_layout_feedback",
+                "feedback": feedback,
+                "repair_scope": copy.deepcopy(layout_scope),
+            }
+        }
+        workflow["semantic_authorized"] = False
+        workflow.pop("pending_semantic_approval", None)
+        workflow.pop("approved_semantic_change", None)
+        _clear_publishable_candidate(workflow)
+        write_workflow(run_dir, workflow)
+        supervisor.append_event(
+            run_dir,
+            "internal_feedback_created",
+            {
+                "failure_class": "user_layout_feedback",
+                "feedback_sha256": hashlib.sha256(feedback.encode("utf-8")).hexdigest(),
+                "repair_scope": layout_scope,
+            },
+            state=supervisor.load_state(run_dir)["state"],
+            actor={"kind": "system", "id": "diagram-orchestrator", "model": None},
+        )
+        return None
+    # Mixed or semantic feedback is intentionally routed through Semantic
+    # Analyst.  A scope from an earlier layout-only retry must not constrain
+    # the newly proposed typed semantic delta.
+    workflow.pop("repair_scope", None)
+    workflow.pop("machine_repair_feedback", None)
+    accepted_descriptor = _working_artifact(workflow)
     accepted_path = accepted_descriptor.get("path")
     accepted = Path(accepted_path) if accepted_path else None
     baseline_spec_v1 = (
@@ -1271,6 +1387,9 @@ def role_policy_evidence(workflow):
 
 def host_result(run_dir, workflow, *, error=None):
     state = supervisor.load_state(run_dir)
+    working_artifact = _working_artifact(workflow)
+    working_validation = _working_validation(workflow)
+    publishable = workflow.get("publishable_candidate") or None
     role_runs = []
     failed_role_runs = []
     manifest_path = Path(run_dir) / "run-manifest.jsonl"
@@ -1309,8 +1428,18 @@ def host_result(run_dir, workflow, *, error=None):
         "status": "error" if error else workflow.get("status", state["state"] if state else "unknown"),
         "run_id": workflow["run_id"], "run_dir": str(Path(run_dir).resolve()),
         "mode": workflow["mode"], "state": state["state"] if state else None,
-        "accepted_artifact": workflow.get("accepted_artifact"),
-        "accepted_validation": workflow.get("accepted_validation"),
+        "working_artifact": working_artifact or None,
+        "working_validation": working_validation or None,
+        "publishable_candidate": copy.deepcopy(publishable),
+        # Do not present a strict-failed compatibility mirror as final accepted.
+        "accepted_artifact": (
+            copy.deepcopy(publishable["artifact"]) if publishable else None
+        ),
+        "accepted_validation": (
+            copy.deepcopy(publishable["validation"]) if publishable else None
+        ),
+        "final_artifact": workflow.get("final_artifact"),
+        "published_artifact": workflow.get("published_artifact"),
         "role_runs": role_runs,
         "failed_role_runs": failed_role_runs,
         "model_diversity_degraded": any(
@@ -1568,18 +1697,34 @@ def _reviewer_gate_binding_error(run_dir, workflow, verdict):
 
 def _final_approval_eligibility(run_dir, workflow):
     """Compute executable final decisions from hash-bound deterministic evidence."""
-    accepted = Path(workflow["accepted_artifact"]["path"])
-    report_path = Path(workflow["accepted_validation"]["report"])
-    receipt_path = Path(workflow["validation_receipt_v2"]["path"])
-    verdict_descriptor = (
-        workflow.get("candidate_reviewer_verdict_v2")
-        or workflow.get("reviewer_verdict_v2")
-        or {}
-    )
+    publishable = workflow.get("publishable_candidate") or {}
+    if not publishable:
+        return {
+            "approve": False,
+            "approve_with_findings": False,
+            "strict_passed": False,
+            "unresolved_findings": [],
+            "reason": "no strict-pass publishable candidate",
+        }
+    artifact_descriptor = publishable.get("artifact") or {}
+    validation_descriptor = publishable.get("validation") or {}
+    receipt_descriptor = publishable.get("validation_receipt_v2") or {}
+    verdict_descriptor = publishable.get("reviewer_verdict_v2") or {}
+    accepted = Path(artifact_descriptor.get("path", ""))
+    report_path = Path(validation_descriptor.get("report", ""))
+    receipt_path = Path(receipt_descriptor.get("path", ""))
     verdict_path = Path(verdict_descriptor.get("path", ""))
     receipt_check = lifecycle_v2.verify_v2_receipt(run_dir, receipt_path)
     if not receipt_check["integrity_valid"]:
         return {"approve": False, "approve_with_findings": False, "strict_passed": False, "unresolved_findings": [], "reason": "validation receipt integrity failed"}
+    if not receipt_check["strict_passed"]:
+        return {
+            "approve": False,
+            "approve_with_findings": False,
+            "strict_passed": False,
+            "unresolved_findings": [],
+            "reason": "strict validation failed",
+        }
     if (
         not accepted.is_file()
         or not report_path.is_file()
@@ -1629,15 +1774,20 @@ def _final_approval_eligibility(run_dir, workflow):
     ] + [
         {"source": "reviewer", "finding": item} for item in reviewer_findings
     ]
-    safe_with_findings = not structural_errors and not reviewer_blockers
+    error_findings = [
+        item for item in report_findings + reviewer_findings
+        if item.get("severity") == "error"
+    ]
+    safe_with_findings = not structural_errors and not reviewer_blockers and not error_findings
     strict_approve = bool(
         receipt_check["strict_passed"]
         and verdict["verdict"] == "approve"
         and not reviewer_blockers
+        and not unresolved
     )
     return {
         "approve": strict_approve,
-        "approve_with_findings": safe_with_findings and bool(unresolved or not receipt_check["strict_passed"]),
+        "approve_with_findings": safe_with_findings and bool(unresolved),
         "strict_passed": receipt_check["strict_passed"],
         "unresolved_findings": unresolved,
         "reason": None if safe_with_findings else "structural or integrity findings remain",
@@ -1752,7 +1902,7 @@ def _bind_reviewer_v2(run_dir, workflow, verdict, runtime, input_path, output_pa
         analysis = {
             "schema_version": 2,
             "role": "reviewer",
-            "status": "needs_human" if verdict["verdict"] == "reject" else "ok",
+            "status": "needs_human" if verdict["verdict"] == "needs_human" else "ok",
             "analysis_id": analysis_id,
             "verdict": verdict["verdict"],
             "reviewed_at": verdict["reviewed_at"],
@@ -1808,13 +1958,21 @@ def _bind_reviewer_v2(run_dir, workflow, verdict, runtime, input_path, output_pa
 
 
 def repair_input(run_dir, workflow):
-    accepted = Path(workflow["accepted_artifact"]["path"])
-    report = supervisor.load_json(workflow["accepted_validation"]["report"])
-    receipt = supervisor.load_json(workflow["accepted_validation"]["receipt"])
+    working_artifact = _working_artifact(workflow)
+    working_validation = _working_validation(workflow)
+    accepted = Path(working_artifact["path"])
+    report = supervisor.load_json(working_validation["report"])
+    receipt = supervisor.load_json(working_validation["receipt"])
     spec = supervisor.make_spec(accepted, [source_ref_for_request(workflow["run_id"], workflow["request"])])
-    approved_semantic_change = workflow.get("approved_semantic_change")
+    semantic_authorized = bool(workflow.get("semantic_authorized"))
+    approved_semantic_change = (
+        workflow.get("approved_semantic_change") if semantic_authorized else None
+    )
     source_bundle = lifecycle_v2.latest_document(run_dir, "source-bundle")[0]
-    semantic_plan_descriptor = workflow.get("semantic_plan_v2") or {}
+    semantic_plan_descriptor = (
+        workflow.get("semantic_plan_v2") or {}
+        if semantic_authorized else {}
+    )
     semantic_plan_path = Path(semantic_plan_descriptor.get("path", ""))
     semantic_plan = None
     if semantic_plan_path.is_file():
@@ -1823,6 +1981,12 @@ def repair_input(run_dir, workflow):
         semantic_plan = supervisor.load_json(semantic_plan_path)
         require_valid_contract(semantic_plan, "semantic-plan", 2)
     eligible_handoff = source_bundle.get("evidence", {}).get("eligible_review_handoff") or {}
+    handoff_artifact = eligible_handoff.get("artifact") or {}
+    if handoff_artifact.get("sha256") != supervisor.sha256_file(accepted):
+        # A strict-failed but lexicographically improved candidate may become
+        # the next working baseline without being reviewable/publishable.  A
+        # Reviewer handoff for the preceding baseline must never be reused.
+        eligible_handoff = {}
     verdict_descriptor = eligible_handoff.get("verdict") or {}
     verdict_path = Path(run_dir) / verdict_descriptor.get("path", "")
     reviewer_verdict = None
@@ -1843,7 +2007,7 @@ def repair_input(run_dir, workflow):
     report_descriptor = eligible_handoff.get("report") or {}
     review_report_path = (
         Path(run_dir) / report_descriptor.get("path", "")
-        if report_descriptor else Path(workflow["accepted_validation"]["report"])
+        if report_descriptor else Path(working_validation["report"])
     )
     if any((
         not review_report_path.is_file(),
@@ -1855,7 +2019,7 @@ def repair_input(run_dir, workflow):
         and reviewer_verdict["bindings"]["receipt_sha256"] != supervisor.sha256_file(receipt_v2_path),
     )):
         raise supervisor.SupervisorError("repair review handoff report/receipt bindings are invalid")
-    if workflow.get("semantic_authorized"):
+    if semantic_authorized:
         if not approved_semantic_change:
             raise supervisor.SupervisorError("semantic repair has no hash-bound human approval")
         plan_path = Path(approved_semantic_change["semantic_plan"]["path"])
@@ -1889,10 +2053,11 @@ def repair_input(run_dir, workflow):
             approval["semantic_delta_sha256"] != semantic_delta_sha256(delta),
         )):
             raise supervisor.SupervisorError("semantic approval v2 bindings differ from the approved plan and delta")
+    host_scope = _derive_repair_scope(workflow)
     return {
         "schema_version": 1, "run_id": workflow["run_id"], "mode": workflow["mode"],
         "request": workflow["request"], "iteration": workflow["iteration"],
-        "semantic_changes_authorized": workflow.get("semantic_authorized", False),
+        "semantic_changes_authorized": semantic_authorized,
         "approved_semantic_change": approved_semantic_change,
         "source_bundle": source_bundle,
         "semantic_plan_v2": semantic_plan,
@@ -1920,10 +2085,343 @@ def repair_input(run_dir, workflow):
         "requirements": {
             "last_accepted_only": True, "preserve_untouched_regions": True,
             "explicit_waypoints_for_congested_edges": True,
-            "allowed_operations": ["set_edge_route", "set_edge_pins", "set_label_offset", "move_vertex", "resize_vertex", "resize_container", "add_semantic_element", "remove_semantic_element"],
+            "allowed_operations": copy.deepcopy(host_scope["allowed_operations"]),
         },
+        "host_scope": host_scope,
+        "machine_repair_feedback": copy.deepcopy(workflow.get("machine_repair_feedback")),
         "previous_findings": workflow.get("findings", []),
     }
+
+
+ROUTE_FINDING_CODES = {
+    "artifact.readability.crossing",
+    "artifact.readability.route_through",
+    "artifact.layout.terminal_segment",
+    "artifact.layout.routing_uncertain",
+}
+GEOMETRY_FINDING_CODES = {
+    "artifact.geometry.invalid",
+    "artifact.layout.container_overflow",
+    "artifact.layout.container_overlap",
+    "artifact.layout.lane_title_collision",
+    "artifact.layout.lane_size",
+    "artifact.readability.overlap",
+    "artifact.readability.text_overflow",
+}
+ROUTE_OPERATIONS = {"set_edge_route", "set_edge_pins"}
+GEOMETRY_OPERATIONS = {
+    "set_label_offset", "move_vertex", "resize_vertex", "resize_container",
+}
+LAYOUT_ROUTE_RE = re.compile(
+    r"(?:route|routing|waypoint|arrow|cross(?:ing)?|orthogonal|manhattan|"
+    r"маршрут|вейпоинт|стрелк|пересеч|ортогон|манхэттен)",
+    re.IGNORECASE,
+)
+LAYOUT_GEOMETRY_RE = re.compile(
+    r"(?:geometry|position|move|resize|size|layout|coordinate|"
+    r"геометр|располож|перемест|размер|макет|координат)",
+    re.IGNORECASE,
+)
+SEMANTIC_FEEDBACK_RE = re.compile(
+    r"(?:\b(?:add|remove|delete|rename)\s+(?:node|edge|step|role|condition)\b|"
+    r"\b(?:label|source|target|relationship)\b|"
+    r"(?:добав|удал|переимен).{0,24}(?:узел|ребр|этап|роль|услов|связ)|"
+    r"(?:измен|замен).{0,24}(?:этап|роль|услов|смысл|назван|подпис|связ)|"
+    r"(?:метк|источник|назначени))",
+    re.IGNORECASE,
+)
+EXPLICIT_CELL_ID_RE = re.compile(r"\b(?:e|n)-[A-Za-z0-9._-]+\b", re.IGNORECASE)
+
+
+def _layout_feedback_scope(workflow, feedback):
+    """Return a deterministic repair scope for unambiguous layout feedback."""
+    text = str(feedback or "").strip()
+    route_requested = bool(LAYOUT_ROUTE_RE.search(text))
+    geometry_requested = bool(LAYOUT_GEOMETRY_RE.search(text))
+    if not text or not (route_requested or geometry_requested):
+        return None
+    if SEMANTIC_FEEDBACK_RE.search(text):
+        return None
+    derived = _derive_repair_scope(workflow)
+    explicit_targets = sorted(set(EXPLICIT_CELL_ID_RE.findall(text)))
+    # A model must not expand vague prose such as "fix the route" into every
+    # target from the previous validator report.  Bypassing Semantic Analyst
+    # is safe only when the user names stable diagram cell IDs explicitly.
+    if not explicit_targets:
+        return None
+    allowed_operations = set()
+    if route_requested:
+        allowed_operations.update(ROUTE_OPERATIONS)
+    if geometry_requested:
+        allowed_operations.update(GEOMETRY_OPERATIONS)
+    targets = explicit_targets
+    # Explicit edge feedback such as "fix only e-2" is deliberately narrow;
+    # the obstructing vertex named by Validator evidence is not repair scope.
+    return {
+        "source": "explicit_layout_feedback",
+        "allowed_targets": sorted(set(targets)),
+        "allowed_operations": sorted(allowed_operations),
+        "finding_ids": list(derived.get("finding_ids", [])),
+        "semantic_targets": [],
+        "feedback": text,
+    }
+
+
+def _normalized_failure_signature(failure_class, message):
+    normalized = str(message).strip().lower()
+    normalized = re.sub(r"\b[a-f0-9]{32,64}\b", "<hash>", normalized)
+    normalized = re.sub(r"(?:^|\s)/(?:[^\s:]+/?)+", " <path>", normalized)
+    normalized = re.sub(r"\b(?:iteration|attempt|repair)-?\d+\b", "<attempt>", normalized)
+    normalized = re.sub(r"\b\d+\b", "<n>", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return canonical_hash({"failure_class": failure_class, "message": normalized})
+
+
+def _record_internal_repair_feedback(
+    run_dir, workflow, *, failure_class, message, evidence=None,
+):
+    """Persist machine feedback and decide whether one bounded retry remains."""
+    signature = _normalized_failure_signature(failure_class, message)
+    counts = workflow.setdefault("failure_signatures", {})
+    count = int(counts.get(signature, 0)) + 1
+    counts[signature] = count
+    attempt_dir = (
+        Path(run_dir) / "attempts" / f"iteration-{workflow.get('iteration', 0)}"
+    )
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    feedback_path = attempt_dir / f"internal-feedback-{count}.json"
+    value = {
+        "schema_version": 1,
+        "run_id": workflow["run_id"],
+        "iteration": workflow.get("iteration", 0),
+        "failure_class": failure_class,
+        "failure_signature": signature,
+        "occurrence": count,
+        "message": str(message),
+        "repair_scope": _derive_repair_scope(workflow),
+        "evidence": copy.deepcopy(evidence or {}),
+        "created_at": supervisor.utc_now(),
+    }
+    supervisor.write_json(feedback_path, value)
+    descriptor = {
+        "path": str(feedback_path.resolve()),
+        "sha256": supervisor.sha256_file(feedback_path),
+        "content": value,
+    }
+    workflow["machine_repair_feedback"] = descriptor
+    workflow.setdefault("internal_feedback_history", []).append(descriptor)
+    write_workflow(run_dir, workflow)
+    supervisor.append_event(
+        run_dir,
+        "internal_feedback_created",
+        {
+            "failure_class": failure_class,
+            "failure_signature": signature,
+            "occurrence": count,
+            "feedback": descriptor["path"],
+            "feedback_sha256": descriptor["sha256"],
+        },
+        state=supervisor.load_state(run_dir)["state"],
+        actor={"kind": "system", "id": "diagram-orchestrator", "model": None},
+    )
+    retry = (
+        count < MAX_IDENTICAL_FAILURES
+        and workflow.get("iteration", 0) < workflow.get("max_iterations", 0)
+    )
+    if retry:
+        supervisor.append_event(
+            run_dir,
+            "auto_retry_scheduled",
+            {
+                "failure_class": failure_class,
+                "failure_signature": signature,
+                "next_iteration": workflow.get("iteration", 0) + 1,
+                "max_iterations": workflow.get("max_iterations", 0),
+            },
+            state=supervisor.load_state(run_dir)["state"],
+            actor={"kind": "system", "id": "diagram-orchestrator", "model": None},
+        )
+    return retry, descriptor
+
+
+def _finding_targets(finding):
+    values = []
+    for item in finding.get("elements", []):
+        value = item.get("cell_id") if isinstance(item, dict) else item
+        if value and value not in values:
+            values.append(str(value))
+    value = finding.get("element")
+    if value and str(value) not in values:
+        values.append(str(value))
+    message = str(finding.get("message") or finding.get("summary") or "")
+    code = str(finding.get("code", ""))
+    if code == "artifact.readability.route_through":
+        # The obstructing vertex is evidence, but the routed edge is the
+        # deterministic repair target.
+        matches = re.findall(r"\bedge\s+'([^']+)'", message, flags=re.IGNORECASE)
+        primary = str(finding.get("element") or "")
+        route_targets = [item for item in [primary, *matches] if item]
+        if route_targets:
+            return list(dict.fromkeys(route_targets))
+        return [value for value in values if str(value).startswith("e-")]
+    elif code == "artifact.readability.crossing" or finding.get("category") == "routing":
+        matches = re.findall(r"\bedges?\s+'([^']+)'|\band\s+'([^']+)'", message, flags=re.IGNORECASE)
+        matches = [left or right for left, right in matches]
+    else:
+        matches = re.findall(r"'([^']+)'", message)
+    for match in matches:
+        if match and match not in values:
+            values.append(match)
+    return values
+
+
+def _derive_repair_scope(workflow):
+    """Derive deterministic allowed targets/operations from typed evidence."""
+    explicit = workflow.get("repair_scope")
+    if explicit:
+        return copy.deepcopy(explicit)
+    validation = _working_validation(workflow)
+    report_path = Path(validation.get("report", ""))
+    report_findings = (
+        supervisor.load_json(report_path).get("findings", [])
+        if report_path.is_file() else []
+    )
+    targets, finding_ids, allowed_ops = set(), set(), set()
+    for finding in report_findings:
+        code = str(finding.get("code", ""))
+        if code in ROUTE_FINDING_CODES:
+            allowed_ops.update(ROUTE_OPERATIONS)
+        elif code in GEOMETRY_FINDING_CODES:
+            allowed_ops.update(GEOMETRY_OPERATIONS)
+        else:
+            continue
+        targets.update(_finding_targets(finding))
+        if finding.get("finding_id"):
+            finding_ids.add(finding["finding_id"])
+    for finding in workflow.get("findings", []):
+        category = finding.get("category")
+        summary = str(finding.get("summary", "")).lower()
+        if category == "routing" or any(
+            token in summary
+            for token in ("route", "waypoint", "cross", "orthogonal", "маршрут", "пересеч")
+        ):
+            allowed_ops.update(ROUTE_OPERATIONS)
+        elif category == "layout":
+            allowed_ops.update(GEOMETRY_OPERATIONS)
+        else:
+            continue
+        targets.update(_finding_targets(finding))
+        if finding.get("finding_id"):
+            finding_ids.add(finding["finding_id"])
+    approved = workflow.get("approved_semantic_change") or {}
+    semantic_delta = approved.get("semantic_delta") or {}
+    semantic_targets = set()
+    for operation in semantic_delta.get("operations", []):
+        target = operation.get("target") or {}
+        if target.get("cell_id"):
+            semantic_targets.add(str(target["cell_id"]))
+        if operation.get("operation_type") == "add":
+            allowed_ops.add("add_semantic_element")
+        elif operation.get("operation_type") == "remove":
+            allowed_ops.add("remove_semantic_element")
+    return {
+        "source": "typed_findings",
+        "allowed_targets": sorted(targets | semantic_targets),
+        "allowed_operations": sorted(allowed_ops),
+        "finding_ids": sorted(finding_ids),
+        "semantic_targets": sorted(semantic_targets),
+    }
+
+
+def _host_bind_patch(run_dir, workflow, raw_patch, raw_patch_path):
+    """Create an executable host-bound patch without changing raw role output."""
+    baseline_descriptor = _working_artifact(workflow)
+    baseline = Path(baseline_descriptor.get("path", ""))
+    if (
+        not baseline.is_file()
+        or supervisor.sha256_file(baseline) != baseline_descriptor.get("sha256")
+    ):
+        raise supervisor.SupervisorError(
+            "working patch baseline is missing or hash-mismatched"
+        )
+    _, root, _ = supervisor.safe_parse(baseline)
+    page_locations = {
+        str(cell.get("id")): page_id
+        for page_id, page in supervisor.page_scopes(root)
+        for cell in supervisor.page_cells(page)
+        if cell.get("id")
+    }
+    page_ids = {page_id for page_id, _ in supervisor.page_scopes(root)}
+    operations = copy.deepcopy(raw_patch["operations"])
+    target_ids = {str(operation["target_id"]) for operation in operations}
+    existing_target_pages = {
+        page_locations[target] for target in target_ids if target in page_locations
+    }
+    declared_page = raw_patch["affected_region"]["page_id"]
+    if len(existing_target_pages) > 1:
+        raise supervisor.SupervisorError("patch scope spans more than one diagram page")
+    page_id = next(iter(existing_target_pages), declared_page)
+    if page_id not in page_ids:
+        raise supervisor.SupervisorError(
+            "patch affected page is not present in the working baseline"
+        )
+
+    scope = _derive_repair_scope(workflow)
+    allowed_targets = set(scope.get("allowed_targets", []))
+    allowed_operations = set(scope.get("allowed_operations", []))
+    semantic_targets = set(scope.get("semantic_targets", []))
+    forbidden_targets = target_ids - allowed_targets
+    if forbidden_targets:
+        raise supervisor.SupervisorError(
+            "patch scope violation: targets outside host scope: "
+            + ", ".join(sorted(forbidden_targets))
+        )
+    forbidden_ops = {
+        operation["op"] for operation in operations
+        if operation["op"] not in allowed_operations
+    }
+    if forbidden_ops:
+        raise supervisor.SupervisorError(
+            "patch scope violation: operations outside host scope: "
+            + ", ".join(sorted(forbidden_ops))
+        )
+    for operation in operations:
+        if (
+            operation.get("semantic_effect") not in {"layout_only", "layout-only"}
+            and operation["target_id"] not in semantic_targets
+        ):
+            raise supervisor.SupervisorError(
+                f"patch semantic target {operation['target_id']!r} is outside the approved delta"
+            )
+
+    bound = copy.deepcopy(raw_patch)
+    bound["baseline"] = {
+        "artifact_sha256": supervisor.sha256_file(baseline),
+        "semantic_digest": supervisor.document_semantic_digest(root),
+    }
+    bound["affected_region"] = {
+        "page_id": page_id,
+        "cell_ids": sorted(target_ids),
+    }
+    supervisor.validate_patch_contract(bound)
+    bound_path = Path(raw_patch_path).with_name("host-bound.patch.json")
+    atomic_write_bytes(bound_path, canonical_json_bytes(bound) + b"\n")
+    supervisor.append_event(
+        run_dir,
+        "patch_bound",
+        {
+            "raw_patch": str(Path(raw_patch_path).resolve()),
+            "raw_patch_sha256": supervisor.sha256_file(raw_patch_path),
+            "bound_patch": str(bound_path.resolve()),
+            "bound_patch_sha256": supervisor.sha256_file(bound_path),
+            "baseline_sha256": bound["baseline"]["artifact_sha256"],
+            "semantic_digest": bound["baseline"]["semantic_digest"],
+            "scope": scope,
+        },
+        state=supervisor.load_state(run_dir)["state"],
+        actor={"kind": "system", "id": "diagram-orchestrator", "model": None},
+    )
+    return bound, bound_path
 
 
 def _verify_semantic_patch_authorization(workflow, patch_value):
@@ -2024,17 +2522,24 @@ def _review_candidate(run_dir, workflow, candidate, report, receipt, patch, cli,
 
 
 def _set_workflow_accepted(workflow, state):
-    workflow["accepted_artifact"] = dict(state["accepted_artifact"])
-    workflow["accepted_validation"] = dict(state["accepted_validation"])
+    _sync_working_candidate(
+        workflow,
+        dict(state["accepted_artifact"]),
+        dict(state["accepted_validation"]),
+    )
+    if not state["accepted_validation"].get("strict_passed"):
+        _clear_publishable_candidate(workflow)
 
 
 def repair_loop(run_dir, workflow, cli, timeout, *, already_patching=False):
     while workflow["iteration"] < workflow["max_iterations"]:
         workflow["iteration"] += 1
         write_workflow(run_dir, workflow)
-        baseline_path = Path(workflow["accepted_artifact"]["path"])
-        baseline_report = Path(workflow["accepted_validation"]["report"])
-        baseline_receipt = Path(workflow["accepted_validation"]["receipt"])
+        working_artifact = _working_artifact(workflow)
+        working_validation = _working_validation(workflow)
+        baseline_path = Path(working_artifact["path"])
+        baseline_report = Path(working_validation["report"])
+        baseline_receipt = Path(working_validation["receipt"])
         if "repair" not in workflow.get("required_roles", []):
             current = supervisor.load_state(run_dir)["state"]
             if current == "analyzed":
@@ -2052,12 +2557,28 @@ def repair_loop(run_dir, workflow, cli, timeout, *, already_patching=False):
             supervisor.transition(run_dir, "patching", artifact=baseline_path)
         already_patching = False
         try:
-            patch_value, _, _, patch_path = role_call(
+            raw_patch_value, _, _, raw_patch_path = role_call(
                 "repair", repair_input(run_dir, workflow), run_dir, Path(workflow["workspace"]),
                 cli, timeout, f"repair-{workflow['iteration']}"
             )
+            patch_value, patch_path = _host_bind_patch(
+                run_dir, workflow, raw_patch_value, raw_patch_path,
+            )
         except supervisor.SupervisorError as exc:
             supervisor.transition(run_dir, "retrying", artifact=baseline_path)
+            failure_class = (
+                "repair_scope" if "scope" in str(exc).lower()
+                else "repair_contract"
+            )
+            retry, _ = _record_internal_repair_feedback(
+                run_dir,
+                workflow,
+                failure_class=failure_class,
+                message=str(exc),
+                evidence={"baseline_sha256": supervisor.sha256_file(baseline_path)},
+            )
+            if retry:
+                continue
             supervisor.transition(run_dir, "awaiting_feedback", decision="pause", reason="Repair could not produce a usable typed patch")
             workflow["findings"] = [str(exc)]
             return checkpoint(
@@ -2065,15 +2586,33 @@ def repair_loop(run_dir, workflow, cli, timeout, *, already_patching=False):
                 "Repair could not produce a schema-valid bounded patch; the accepted candidate was preserved.",
                 workflow["findings"], ["continue", "pause", "stop", "manual_handoff"],
             )
-        semantic_patch = any(op["semantic_effect"] != "layout_only" for op in patch_value["operations"])
+        semantic_patch = any(
+            op["semantic_effect"] not in {"layout_only", "layout-only"}
+            for op in patch_value["operations"]
+        )
         if semantic_patch and (not workflow.get("semantic_authorized") or not workflow.get("approved_semantic_change")):
             workflow["pending_patch"] = str(patch_path)
             workflow["pending_patch_sha256"] = supervisor.sha256_file(patch_path)
             supervisor.transition(run_dir, "retrying", artifact=baseline_path)
-            supervisor.transition(run_dir, "awaiting_feedback", decision="pause", reason="semantic patch requires approval")
+            message = "Repair proposed semantic operations without an approved semantic delta"
+            retry, _ = _record_internal_repair_feedback(
+                run_dir,
+                workflow,
+                failure_class="semantic_scope",
+                message=message,
+                evidence={
+                    "raw_patch": str(Path(raw_patch_path).resolve()),
+                    "raw_patch_sha256": supervisor.sha256_file(raw_patch_path),
+                    "bound_patch": str(Path(patch_path).resolve()),
+                    "bound_patch_sha256": supervisor.sha256_file(patch_path),
+                },
+            )
+            if retry:
+                continue
+            supervisor.transition(run_dir, "awaiting_feedback", decision="pause", reason="semantic patch exceeded the approved scope")
             return checkpoint(
-                run_dir, workflow, "semantic_approval",
-                "Repair proposed semantic changes; approve them before deterministic application.",
+                run_dir, workflow, "plateau",
+                "Repair repeatedly proposed semantic changes without a Semantic Analyst plan and human approval.",
                 [op["reasons"][0] for op in patch_value["operations"] if op["semantic_effect"] != "layout_only"],
                 ["continue", "pause", "stop", "manual_handoff"],
             )
@@ -2083,13 +2622,25 @@ def repair_loop(run_dir, workflow, cli, timeout, *, already_patching=False):
             except (ContractError, supervisor.SupervisorError, KeyError, ValueError) as exc:
                 workflow["pending_patch"] = str(patch_path)
                 workflow["pending_patch_sha256"] = supervisor.sha256_file(patch_path)
-                workflow["semantic_authorized"] = False
-                workflow.pop("approved_semantic_change", None)
                 supervisor.transition(run_dir, "retrying", artifact=baseline_path)
-                supervisor.transition(run_dir, "awaiting_feedback", decision="pause", reason="Repair exceeded semantic authorization")
+                retry, _ = _record_internal_repair_feedback(
+                    run_dir,
+                    workflow,
+                    failure_class="semantic_scope",
+                    message=str(exc),
+                    evidence={
+                        "raw_patch": str(Path(raw_patch_path).resolve()),
+                        "raw_patch_sha256": supervisor.sha256_file(raw_patch_path),
+                        "bound_patch": str(Path(patch_path).resolve()),
+                        "bound_patch_sha256": supervisor.sha256_file(patch_path),
+                    },
+                )
+                if retry:
+                    continue
+                supervisor.transition(run_dir, "awaiting_feedback", decision="pause", reason="Repair repeatedly exceeded semantic authorization")
                 return checkpoint(
-                    run_dir, workflow, "semantic_approval",
-                    "Repair предложил изменения вне подтверждённой семантической дельты; требуется новое подтверждение.",
+                    run_dir, workflow, "plateau",
+                    "Repair повторно вышел за подтверждённую семантическую дельту; требуется замечание пользователя или ручная передача.",
                     [str(exc)], ["continue", "pause", "stop", "manual_handoff"],
                     evidence={"patch": str(patch_path), "patch_sha256": supervisor.sha256_file(patch_path)},
                 )
@@ -2114,6 +2665,20 @@ def repair_loop(run_dir, workflow, cli, timeout, *, already_patching=False):
                 supervisor.transition(run_dir, "retrying", artifact=baseline_path)
             elif current == "validating":
                 supervisor.transition(run_dir, "retrying", artifact=baseline_path)
+            retry, _ = _record_internal_repair_feedback(
+                run_dir,
+                workflow,
+                failure_class="deterministic_tool",
+                message=str(exc),
+                evidence={
+                    "attempt_id": attempt_id,
+                    "baseline_sha256": supervisor.sha256_file(baseline_path),
+                    "bound_patch": str(Path(patch_path).resolve()),
+                    "bound_patch_sha256": supervisor.sha256_file(patch_path),
+                },
+            )
+            if retry:
+                continue
             supervisor.transition(run_dir, "awaiting_feedback", decision="pause", reason="deterministic repair tool failed")
             workflow["findings"] = [str(exc)]
             return checkpoint(
@@ -2137,20 +2702,38 @@ def repair_loop(run_dir, workflow, cli, timeout, *, already_patching=False):
                 "Квитанция валидации v2 не прошла проверку целостности; baseline сохранён.",
                 workflow["findings"], ["continue", "pause", "stop", "manual_handoff"],
             )
-        try:
-            verdict, _, verdict_path = _review_candidate(
-                run_dir, workflow, candidate, report, receipt, patch_path, cli, timeout,
-                f"reviewer-{workflow['iteration']}",
-            )
-        except supervisor.SupervisorError as exc:
-            supervisor.transition(run_dir, "retrying", artifact=baseline_path)
-            supervisor.transition(run_dir, "awaiting_feedback", decision="pause", reason="independent review failed")
-            workflow["findings"] = [str(exc)]
-            return checkpoint(
-                run_dir, workflow, "plateau",
-                "The candidate was not promoted because independent review did not produce a usable hash-bound verdict.",
-                workflow["findings"], ["continue", "pause", "stop", "manual_handoff"],
-            )
+        workflow.pop("candidate_reviewer_verdict_v2", None)
+        verdict = None
+        verdict_path = None
+        if receipt_v2_verification["strict_passed"]:
+            try:
+                verdict, _, verdict_path = _review_candidate(
+                    run_dir, workflow, candidate, report, receipt, patch_path, cli, timeout,
+                    f"reviewer-{workflow['iteration']}",
+                )
+            except supervisor.SupervisorError as exc:
+                supervisor.transition(run_dir, "retrying", artifact=baseline_path)
+                retry, _ = _record_internal_repair_feedback(
+                    run_dir,
+                    workflow,
+                    failure_class="reviewer_contract",
+                    message=str(exc),
+                    evidence={
+                        "attempt_id": attempt_id,
+                        "candidate_sha256": supervisor.sha256_file(candidate),
+                    },
+                )
+                if retry:
+                    continue
+                supervisor.transition(run_dir, "awaiting_feedback", decision="pause", reason="independent review failed")
+                workflow["findings"] = [str(exc)]
+                return checkpoint(
+                    run_dir, workflow, "plateau",
+                    "The candidate was not promoted because independent review did not produce a usable hash-bound verdict.",
+                    workflow["findings"], ["continue", "pause", "stop", "manual_handoff"],
+                )
+        else:
+            workflow["findings"] = supervisor.load_json(report).get("findings", [])
         semantic_approval_path = None
         semantic_approval_v2_path = None
         approved_semantic_delta = None
@@ -2165,11 +2748,17 @@ def repair_loop(run_dir, workflow, cli, timeout, *, already_patching=False):
             approved_semantic_delta=approved_semantic_delta,
         )
         state = supervisor.load_state(run_dir)
-        workflow["findings"] = verdict.get("findings", [])
+        workflow["findings"] = (
+            verdict.get("findings", [])
+            if verdict is not None
+            else supervisor.load_json(report).get("findings", [])
+        )
         workflow.setdefault("attempts", []).append({
             "iteration": workflow["iteration"], "candidate": str(candidate),
             "candidate_sha256": supervisor.sha256_file(candidate), "decision": decision,
-            "validation_result": receipt_value["result"], "reviewer_verdict": verdict["verdict"],
+            "validation_result": receipt_value["result"],
+            "reviewer_verdict": verdict["verdict"] if verdict is not None else None,
+            "review_skipped": verdict is None,
         })
         if decision["accepted"]:
             _set_workflow_accepted(workflow, state)
@@ -2177,28 +2766,61 @@ def repair_loop(run_dir, workflow, cli, timeout, *, already_patching=False):
                 "path": str(receipt_v2.resolve()),
                 "sha256": supervisor.sha256_file(receipt_v2),
             }
-            verdict_v2_path = Path(workflow["candidate_reviewer_verdict_v2"]["path"])
+            verdict_v2_path = (
+                Path(workflow["candidate_reviewer_verdict_v2"]["path"])
+                if verdict is not None else None
+            )
             lifecycle_v2.transition(
                 run_dir, "accepted_candidate", iteration=workflow["iteration"],
                 accepted_artifact=_relative_file(run_dir, candidate),
                 validation_report=_relative_file(run_dir, report),
                 validation_receipt=_relative_file(run_dir, receipt_v2),
-                reviewer_verdict=_relative_file(run_dir, verdict_v2_path),
+                reviewer_verdict=(
+                    _relative_file(run_dir, verdict_v2_path)
+                    if verdict_v2_path is not None else None
+                ),
                 payload={"comparison": decision.get("reason"), "candidate_sha256": supervisor.sha256_file(candidate)},
             )
             current_source = lifecycle_v2.latest_document(run_dir, "source-bundle")[0]
             source_evidence = copy.deepcopy(current_source["evidence"])
-            source_evidence["eligible_review_handoff"] = {
+            source_evidence["baseline_validation"] = {
                 "artifact": _relative_file(run_dir, candidate),
                 "report": _relative_file(run_dir, report),
                 "receipt": _relative_file(run_dir, receipt_v2),
-                "verdict": _relative_file(run_dir, verdict_v2_path),
-                "findings_sha256": canonical_json_sha256(supervisor.load_json(verdict_v2_path)["findings"]),
             }
+            if verdict_v2_path is not None:
+                source_evidence["eligible_review_handoff"] = {
+                    "artifact": _relative_file(run_dir, candidate),
+                    "report": _relative_file(run_dir, report),
+                    "receipt": _relative_file(run_dir, receipt_v2),
+                    "verdict": _relative_file(run_dir, verdict_v2_path),
+                    "findings_sha256": canonical_json_sha256(supervisor.load_json(verdict_v2_path)["findings"]),
+                }
+            else:
+                source_evidence["eligible_review_handoff"] = None
             lifecycle_v2.revise_sources(
-                run_dir, evidence=source_evidence,
-                event_payload={"kind": "accepted_candidate_review", "candidate_sha256": supervisor.sha256_file(candidate)},
+                run_dir,
+                evidence=source_evidence,
+                event_payload={
+                    "kind": (
+                        "accepted_candidate_review"
+                        if verdict_v2_path is not None
+                        else "working_candidate_validation"
+                    ),
+                    "candidate_sha256": supervisor.sha256_file(candidate),
+                    "strict_passed": receipt_v2_verification["strict_passed"],
+                },
             )
+            if verdict_v2_path is not None:
+                _set_publishable_candidate(
+                    workflow,
+                    artifact=_working_artifact(workflow),
+                    validation=_working_validation(workflow),
+                    receipt_v2=workflow["validation_receipt_v2"],
+                    verdict_v2=workflow["candidate_reviewer_verdict_v2"],
+                )
+            else:
+                _clear_publishable_candidate(workflow)
             write_workflow(run_dir, workflow)
             eligibility = _final_approval_eligibility(run_dir, workflow)
             allowed_final = []
@@ -2232,7 +2854,54 @@ def repair_loop(run_dir, workflow, cli, timeout, *, already_patching=False):
             },
             payload={"candidate_sha256": supervisor.sha256_file(candidate)},
         )
+        if decision.get("reason") == "reviewer_needs_human":
+            workflow["status"] = "awaiting_human"
+            write_workflow(run_dir, workflow)
+            return checkpoint(
+                run_dir,
+                workflow,
+                "feedback",
+                "Reviewer found a real ambiguity that requires human judgment; the candidate was not promoted and no automatic retry was scheduled.",
+                workflow["findings"],
+                ["continue", "pause", "stop", "manual_handoff"],
+                evidence={
+                    "failure_class": "reviewer_needs_human",
+                    "candidate_sha256": supervisor.sha256_file(candidate),
+                },
+            )
         if state["state"] == "retrying":
+            retry, _ = _record_internal_repair_feedback(
+                run_dir,
+                workflow,
+                failure_class="candidate_quality",
+                message=decision.get("reason", "candidate was not accepted"),
+                evidence={
+                    "attempt_id": attempt_id,
+                    "candidate_sha256": supervisor.sha256_file(candidate),
+                    "comparison": copy.deepcopy(decision),
+                    "findings": copy.deepcopy(workflow["findings"]),
+                },
+            )
+            if not retry:
+                supervisor.transition(
+                    run_dir,
+                    "awaiting_feedback",
+                    reason="the same candidate failure repeated",
+                )
+                workflow["status"] = "awaiting_human"
+                write_workflow(run_dir, workflow)
+                return checkpoint(
+                    run_dir,
+                    workflow,
+                    "plateau",
+                    "Automatic repair stopped after the same normalized failure repeated.",
+                    workflow["findings"],
+                    ["continue", "pause", "stop", "manual_handoff"],
+                    evidence={
+                        "failure_class": "candidate_quality",
+                        "failure_signature_limit": MAX_IDENTICAL_FAILURES,
+                    },
+                )
             write_workflow(run_dir, workflow)
             continue
         workflow["status"] = "awaiting_human"
@@ -2249,7 +2918,20 @@ def repair_loop(run_dir, workflow, cli, timeout, *, already_patching=False):
         if state["state"] == "retrying":
             supervisor.transition(run_dir, "awaiting_feedback", reason="iteration limit reached")
         elif state["state"] == "accepted_candidate":
-            supervisor.transition(run_dir, "final_review", artifact=Path(workflow["accepted_artifact"]["path"]))
+            if workflow.get("publishable_candidate"):
+                supervisor.transition(
+                    run_dir,
+                    "final_review",
+                    artifact=Path(workflow["publishable_candidate"]["artifact"]["path"]),
+                )
+            else:
+                supervisor.transition(
+                    run_dir,
+                    "awaiting_feedback",
+                    reason="iteration limit reached before strict validation passed",
+                )
+    workflow["status"] = "awaiting_human"
+    write_workflow(run_dir, workflow)
     return checkpoint(
         run_dir, workflow, "plateau", "Configured automatic iteration limit was reached.",
         workflow.get("findings", []), ["continue", "pause", "stop", "manual_handoff"],
@@ -2477,6 +3159,13 @@ def _start_run_impl(
             "The supplied process description differs from the existing diagram; these changes will be used in repair after approval.",
             changes, ["continue", "pause", "stop", "manual_handoff"], evidence=pending_semantic,
         )
+    if not _working_validation(workflow).get("strict_passed"):
+        _clear_publishable_candidate(workflow)
+        workflow["findings"] = supervisor.load_json(
+            _working_validation(workflow)["report"]
+        ).get("findings", [])
+        write_workflow(run_dir, workflow)
+        return repair_loop(run_dir, workflow, cli, timeout)
     try:
         verdict, _ = baseline_review(run_dir, workflow, cli, timeout)
     except supervisor.SupervisorError as exc:
@@ -2489,6 +3178,34 @@ def _start_run_impl(
             workflow["findings"], ["continue", "pause", "stop", "manual_handoff"],
         )
     workflow["findings"] = verdict.get("findings", [])
+    if verdict.get("verdict") == "needs_human":
+        supervisor.transition(
+            run_dir,
+            "final_review",
+            artifact=Path(_working_artifact(workflow)["path"]),
+        )
+        supervisor.transition(
+            run_dir,
+            "awaiting_feedback",
+            reason="Reviewer found an ambiguity in the baseline",
+        )
+        write_workflow(run_dir, workflow)
+        return checkpoint(
+            run_dir,
+            workflow,
+            "feedback",
+            "Reviewer found a real ambiguity that requires human judgment; no automatic repair was started.",
+            workflow["findings"],
+            ["continue", "pause", "stop", "manual_handoff"],
+            evidence={"failure_class": "reviewer_needs_human"},
+        )
+    _set_publishable_candidate(
+        workflow,
+        artifact=_working_artifact(workflow),
+        validation=_working_validation(workflow),
+        receipt_v2=workflow["validation_receipt_v2"],
+        verdict_v2=workflow["reviewer_verdict_v2"],
+    )
     write_workflow(run_dir, workflow)
     eligibility = _final_approval_eligibility(run_dir, workflow)
     allowed_final = []
@@ -2565,15 +3282,19 @@ def start_run(
 
 
 def publish(run_dir, workflow, decision):
-    accepted = Path(workflow["accepted_artifact"]["path"])
+    publishable = workflow.get("publishable_candidate") or {}
+    if not publishable:
+        raise supervisor.SupervisorError(
+            "publication requires a strict-pass publishable candidate"
+        )
+    artifact_descriptor = publishable.get("artifact") or {}
+    validation_descriptor = publishable.get("validation") or {}
+    receipt_descriptor = publishable.get("validation_receipt_v2") or {}
+    accepted = Path(artifact_descriptor.get("path", ""))
     target = Path(workflow["target"])
-    report = Path(workflow["accepted_validation"]["report"])
-    receipt_v2 = Path(workflow["validation_receipt_v2"]["path"])
-    verdict_descriptor = (
-        workflow.get("candidate_reviewer_verdict_v2")
-        or workflow.get("reviewer_verdict_v2")
-        or {}
-    )
+    report = Path(validation_descriptor.get("report", ""))
+    receipt_v2 = Path(receipt_descriptor.get("path", ""))
+    verdict_descriptor = publishable.get("reviewer_verdict_v2") or {}
     verdict_path = Path(verdict_descriptor.get("path", ""))
     if (
         not verdict_path.is_file()
@@ -2640,6 +3361,9 @@ def _resume_run_impl(reference, decision, feedback, workspace, cli, *, timeout=6
             workflow["published_artifact"] = {
                 "path": str(target.resolve()), "sha256": supervisor.sha256_file(target),
             }
+            workflow["final_artifact"] = copy.deepcopy(
+                (workflow.get("publishable_candidate") or {}).get("artifact")
+            )
             workflow.pop("pending_publication_decision", None)
             write_workflow(run_dir, workflow)
             result = host_result(run_dir, workflow)
@@ -2810,15 +3534,19 @@ def _resume_run_impl(reference, decision, feedback, workspace, cli, *, timeout=6
                 evidence={"code": exc.code, "target": str(Path(workflow["target"]).resolve())},
             )
         final_status = "completed" if publication_decision == "approve" else "approved_with_findings"
+        publishable = workflow["publishable_candidate"]
         supervisor.transition(
             run_dir, final_status,
-            artifact=Path(workflow["accepted_artifact"]["path"]),
-            receipt=workflow["accepted_validation"]["receipt"] if final_status == "completed" else None,
+            artifact=Path(publishable["artifact"]["path"]),
+            receipt=publishable["validation"]["receipt"],
             decision=publication_decision,
             reason=feedback or "publication conflict resolved",
         )
         workflow["status"] = final_status
         workflow["published_artifact"] = {"path": str(target), "sha256": supervisor.sha256_file(target)}
+        workflow["final_artifact"] = copy.deepcopy(
+            workflow["publishable_candidate"]["artifact"]
+        )
         workflow.pop("pending_publication_decision", None)
         write_workflow(run_dir, workflow)
         return host_result(run_dir, workflow)
@@ -2848,12 +3576,22 @@ def _resume_run_impl(reference, decision, feedback, workspace, cli, *, timeout=6
                 else "improve target changed after start and will not be overwritten"
             ) from exc
         if decision == "approve":
-            supervisor.transition(run_dir, "completed", artifact=Path(workflow["accepted_artifact"]["path"]), receipt=workflow["accepted_validation"]["receipt"], decision="approve", reason=feedback)
+            publishable = workflow["publishable_candidate"]
+            supervisor.transition(run_dir, "completed", artifact=Path(publishable["artifact"]["path"]), receipt=publishable["validation"]["receipt"], decision="approve", reason=feedback)
             workflow["status"] = "completed"
         else:
-            supervisor.transition(run_dir, "approved_with_findings", decision="approve_with_findings", reason=feedback)
+            publishable = workflow["publishable_candidate"]
+            supervisor.transition(
+                run_dir, "approved_with_findings",
+                artifact=Path(publishable["artifact"]["path"]),
+                receipt=publishable["validation"]["receipt"],
+                decision="approve_with_findings", reason=feedback,
+            )
             workflow["status"] = "approved_with_findings"
         workflow["published_artifact"] = {"path": str(target), "sha256": supervisor.sha256_file(target)}
+        workflow["final_artifact"] = copy.deepcopy(
+            workflow["publishable_candidate"]["artifact"]
+        )
         write_workflow(run_dir, workflow)
         return host_result(run_dir, workflow)
     if feedback:
@@ -3117,6 +3855,7 @@ def trace_run(reference, workspace):
             )
             failed_roles.append({
                 "role": role,
+                "sequence": event.get("sequence"),
                 "phase": payload.get("phase"),
                 "failure_kind": payload.get("failure_kind"),
                 "terminal": payload.get("terminal", True),
@@ -3292,8 +4031,25 @@ def trace_run(reference, workspace):
         and preflight["valid"]
         and v2_trace["valid"]
     )
+    latest_success_by_role = {}
+    for event in events:
+        if event["event_type"] == "role_finished":
+            role = event.get("payload", {}).get("role")
+            if role:
+                latest_success_by_role[role] = max(
+                    int(event.get("sequence", 0)),
+                    latest_success_by_role.get(role, 0),
+                )
+    for failure in failed_roles:
+        failure["recovered_by_later_success"] = bool(
+            failure.get("terminal", True)
+            and latest_success_by_role.get(failure.get("role"), 0)
+            > int(failure.get("sequence") or 0)
+        )
     terminal_failed_roles = [
-        item for item in failed_roles if item.get("terminal", True)
+        item for item in failed_roles
+        if item.get("terminal", True)
+        and not item.get("recovered_by_later_success")
     ]
     valid = (
         integrity_valid

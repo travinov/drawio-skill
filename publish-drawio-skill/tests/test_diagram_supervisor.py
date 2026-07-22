@@ -1006,6 +1006,76 @@ class TransactionalPatchTests(unittest.TestCase):
                 result["semantic_digest_before"], result["semantic_digest_after"]
             )
 
+    def test_mixed_layout_and_semantic_operations_are_rejected_without_explicit_opt_in(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            source = write_text(temp / "source.drawio", diagram_xml())
+            layout_operation = canonical_route_operation(source, {"x": 190, "y": 30})
+            semantic_operation = {
+                "operation_id": "add-semantic-node",
+                "op": "add_semantic_element",
+                "target_id": "semantic-node",
+                "precondition": {"target_exists": False},
+                "proposed_value": {
+                    "kind": "vertex",
+                    "semantic_type": "process",
+                    "label": "Semantic",
+                    "parent_id": "1",
+                    "geometry": {"x": 220, "y": 140, "width": 100, "height": 40},
+                },
+                "semantic_effect": "semantic_addition",
+                "reasons": ["explicit semantic change mixed into a layout patch"],
+                "finding_ids": [],
+                "rollback": {"action": "remove_added_cell", "value": {}},
+            }
+            patch = canonical_patch(source, [layout_operation, semantic_operation])
+            patch_path = write_json(temp / "mixed-patch.json", patch)
+
+            with self.assertRaisesRegex(supervisor.SupervisorError, "--allow-semantic"):
+                supervisor.apply_patch_file(source, patch_path, temp / "blocked.drawio")
+
+    def test_strict_failed_candidate_skips_reviewer_and_records_review_skipped(self):
+        with tempfile.TemporaryDirectory() as temp:
+            case = prepare_routed_candidate(temp)
+            report_path = Path(case["candidate_report"])
+            receipt_path = Path(case["candidate_receipt"])
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            report["summary"]["status"] = "failed"
+            report["findings"].append(
+                {
+                    "layer": "layout",
+                    "severity": "warning",
+                    "code": "test.warning",
+                    "path": "/",
+                    "message": "warning only",
+                }
+            )
+            report_path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+            stdout_path = report_path.with_name("validator.stdout")
+            stdout_path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt["exit_code"] = 1
+            receipt["result"] = "failed"
+            receipt["outputs"]["report"]["sha256"] = supervisor.sha256_file(report_path)
+            receipt["outputs"]["report"]["byte_length"] = report_path.stat().st_size
+            receipt["outputs"]["stdout_sha256"] = supervisor.sha256_file(stdout_path)
+            receipt_path.write_text(json.dumps(receipt, ensure_ascii=False), encoding="utf-8")
+
+            self.assertFalse(supervisor.verify_receipt(receipt_path, case["candidate"])["passed"])
+            result = supervisor.record_candidate(
+                case["run_dir"], case["candidate"], case["baseline_report"],
+                case["candidate_report"], case["patch"], case["baseline_receipt"],
+                case["candidate_receipt"],
+            )
+            self.assertTrue(result["accepted"])
+
+            events = [
+                json.loads(line)["event_type"]
+                for line in (case["run_dir"] / "run-manifest.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertIn("review_skipped", events)
+            self.assertNotIn("review_verdict", events)
+
     def test_reserved_root_and_layer_cells_cannot_be_removed_even_with_semantic_opt_in(self):
         with tempfile.TemporaryDirectory() as temp:
             temp = Path(temp)
@@ -1084,6 +1154,14 @@ class MonotonicComparisonTests(unittest.TestCase):
         self.assertTrue(improved["accepted"])
         self.assertEqual(improved["reason"], "lexicographic_improvement:structural_errors")
 
+    def test_working_baseline_keeps_lower_crossing_count_over_worse_candidate(self):
+        baseline = report(*[("layout", "error", "artifact.readability.crossing")] * 20)
+        candidate = report(*[("layout", "error", "artifact.readability.crossing")] * 22)
+        rejected = supervisor.compare_reports(baseline, candidate)
+
+        self.assertFalse(rejected["accepted"])
+        self.assertEqual(rejected["reason"], "higher_priority_regression:crossings")
+
     def test_all_validator_structural_codes_map_to_structural_errors(self):
         codes = (
             "artifact.id.missing", "artifact.id.duplicate", "artifact.cell.invalid_kind",
@@ -1129,6 +1207,43 @@ class MonotonicComparisonTests(unittest.TestCase):
 
 
 class EvidenceAndStateTests(unittest.TestCase):
+    def test_reviewer_needs_human_stops_candidate_without_retrying_or_promoting(self):
+        with tempfile.TemporaryDirectory() as temp:
+            case = prepare_routed_candidate(temp)
+            before = supervisor.load_state(case["run_dir"])["accepted_artifact"]
+
+            result = supervisor.record_candidate(
+                case["run_dir"],
+                case["candidate"],
+                case["baseline_report"],
+                case["candidate_report"],
+                case["patch"],
+                case["baseline_receipt"],
+                case["candidate_receipt"],
+                repair_class="edge-route",
+                reviewer_verdict_path=reviewer_verdict_v2(
+                    case["run_dir"],
+                    case["candidate"],
+                    case["candidate_report"],
+                    case["candidate_receipt"],
+                    verdict="needs_human",
+                ),
+            )
+
+            state = supervisor.load_state(case["run_dir"])
+            self.assertEqual(result["state"], "awaiting_feedback")
+            self.assertFalse(result["accepted"])
+            self.assertEqual(result["reason"], "reviewer_needs_human")
+            self.assertEqual(state["accepted_artifact"], before)
+            last_event = json.loads(
+                (case["run_dir"] / "run-manifest.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()[-1]
+            )
+            self.assertEqual(last_event["event_type"], "candidate_rejected")
+            self.assertEqual(last_event["state"], "awaiting_feedback")
+            self.assertEqual(last_event["payload"]["reason"], "reviewer_needs_human")
+
     def test_reviewer_input_binds_baseline_candidate_diff_context_and_models(self):
         with tempfile.TemporaryDirectory() as temp:
             case = prepare_routed_candidate(temp)

@@ -5,8 +5,11 @@ description: Improve an existing draw.io diagram through monotonic validated age
 The deterministic Draw.io orchestration host has already executed before this response.
 Do not call tools, agents, shell, directory search, or file-reading operations.
 Present the JSON result below faithfully, including the semantic comparison checkpoint,
-last accepted candidate, role models, validation and review evidence, and resume contract.
+working artifact, publishable candidate, role models, validation and review evidence,
+and resume contract. A strict-failed working artifact is not final or publishable.
 The source diagram remains unchanged until explicit final approval.
+The host automatically continues bounded recoverable repair iterations; request
+human continuation only when the returned JSON contains a real checkpoint.
 If a role exhausts its command-line turn budget, report the saved runtime evidence
 and do not recommend changing global `maxSessionTurns` or resuming without a checkpoint.
 If `model_diversity_degraded` is true, identify the configured Supervisor fallback.

@@ -87,8 +87,8 @@ TRANSITIONS = {
     "analyzed": {"awaiting_decision", "patching", "final_review", "stopped"},
     "awaiting_decision": {"patching", "awaiting_feedback", "manual_handoff", "stopped"},
     "patching": {"validating", "retrying", "manual_handoff", "stopped"},
-    "validating": {"accepted_candidate", "retrying", "plateau", "manual_handoff", "stopped"},
-    "accepted_candidate": {"patching", "validating", "final_review", "stopped"},
+    "validating": {"accepted_candidate", "retrying", "plateau", "awaiting_feedback", "manual_handoff", "stopped"},
+    "accepted_candidate": {"patching", "validating", "final_review", "awaiting_feedback", "stopped"},
     "retrying": {"patching", "plateau", "awaiting_feedback", "manual_handoff", "stopped"},
     "plateau": {"awaiting_feedback", "manual_handoff", "stopped"},
     "final_review": {"completed", "approved_with_findings", "patching", "awaiting_feedback", "manual_handoff", "stopped"},
@@ -1679,7 +1679,7 @@ def transition(run_dir, target, artifact=None, receipt=None, decision=None, reas
     if target not in STATES:
         raise SupervisorError(f"unknown state {target!r}")
     current = load_state(run_dir)
-    if (current is None and target == "analyzed") or target == "completed":
+    if (current is None and target == "analyzed") or target in {"completed", "approved_with_findings"}:
         preflight = verify_host_preflight(run_dir)
         if not preflight["valid"]:
             raise SupervisorError(f"main-host preflight evidence failed: {preflight['checks']}")
@@ -1709,20 +1709,26 @@ def transition(run_dir, target, artifact=None, receipt=None, decision=None, reas
             state["accepted_artifact"] = {"path": str(Path(artifact).resolve()), "sha256": digest}
         elif state.get("accepted_artifact", {}).get("sha256") != digest:
             raise SupervisorError("state transition artifact must equal the last accepted artifact")
-    if target == "completed":
+    if target in {"completed", "approved_with_findings"}:
+        expected_decisions = (
+            {"approve", "approved"}
+            if target == "completed" else {"approve_with_findings"}
+        )
+        if decision not in expected_decisions:
+            if target == "completed":
+                raise SupervisorError("completion requires an explicit approve decision")
+            raise SupervisorError(
+                "approved_with_findings requires decision='approve_with_findings'"
+            )
         if not artifact or not receipt:
-            raise SupervisorError("completion requires artifact and receipt")
-        if decision not in {"approve", "approved"}:
-            raise SupervisorError("completion requires an explicit approve decision")
+            raise SupervisorError("final state requires artifact and strict receipt")
         verification = verify_receipt(receipt, artifact)
         if not verification["valid"] or not verification["passed"]:
-            raise SupervisorError(f"completion evidence failed: {verification['checks']}")
+            raise SupervisorError(f"final evidence failed: {verification['checks']}")
         receipt_data = load_json(receipt)
         if receipt_data.get("run_id") != state.get("run_id"):
             raise SupervisorError("completion receipt belongs to a different run")
         state["final_receipt"] = str(Path(receipt).resolve())
-    if target == "approved_with_findings" and decision != "approve_with_findings":
-        raise SupervisorError("approved_with_findings requires decision='approve_with_findings'")
     if target == "awaiting_feedback" and decision == "pause" and not reason:
         raise SupervisorError("pause requires an explicit reason")
     if current and current.get("state") == "awaiting_feedback" and target != "stopped":
@@ -2238,6 +2244,19 @@ def record_candidate(
                 "state": "manual_handoff", "accepted": False,
                 "reason": "manual_handoff", "quality_vector": quality_vector(candidate_report),
             }
+    elif not receipt_verification["passed"]:
+        append_event(
+            run_dir,
+            "review_skipped",
+            {
+                "reason": "strict_validation_failed",
+                "candidate_sha256": artifact_hash,
+                "report_sha256": sha256_file(candidate_report_path),
+                "receipt_sha256": sha256_file(receipt_path),
+            },
+            state="validating",
+            actor={"kind": "system", "id": "diagram-supervisor", "model": None},
+        )
     else:
         raise SupervisorError("candidate acceptance requires a hash-bound independent reviewer verdict")
     baseline_semantic, baseline_cells = artifact_invariants(baseline_path)
@@ -2331,7 +2350,16 @@ def record_candidate(
         "quality_vector": vector,
         "comparison": comparison,
     }
-    if repeated_hash or repeated_vector or class_exhausted or iteration_exhausted:
+    reviewer_needs_human = bool(
+        reviewer_verdict and reviewer_verdict["verdict"] == "needs_human"
+    )
+    if reviewer_needs_human:
+        # Ambiguity is not a repair-quality failure.  Preserve the current
+        # working baseline and hand control to a real human checkpoint.
+        state["state"] = "awaiting_feedback"
+        event_payload["reason"] = "reviewer_needs_human"
+        event_type = "candidate_rejected"
+    elif repeated_hash or repeated_vector or class_exhausted or iteration_exhausted:
         state["state"] = "plateau"
         if repeated_hash:
             reason = "repeated_artifact_hash"

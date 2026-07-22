@@ -24,7 +24,7 @@
           "kind": "command",
           "name": "python3",
           "status": "available",
-          "version": "Python 3.14.6"
+          "version": "Python 3.12.11"
         },
         {
           "kind": "command",
@@ -51,7 +51,7 @@
     {
       "archive": "drawio-skill-agent-extension.zip",
       "archive_root": "drawio-skill",
-      "archive_sha256": "e6144e415e995f7eea705c70b783e334f37a55d28972bac6caa655f12d569e5e",
+      "archive_sha256": "dd3a5de39689a8c3b2030409e75de224aaf42421c81466dbee30c56ecd7f4499",
       "files": [
         {
           "path": "DEPENDENCIES.md",
@@ -70,23 +70,23 @@
         },
         {
           "path": "README.md",
-          "sha256": "589f09c1fab9d7483a020852453edc92e71b5dc3ae71d05931804170c9f5af1d",
-          "size": 28896
+          "sha256": "5b942f28289fc769313191dae861632abeb17c7960b2c9549602cd69b27524a2",
+          "size": 30785
         },
         {
           "path": "SKILL.md",
-          "sha256": "1a36654e6ba1d3b08f59b9efcda55f1ee521dc331b5e70ed0e17d2233fc811a8",
-          "size": 50606
+          "sha256": "fc7541ec9cbeebdb00fda0cc8d43833b6df6660ebdafefa330d2e4b57c3a8873",
+          "size": 51605
         },
         {
           "path": "agents/diagram-repair.md",
-          "sha256": "bafc4a7c9df99f92d67ef4894eae8146c28e34bb919004845fd018d9aad04e70",
-          "size": 3305
+          "sha256": "f00dfa1afe4e11044fe9589fe95621260cc496149e028fc5b25427924618fcf9",
+          "size": 4188
         },
         {
           "path": "agents/diagram-reviewer.md",
-          "sha256": "e5172c04264a703bb06eb70b33ae40c8350d96cace1a75df3b326139a5af913f",
-          "size": 4441
+          "sha256": "5871c5b6774a091d7cb763910fd1c5f2960862d4c6f735dfc0afdcdbbd10e2f7",
+          "size": 4670
         },
         {
           "path": "agents/diagram-semantic-analyst.md",
@@ -110,18 +110,18 @@
         },
         {
           "path": "commands/drawio/create.md",
-          "sha256": "499e77784e05e31185c615149cbc963de117ad6da4d91390988b1d573b3bc718",
-          "size": 2100
+          "sha256": "739113feb39c65f7e4be437b11f2d67f063ceed10ccd67621d1b204f65b9de20",
+          "size": 2309
         },
         {
           "path": "commands/drawio/improve.md",
-          "sha256": "26d9d93d664e902b99d56ac18da14b3d8943ff10b1e8f44d21dc6ff69223c43c",
-          "size": 1732
+          "sha256": "1ffe3c56c2736c91844c85144d613a5455d7e7a036f7a425a134e8404f647345",
+          "size": 1965
         },
         {
           "path": "commands/drawio/resume.md",
-          "sha256": "56943f05d2adfe5db6c425446596feb4c43f6056ef23ca1906c0c465aa4c20a0",
-          "size": 1755
+          "sha256": "86f44312ac53770bc2388a45e29cbe91a9ef06063d7231d7abcb0facc9ae57de",
+          "size": 1787
         },
         {
           "path": "commands/drawio/review.md",
@@ -130,8 +130,8 @@
         },
         {
           "path": "commands/drawio/trace.md",
-          "sha256": "84e45b4671372a277edc4340bd037345c673684c74eef9327f1264f45af1a9af",
-          "size": 1617
+          "sha256": "84b6e1d5801131b271bc542ec25d8f216946385d54566b32a40c1d3757eb2fb3",
+          "size": 1813
         },
         {
           "path": "config.example.json",
@@ -250,8 +250,8 @@
         },
         {
           "path": "data/run-event.v1.schema.json",
-          "sha256": "a88aaf8c2c8fadeef2d7b2670cdd6c1b34a3f598cbe4ee97586a00cd4bef15d1",
-          "size": 2633
+          "sha256": "b2a854cd4a3122ca2f00bc9790c7d452b60282beb4b2200d1f79375158218048",
+          "size": 2751
         },
         {
           "path": "data/run-event.v2.schema.json",
@@ -325,8 +325,8 @@
         },
         {
           "path": "docs/drawio-agent-extension-corporate-test-commands.md",
-          "sha256": "f47e4cc69678eee007650d533cd6e79ba3ee7e871564ca83b9afb97d6ffd01fa",
-          "size": 18731
+          "sha256": "fa32585c3508e0d88031b2f97498cd43bf07d0b54d41a81516e38b13545c2c82",
+          "size": 20402
         },
         {
           "path": "examples/roadmap/table-source.md",
@@ -340,7 +340,7 @@
         },
         {
           "path": "gemini-extension.json",
-          "sha256": "0ddc7eb5f8d6042221ef84b8197a072c353f8f979ff718ae2b575ae1292e8aa6",
+          "sha256": "aafe9b995b9f9e261851eb512c86ce35d4dfe62ee373b1ea7a42b209cc8dbf46",
           "size": 284
         },
         {
@@ -350,8 +350,8 @@
         },
         {
           "path": "install/install_drawio_agent_extension.sh",
-          "sha256": "a4f0d17034f700c74abc0f98d84e61876a3ed53b4d504682898acc3c2a5509dd",
-          "size": 22696
+          "sha256": "035310efe94fcd6706427698ce808f59aa74a627042ef8b3fccb3eadc00f27c6",
+          "size": 22692
         },
         {
           "path": "install/rollback_drawio_agent_extension.sh",
@@ -360,13 +360,13 @@
         },
         {
           "path": "install/verify_drawio_agent_extension.sh",
-          "sha256": "2fce573c53f9df76245032658d3ff0e76d7e7188d1027c854e03432486f9866c",
+          "sha256": "9daf2bfcbd6f47148345dec3b94075517c3c43988f7746a2c3fa949dc0149d10",
           "size": 17554
         },
         {
           "path": "metadata.md",
-          "sha256": "456ee6d575e3ee71d8d3db811ed446ca45b431463c2c3295a63af8e0feca03e1",
-          "size": 4430
+          "sha256": "813047d40faa169f1889d267ff1d9d441fdce787314df0ea6da8931448cacc8d",
+          "size": 4566
         },
         {
           "path": "references/autolayout.md",
@@ -380,8 +380,8 @@
         },
         {
           "path": "references/diagram-supervisor.md",
-          "sha256": "89392fca03043ddd97438a39f7abb372d710a5dc5fd4162565606a0a5d712e3b",
-          "size": 16831
+          "sha256": "862a00e5f0e04f66bad136003ddfda127a586bb5bbeec46bb44c844ff18f7162",
+          "size": 16876
         },
         {
           "path": "references/diagram-types.md",
@@ -485,13 +485,13 @@
         },
         {
           "path": "scripts/diagram_orchestrator.py",
-          "sha256": "194dc2c9603fa3d951fee2ecb3ecb4eb15696649e52d3a039fe0ca7bc969b49c",
-          "size": 169144
+          "sha256": "f95405c09a28c8c998e2498684e3390586b7557bcfc9f34e254c52047646a2f5",
+          "size": 200819
         },
         {
           "path": "scripts/diagram_supervisor.py",
-          "sha256": "b7f2ae55637f4d1d6a10e66498931d9388fe028567185ed80fc7c59ab9be8220",
-          "size": 114888
+          "sha256": "51240810e6e6ef17c83db3549cc933cba5320fe25ef0ad6ab4484a737c3f8971",
+          "size": 116062
         },
         {
           "path": "scripts/encode_drawio_url.py",
@@ -545,8 +545,8 @@
         },
         {
           "path": "scripts/lifecycle_host_v2.py",
-          "sha256": "88d32e51adeb3798914d8bd1e73dd16e7a5ed2dfc50053591ad8734520000135",
-          "size": 49350
+          "sha256": "4ba8faf2aa5a8ed8980881ba3f8381ef22f81310a3053f2e739bfdf98e814fd4",
+          "size": 50421
         },
         {
           "path": "scripts/pyclasses.py",
@@ -885,13 +885,13 @@
         },
         {
           "path": "tests/test_diagram_orchestrator.py",
-          "sha256": "f99da6f7b7311651bedfb96e86530e216155f01deaf82efe94fc88b8896079c3",
-          "size": 60469
+          "sha256": "920f64fabae770f16eba818e32a0a320b8903f11280bfdb9d91c37587b93d49c",
+          "size": 98235
         },
         {
           "path": "tests/test_diagram_supervisor.py",
-          "sha256": "a1e9fc913467cff5786c9757572610939d06845038b82fddac0443e1ed3b4920",
-          "size": 159773
+          "sha256": "d6b7ad4a11672953ecbc1829bfe965423e994a36d81169d416e52d872bb81d9e",
+          "size": 165577
         },
         {
           "path": "tests/test_finding_fixtures.py",
@@ -936,26 +936,26 @@
       ],
       "format_version": 1,
       "skill": "drawio",
-      "version": "1.24.0-corporate.3",
+      "version": "1.24.0-corporate.4",
       "version_sources": [
         {
           "path": "SKILL.md",
-          "value": "1.24.0-corporate.3"
+          "value": "1.24.0-corporate.4"
         },
         {
           "path": "metadata.md",
-          "value": "1.24.0-corporate.3"
+          "value": "1.24.0-corporate.4"
         },
         {
           "path": "gemini-extension.json",
-          "value": "1.24.0-corporate.3"
+          "value": "1.24.0-corporate.4"
         }
       ]
     },
     {
       "archive": "drawio-skill-agent-extension.zip",
       "files": 176,
-      "sha256": "e6144e415e995f7eea705c70b783e334f37a55d28972bac6caa655f12d569e5e",
+      "sha256": "dd3a5de39689a8c3b2030409e75de224aaf42421c81466dbee30c56ecd7f4499",
       "skill": "drawio",
       "status": "passed"
     }
