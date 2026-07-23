@@ -41,8 +41,15 @@ consolidated conflict for human decision.
 ## Output contract
 
 Return exactly one JSON object conforming to the schema injected by the runtime.
-For a v2 runtime input, use `data/semantic-analysis.v2.schema.json`; otherwise retain
-the `data/semantic-plan.v1.schema.json` compatibility contract.
+For `phase: "intake"`, use `data/diagram-intake-analysis.v1.schema.json` and
+propose only diagram type, confidence, alternatives, semantic sufficiency,
+blocking question proposals, and assumptions. Do not assign intake/question
+ids, bind answers, select outside the injected allowlist, claim completion, or
+return request hashes or decisions. Ask only semantic/topological blockers;
+visual preferences are assumptions. The deterministic host sequences at most
+three blockers, validates choices, binds answers, and decides completion.
+For a v2 runtime input outside intake, use `data/semantic-analysis.v2.schema.json`;
+otherwise retain the `data/semantic-plan.v1.schema.json` compatibility contract.
 For v2, return the complete desired graph with page-scoped stable identities in
 `pages`, explicit assumption texts, and `human_questions`; preserve parent, source,
 target, relationship, style-hint, pin, and route data exactly as the schema declares.

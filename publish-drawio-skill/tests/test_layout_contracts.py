@@ -20,13 +20,24 @@ SHA = "a" * 64
 def valid_intake():
     return {
         "schema_version": 1, "intake_id": "intake-1", "mode": "create",
-        "request_sha256": SHA, "status": "complete", "classification": "flowchart",
+        "request_sha256": SHA, "status": "complete",
+        "classification": {
+            "selected": "flowchart", "source": "explicit",
+            "confidence": 1, "candidates": ["flowchart"],
+        },
         "questions": [], "answers": [], "assumptions": [], "completeness": 1,
     }
 
 
 def valid_intake_analysis():
-    return {"schema_version": 1, "role": "semantic_analyst", "status": "ok", "result": valid_intake()}
+    return {
+        "schema_version": 1, "role": "semantic_analyst", "status": "ok",
+        "result": {
+            "diagram_type": "flowchart", "confidence": 1,
+            "alternatives": [], "sufficient": True,
+            "blocking_questions": [], "assumptions": [],
+        },
+    }
 
 
 def valid_layout_request(mode="create"):
@@ -170,9 +181,19 @@ class LayoutContractTests(unittest.TestCase):
         for number in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(number=number):
                 value = valid_intake_analysis()
-                value["result"]["completeness"] = number
+                value["result"]["confidence"] = number
                 codes = {item["code"] for item in layout_contracts.validate_diagram_intake_analysis(value)}
                 self.assertIn("layout.number.non_finite", codes)
+
+    def test_intake_analysis_rejects_host_owned_state(self):
+        value = valid_intake_analysis()
+        value["result"]["intake_id"] = "model-owned"
+        self.assertTrue(layout_contracts.validate_diagram_intake_analysis(value))
+
+    def test_host_intake_rejects_analysis_only_shape(self):
+        value = valid_intake()
+        value["result"] = valid_intake_analysis()["result"]
+        self.assertTrue(layout_contracts.validate_diagram_intake(value))
 
     def test_public_validator_accepts_mixed_mapping_keys_without_raising(self):
         value = valid_layout_request()

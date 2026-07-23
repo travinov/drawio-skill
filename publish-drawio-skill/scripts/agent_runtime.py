@@ -134,6 +134,8 @@ def role_schema_name(role, payload=None):
     if role == "supervisor":
         return "supervisor-decision.v1.schema.json"
     if role == "semantic_analyst":
+        if isinstance(payload, dict) and payload.get("phase") == "intake":
+            return "diagram-intake-analysis.v1.schema.json"
         return (
             "semantic-analysis.v2.schema.json"
             if version == 2 else "semantic-plan.v1.schema.json"
@@ -201,7 +203,23 @@ def role_output_contract(role, payload):
                 "are diagnostic only."
             )
         sections.extend(["## Host-owned reviewer evidence bindings", reviewer_binding])
-    if role == "semantic_analyst" and contract_version(payload) == 2:
+    if (
+        role == "semantic_analyst"
+        and isinstance(payload, dict)
+        and payload.get("phase") == "intake"
+    ):
+        sections.extend([
+            "## Host-owned intake bindings",
+            (
+                "Propose classification and semantic completeness only. The host "
+                "assigns intake and question ids, validates the diagram-type "
+                "allowlist, caps and sequences questions, binds human answers, "
+                "records accepted assumptions, and decides completion. Do not "
+                "return host ids, request hashes, answers, completeness state, "
+                "decision fields, XML, or tool calls."
+            ),
+        ])
+    elif role == "semantic_analyst" and contract_version(payload) == 2:
         sections.extend([
             "## Host-owned semantic bindings",
             (
@@ -748,7 +766,11 @@ def _schema_contract_diagnostics(schema, parsed):
 
 def validate_role_input(role, payload):
     """Fail closed on versioned role inputs before any isolated model call."""
-    if role == "semantic_analyst" and contract_version(payload) == 2:
+    if (
+        role == "semantic_analyst"
+        and payload.get("phase") != "intake"
+        and contract_version(payload) == 2
+    ):
         from diagram_model_v2 import validate_semantic_analysis_input
 
         diagnostics = [
@@ -816,7 +838,11 @@ def _cross_field_contract_diagnostics(role, payload, parsed):
                 "message": f"role must equal {role!r}",
             }
         )
-    if role == "semantic_analyst" and version == 2:
+    if (
+        role == "semantic_analyst"
+        and payload.get("phase") != "intake"
+        and version == 2
+    ):
         from diagram_model_v2 import validate_semantic_analysis_cross_fields
 
         diagnostics.extend(

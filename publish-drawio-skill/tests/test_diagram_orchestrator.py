@@ -109,6 +109,37 @@ if model == "GigaChat-3-Ultra":
         },
     })
 elif model == "vllm/Qwen3.6-35B-262k":
+    if payload.get("phase") == "intake":
+        ambiguous = "зависимост" in payload["request"].lower()
+        sequential = "последовательными вопросами" in payload["request"].lower()
+        four_questions = "четырьмя вопросами" in payload["request"].lower()
+        has_assumption = "допущением" in payload["request"].lower()
+        blocking = [
+            {
+                "prompt": f"Вопрос {index}?",
+                "reason": "Ответ меняет топологию.",
+                "recommended": {"value": f"answer-{index}", "label": f"Ответ {index}"},
+                "choices": [{"value": f"answer-{index}", "label": f"Ответ {index}"}],
+                "allow_free_text": True,
+            }
+            for index in (
+                (1, 2, 3, 4) if four_questions else (1, 2)
+            )
+        ] if (sequential or four_questions) else []
+        emit({
+            "schema_version": 1,
+            "role": "semantic_analyst",
+            "status": "needs_human" if ambiguous else "ok",
+            "result": {
+                "diagram_type": "dependency" if ambiguous else "generic",
+                "confidence": 0.55 if ambiguous else 0.95,
+                "alternatives": ["c4"] if ambiguous else [],
+                "sufficient": not (sequential or four_questions),
+                "blocking_questions": blocking,
+                "assumptions": ["Использовать встроенный стиль"] if has_assumption else [],
+            },
+        })
+        raise SystemExit(0)
     requires_human = payload["mode"] == "improve"
     emit({
         "schema_version": 2,
@@ -207,6 +238,139 @@ class DiagramOrchestratorTests(unittest.TestCase):
         self.assertTrue(result["command_resolution"]["diagram"].endswith("обработки-заказа-2.drawio"))
         self.assertEqual(result["next_commands"]["short"]["approve"], "/drawio:resume approve")
         self.assertFalse(Path(result["command_resolution"]["diagram"]).exists())
+        intake_path = Path(result["command_resolution"]["intake"])
+        self.assertTrue(intake_path.is_file())
+        self.assertTrue(
+            (Path(result["run_dir"]) / "inputs" / "diagram-intake.json").is_file()
+        )
+        self.assertTrue(
+            (workspace / ".diagram-intake" / result["command_resolution"]["intake_id"]).is_dir()
+        )
+
+    def test_ambiguous_intake_returns_native_selection_without_allocating_run(self):
+        root, workspace, cli = self.create_workspace()
+        pending = self.run_host(
+            "create", "--workspace", workspace, "--cli", cli,
+            "Покажи сервисы и их зависимости",
+        )
+        self.assertEqual(pending.returncode, 0, pending.stderr)
+        result = json.loads(pending.stdout)
+        self.assertEqual(result["status"], "awaiting_input")
+        self.assertEqual(
+            result["classification"]["candidates"], ["c4", "dependency"]
+        )
+        self.assertEqual(
+            result["selection_required"]["question"],
+            result["questions"][0],
+        )
+        self.assertFalse((workspace / ".diagram-runs").exists())
+        intake_dir = (
+            workspace / ".diagram-intake" / result["intake_id"]
+        )
+        self.assertTrue((intake_dir / "roles" / "semantic-intake" / "input.json").is_file())
+        self.assertTrue((intake_dir / "roles" / "semantic-intake" / "output.json").is_file())
+
+    def test_intake_answer_replay_completes_then_allocates_run(self):
+        root, workspace, cli = self.create_workspace()
+        pending = self.run_host(
+            "create", "--workspace", workspace, "--cli", cli,
+            "Покажи сервисы и их зависимости",
+        )
+        self.assertEqual(pending.returncode, 0, pending.stderr)
+        selection = json.loads(pending.stdout)
+        question_id = selection["questions"][0]["question_id"]
+        completed = self.run_host(
+            "create", "--workspace", workspace, "--cli", cli,
+            "--intake-id", selection["intake_id"],
+            "--intake-answer", f"{question_id}=dependency",
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = json.loads(completed.stdout)
+        self.assertIn("run_id", result)
+        completed_intake = (
+            workspace / ".diagram-intake" / f"{selection['intake_id']}.json"
+        )
+        self.assertTrue(completed_intake.is_file())
+        copied = Path(result["run_dir"]) / "inputs" / "diagram-intake.json"
+        self.assertEqual(copied.read_bytes(), completed_intake.read_bytes())
+
+    def test_sequential_replay_accumulates_prior_bound_answers(self):
+        root, workspace, cli = self.create_workspace()
+        first = self.run_host(
+            "create", "--workspace", workspace, "--cli", cli,
+            "Создай generic диаграмму с последовательными вопросами",
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_result = json.loads(first.stdout)
+        first_id = first_result["questions"][0]["question_id"]
+        second = self.run_host(
+            "create", "--workspace", workspace, "--cli", cli,
+            "--intake-id", first_result["intake_id"],
+            "--intake-answer", f"{first_id}=answer-1",
+        )
+        self.assertEqual(second.returncode, 0, second.stderr)
+        second_result = json.loads(second.stdout)
+        second_id = second_result["questions"][0]["question_id"]
+        self.assertNotEqual(first_id, second_id)
+        completed = self.run_host(
+            "create", "--workspace", workspace, "--cli", cli,
+            "--intake-id", first_result["intake_id"],
+            "--intake-answer", f"{second_id}=answer-2",
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("run_id", json.loads(completed.stdout))
+
+    def test_assumption_acceptance_replays_through_bound_answer(self):
+        root, workspace, cli = self.create_workspace()
+        pending = self.run_host(
+            "create", "--workspace", workspace, "--cli", cli,
+            "Создай generic диаграмму с допущением",
+        )
+        self.assertEqual(pending.returncode, 0, pending.stderr)
+        result = json.loads(pending.stdout)
+        question = result["questions"][0]
+        self.assertEqual(question["kind"], "assumption_acceptance")
+        completed = self.run_host(
+            "create", "--workspace", workspace, "--cli", cli,
+            "--intake-id", result["intake_id"],
+            "--intake-answer", f"{question['question_id']}=accept",
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("run_id", json.loads(completed.stdout))
+
+    def test_consolidated_free_text_replay_resolves_gap_without_accepting_it(self):
+        root, workspace, cli = self.create_workspace()
+        pending = self.run_host(
+            "create", "--workspace", workspace, "--cli", cli,
+            "Создай generic диаграмму с четырьмя вопросами",
+        )
+        self.assertEqual(pending.returncode, 0, pending.stderr)
+        result = json.loads(pending.stdout)
+        for index in range(1, 4):
+            question = result["questions"][0]
+            pending = self.run_host(
+                "create", "--workspace", workspace, "--cli", cli,
+                "--intake-id", result["intake_id"],
+                "--intake-answer",
+                f"{question['question_id']}=answer-{index}",
+            )
+            self.assertEqual(pending.returncode, 0, pending.stderr)
+            result = json.loads(pending.stdout)
+        consolidated = result["questions"][0]
+        self.assertEqual(consolidated["kind"], "consolidated")
+        completed = self.run_host(
+            "create", "--workspace", workspace, "--cli", cli,
+            "--intake-id", result["intake_id"],
+            "--intake-answer",
+            f"{consolidated['question_id']}=Возврат к проверке оплаты",
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        completed_result = json.loads(completed.stdout)
+        self.assertIn("run_id", completed_result)
+        intake = json.loads(
+            Path(completed_result["command_resolution"]["intake"]).read_text()
+        )
+        self.assertEqual(intake["assumptions"], [])
 
     def test_create_does_not_discover_workspace_openspec_as_source(self):
         root, workspace, cli = self.create_workspace()
@@ -1820,6 +1984,12 @@ Route approved payments to settlement.
             "    print('26.5.17-test')\n"
             "    raise SystemExit(0)\n"
             "model=sys.argv[sys.argv.index('--model')+1]\n"
+            "payload=json.loads(sys.stdin.read())\n"
+            "if model == 'vllm/Qwen3.6-35B-262k' and payload.get('phase') == 'intake':\n"
+            "    result={'schema_version':1,'role':'semantic_analyst','status':'ok','result':{'diagram_type':'generic','confidence':0.95,'alternatives':[],'sufficient':True,'blocking_questions':[],'assumptions':[]}}\n"
+            "    encoded=json.dumps(result)\n"
+            "    print(json.dumps([{'type':'system','subtype':'init','model':model,'qwen_code_version':'0.13.1','agents':[],'slash_commands':[]},{'type':'assistant','message':{'model':model,'content':[{'type':'text','text':encoded}]}},{'type':'result','subtype':'success','is_error':False,'result':encoded,'stats':{'models':{model:{'api':{'totalRequests':1}}}}}]))\n"
+            "    raise SystemExit(0)\n"
             "print(json.dumps([\n"
             "  {'type':'system','subtype':'init','model':model,'qwen_code_version':'0.13.1','agents':[],'slash_commands':[]},\n"
             "  {'type':'assistant','message':{'model':model,'content':[{'type':'text','text':'bounded failure'}]}},\n"
@@ -1913,8 +2083,11 @@ Route approved payments to settlement.
             "elif model == 'vllm/DeepSeek-V4-Flash-262k' and 'recovered-turn-limit' in payload.get('request', ''):\n"
             "    emit_stream(model, {'schema_version': 1, 'role': 'supervisor', 'status': 'ok', 'result': {'action': 'create', 'reason': 'fallback approval', 'required_roles': ['supervisor', 'semantic_analyst', 'reviewer'], 'max_iterations': 1}})\n"
             "elif model == 'vllm/Qwen3.6-35B-262k':\n"
-            "    requires_human = payload['mode'] == 'improve'\n"
-            "    emit_stream(model, {'schema_version': 2, 'role': 'semantic_analyst', 'status': 'needs_human' if requires_human else 'ok', 'result': {'mode': payload['mode'], 'diagram_type': 'generic', 'title': f\"Test {payload['mode']} analysis\", 'direction': 'LR', 'pages': [{'page_id': 'page-1', 'name': 'Page 1', 'nodes': [{'stable_identity': {'page_id': 'page-1', 'cell_id': 'node-a'}, 'label': 'A', 'semantic_type': 'task', 'parent': None, 'style_hint': None}, {'stable_identity': {'page_id': 'page-1', 'cell_id': 'node-b'}, 'label': 'B', 'semantic_type': 'task', 'parent': None, 'style_hint': None}], 'edges': []}], 'assumptions': [], 'requires_human': requires_human, 'human_questions': ['Add approval branch'] if requires_human else []}})\n"
+            "    if payload.get('phase') == 'intake':\n"
+            "        emit_stream(model, {'schema_version': 1, 'role': 'semantic_analyst', 'status': 'ok', 'result': {'diagram_type': 'generic', 'confidence': 0.95, 'alternatives': [], 'sufficient': True, 'blocking_questions': [], 'assumptions': []}})\n"
+            "    else:\n"
+            "        requires_human = payload['mode'] == 'improve'\n"
+            "        emit_stream(model, {'schema_version': 2, 'role': 'semantic_analyst', 'status': 'needs_human' if requires_human else 'ok', 'result': {'mode': payload['mode'], 'diagram_type': 'generic', 'title': f\"Test {payload['mode']} analysis\", 'direction': 'LR', 'pages': [{'page_id': 'page-1', 'name': 'Page 1', 'nodes': [{'stable_identity': {'page_id': 'page-1', 'cell_id': 'node-a'}, 'label': 'A', 'semantic_type': 'task', 'parent': None, 'style_hint': None}, {'stable_identity': {'page_id': 'page-1', 'cell_id': 'node-b'}, 'label': 'B', 'semantic_type': 'task', 'parent': None, 'style_hint': None}], 'edges': []}], 'assumptions': [], 'requires_human': requires_human, 'human_questions': ['Add approval branch'] if requires_human else []}})\n"
             "elif model == 'vllm/DeepSeek-V4-Flash-262k':\n"
             "    candidate = payload.get('candidate')\n"
             "    if isinstance(candidate, dict) and isinstance(candidate.get('artifact'), dict):\n"

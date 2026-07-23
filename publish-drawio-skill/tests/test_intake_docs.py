@@ -18,13 +18,23 @@ class DiagramIntakeDocumentationTests(unittest.TestCase):
         self.assertIn("references/diagram-intake.md", skill)
         self.assertIn("confirmed diagram brief", skill)
 
-    def test_intake_reference_defines_matrix_and_free_form_question(self):
+    def test_intake_reference_defines_bounded_semantic_questions(self):
         intake = read_text("references", "diagram-intake.md")
         self.assertIn("question matrix", intake)
         self.assertIn("not a fixed questionnaire", intake)
-        self.assertIn("at most 5 questions", intake)
-        self.assertIn("optional free-form visual preference question", intake)
-        self.assertIn("If the user does not answer", intake)
+        self.assertIn("maximum three blocking semantic questions", intake)
+        self.assertIn("one question per turn", intake)
+        self.assertIn("non-blocking visual", intake)
+        self.assertIn("assumptions", intake)
+        self.assertNotIn("at most 5 questions", intake)
+        self.assertNotIn("Always end non-trivial intake", intake)
+
+    def test_intake_reference_defines_type_and_run_gates(self):
+        intake = read_text("references", "diagram-intake.md")
+        self.assertIn("explicit type skips confirmation", intake)
+        self.assertIn("ambiguous type", intake)
+        self.assertIn("native", intake)
+        self.assertIn("full run starts only after", intake)
 
     def test_intake_reference_covers_major_diagram_routes(self):
         intake = read_text("references", "diagram-intake.md")

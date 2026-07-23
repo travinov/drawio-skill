@@ -4,9 +4,9 @@ Use this before generation when the user's request is broad, ambiguous, or
 non-trivial. The agent's job is to turn natural language into a confirmed
 diagram brief, not to generate the diagram.
 
-The intake uses a question matrix, not a fixed questionnaire. Generate only the
-smallest set of questions that removes high-impact ambiguity. Do not ask about
-facts already present in the user's request.
+The intake uses a question matrix and is not a fixed questionnaire. Generate
+only the smallest set of questions that removes high-impact ambiguity. Do not
+ask about facts already present in the user's request.
 
 ## Output
 
@@ -35,20 +35,24 @@ conflicts to the consolidated decision rule in `references/diagram-supervisor.md
 
 ## Question limits
 
-Ask at most 3 questions for ordinary requests and at most 5 questions for
-complex architecture, process, regulatory, or multi-system diagrams.
+Use a maximum three blocking semantic questions and ask one question per turn.
+Only a missing fact that changes nodes, boundaries, branches, endpoints, or
+required relationships is blocking. After three answered blockers, combine all
+remaining semantic gaps into one consolidated free-text request. The user may
+instead explicitly accept every remaining host-approved assumption.
 
-Always end non-trivial intake with one optional free-form visual preference question when visual/layout preferences are not already specified:
+There is no mandatory visual-preference question; non-blocking visual choices
+become assumptions and require explicit acceptance before the intake completes.
+The host, not Semantic Analyst, assigns stable question ids, validates choices
+and diagram types, binds answers, enforces the cap, and decides completion.
 
-```text
-Есть ли дополнительные пожелания к виду диаграммы?
-Например: не разносить роли по дорожкам, а выделить их цветом; сгруппировать
-шаги по этапам; сделать схему компактнее; показать артефакты отдельными
-блоками; использовать корпоративный стиль.
-```
+An explicit type skips confirmation. A type preserved from existing diagram
+evidence also skips confirmation. An ambiguous type uses native selection with
+a reason, recommended option, stable choices, and free-text support.
 
-If the user does not answer, proceed with conservative defaults and record the
-assumption in the confirmed brief.
+The full run starts only after the intake is complete. Until then, immutable
+input/output evidence remains under `.diagram-intake/<intake-id>/`; the host
+must not allocate `.diagram-runs/<run-id>`.
 
 ## Classification
 

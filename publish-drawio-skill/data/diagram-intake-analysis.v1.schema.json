@@ -1,18 +1,73 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agents365.local/drawio-skill/schemas/diagram-intake-analysis.v1.schema.json",
-  "title": "Diagram intake analysis v1", "type": "object",
-  "required": ["schema_version", "role", "status", "result"], "additionalProperties": false,
+  "title": "Semantic Analyst intake proposal v1",
+  "type": "object",
+  "required": ["schema_version", "role", "status", "result"],
+  "additionalProperties": false,
   "properties": {
-    "schema_version": {"const": 1}, "role": {"const": "semantic_analyst"},
-    "status": {"enum": ["ok", "needs_human", "failed"]}, "result": {"$ref": "#/$defs/result"}
+    "schema_version": {"const": 1},
+    "role": {"const": "semantic_analyst"},
+    "status": {"enum": ["ok", "needs_human", "failed"]},
+    "result": {"$ref": "#/$defs/result"}
   },
   "$defs": {
-    "id": {"type": "string", "minLength": 1}, "sha": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-    "diagramType": {"enum": ["flowchart", "bpmn", "c4", "er", "dependency", "sequence", "roadmap", "git-flow", "generic"]},
-    "question": {"type": "object", "required": ["question_id", "text"], "additionalProperties": false, "properties": {"question_id": {"$ref": "#/$defs/id"}, "text": {"$ref": "#/$defs/id"}}},
-    "answer": {"type": "object", "required": ["question_id", "text"], "additionalProperties": false, "properties": {"question_id": {"$ref": "#/$defs/id"}, "text": {"type": "string"}}},
-    "note": {"type": "object", "required": ["note_id", "text"], "additionalProperties": false, "properties": {"note_id": {"$ref": "#/$defs/id"}, "text": {"$ref": "#/$defs/id"}}},
-    "result": {"type": "object", "required": ["schema_version", "intake_id", "mode", "request_sha256", "status", "classification", "questions", "answers", "assumptions", "completeness"], "additionalProperties": false, "properties": {"schema_version": {"const": 1}, "intake_id": {"$ref": "#/$defs/id"}, "mode": {"enum": ["create", "preserve", "local_reflow", "full_reflow"]}, "request_sha256": {"$ref": "#/$defs/sha"}, "status": {"enum": ["pending", "complete", "needs_human"]}, "classification": {"$ref": "#/$defs/diagramType"}, "questions": {"type": "array", "items": {"$ref": "#/$defs/question"}}, "answers": {"type": "array", "items": {"$ref": "#/$defs/answer"}}, "assumptions": {"type": "array", "items": {"$ref": "#/$defs/note"}}, "completeness": {"type": "number", "minimum": 0, "maximum": 1}}}
+    "diagramType": {
+      "enum": [
+        "flowchart", "bpmn", "c4", "er", "dependency",
+        "sequence", "roadmap", "git-flow", "generic"
+      ]
+    },
+    "option": {
+      "type": "object",
+      "required": ["value", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "value": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1}
+      }
+    },
+    "questionProposal": {
+      "type": "object",
+      "required": ["prompt", "reason", "recommended", "choices", "allow_free_text"],
+      "additionalProperties": false,
+      "properties": {
+        "prompt": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "recommended": {"$ref": "#/$defs/option"},
+        "choices": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/option"}
+        },
+        "allow_free_text": {"const": true}
+      }
+    },
+    "result": {
+      "type": "object",
+      "required": [
+        "diagram_type", "confidence", "alternatives", "sufficient",
+        "blocking_questions", "assumptions"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "diagram_type": {"$ref": "#/$defs/diagramType"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "alternatives": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/diagramType"}
+        },
+        "sufficient": {"type": "boolean"},
+        "blocking_questions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/questionProposal"}
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    }
   }
 }

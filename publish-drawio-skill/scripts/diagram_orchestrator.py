@@ -25,7 +25,9 @@ import jsonschema
 import agent_runtime
 import command_ux
 import diagram_host
+import diagram_intake
 import diagram_supervisor as supervisor
+import layout_contracts
 import lifecycle_host_v2 as lifecycle_v2
 import renderer_adapters
 from diagram_model_v2 import (
@@ -54,6 +56,7 @@ from source_bundle_v2 import source_record
 
 ROOT = Path(__file__).resolve().parent.parent
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+INTAKE_ID_RE = re.compile(r"^intake-[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
 WORKFLOW_FILE = "workflow.json"
 CHECKPOINT_FILE = "pending-checkpoint.json"
 DEFAULT_MAX_ITERATIONS = 4
@@ -152,6 +155,181 @@ def run_dir_for(workspace, run_id):
     if not _inside(result, workspace):
         raise supervisor.SupervisorError("run directory resolves outside the workspace")
     return result
+
+
+def intake_dir_for(workspace, intake_id):
+    if not INTAKE_ID_RE.fullmatch(intake_id):
+        raise supervisor.SupervisorError("intake-id must be an opaque intake-* slug")
+    result = (Path(workspace) / ".diagram-intake" / intake_id).resolve()
+    if not _inside(result, workspace):
+        raise supervisor.SupervisorError("intake directory resolves outside the workspace")
+    return result
+
+
+def _intake_request_sha256(request):
+    return hashlib.sha256(str(request).encode("utf-8")).hexdigest()
+
+
+def _intake_existing_evidence(mode, diagram):
+    if mode != "improve":
+        return None
+    path = Path(diagram).resolve()
+    evidence = diagram_intake.infer_existing_type(path, None)
+    try:
+        evidence["diagram_spec"] = supervisor.make_spec(path, [])
+    except (OSError, ValueError, ET.ParseError, supervisor.SupervisorError):
+        evidence["diagram_spec"] = None
+    return evidence
+
+
+def load_intake_request(workspace, intake_id, *, mode=None):
+    """Load only a bound host request for replay before normal command parsing."""
+    directory = intake_dir_for(normalize_workspace(workspace), intake_id)
+    path = directory / "request.json"
+    if not path.is_file():
+        raise supervisor.SupervisorError(f"diagram intake was not found: {intake_id}")
+    value = supervisor.load_json(path)
+    if mode is not None and value.get("mode") != mode:
+        raise supervisor.SupervisorError("intake mode differs from the replayed command")
+    if value.get("intake_id") != intake_id:
+        raise supervisor.SupervisorError("intake request id binding is invalid")
+    return value
+
+
+def run_preflight_intake(
+    *,
+    mode,
+    diagram,
+    request,
+    workspace,
+    cli,
+    intake_id=None,
+    answers=(),
+    accept_assumptions=False,
+    timeout=600,
+):
+    """Run or resume isolated Semantic Analyst intake without allocating a run."""
+    workspace = normalize_workspace(workspace)
+    diagram = normalize_drawio(
+        diagram, workspace, must_exist=(mode == "improve")
+    )
+    intake_id = intake_id or utc_slug("intake")
+    if not intake_id.startswith("intake-"):
+        intake_id = f"intake-{intake_id}"
+    intake_dir = intake_dir_for(workspace, intake_id)
+    request_sha256 = _intake_request_sha256(request)
+    request_path = intake_dir / "request.json"
+    existing_evidence = _intake_existing_evidence(mode, diagram)
+    request_value = {
+        "schema_version": 1,
+        "intake_id": intake_id,
+        "mode": mode,
+        "request": request,
+        "request_sha256": request_sha256,
+        "diagram": str(diagram),
+        "existing_evidence": existing_evidence,
+    }
+    if request_path.is_file():
+        persisted_request = supervisor.load_json(request_path)
+        for field in ("intake_id", "mode", "request_sha256", "diagram"):
+            if persisted_request.get(field) != request_value[field]:
+                raise supervisor.SupervisorError(
+                    f"intake replay changed immutable {field}"
+                )
+        request_value = persisted_request
+        existing_evidence = persisted_request.get("existing_evidence")
+    else:
+        supervisor.write_json(request_path, request_value)
+
+    accumulated_answers = []
+    answer_values = {}
+    prior_state_path = intake_dir / "state.json"
+    if prior_state_path.is_file():
+        prior_state = supervisor.load_json(prior_state_path)
+        if (
+            prior_state.get("intake_id") != intake_id
+            or prior_state.get("request_sha256") != request_sha256
+            or prior_state.get("mode") != mode
+        ):
+            raise supervisor.SupervisorError(
+                "persisted intake state binding is invalid"
+            )
+        accumulated_answers.extend(prior_state.get("answers", []))
+    accumulated_answers.extend(list(answers or []))
+    bound_answers = []
+    for answer in accumulated_answers:
+        question_id = answer["question_id"]
+        text = answer["text"]
+        if question_id in answer_values and answer_values[question_id] != text:
+            raise supervisor.SupervisorError(
+                f"intake replay changed the answer for {question_id}"
+            )
+        if question_id not in answer_values:
+            bound_answers.append({"question_id": question_id, "text": text})
+        answer_values[question_id] = text
+
+    role_dir = intake_dir / "roles" / "semantic-intake"
+    role_input = role_dir / "input.json"
+    role_output = role_dir / "output.json"
+    if not role_output.is_file():
+        payload = {
+            "schema_version": 1,
+            "phase": "intake",
+            "mode": mode,
+            "request": request,
+            "diagram_types": list(diagram_intake.DIAGRAM_TYPES),
+            "existing_evidence": existing_evidence,
+            "answers": [],
+        }
+        supervisor.write_json(role_input, payload)
+        agent_runtime.invoke_role(
+            "semantic_analyst",
+            role_input,
+            role_output,
+            cli=str(cli),
+            run_dir=None,
+            timeout=timeout,
+            cwd=workspace,
+        )
+    analysis_envelope = supervisor.load_json(role_output)
+    layout_contracts.require_diagram_intake_analysis(analysis_envelope)
+    state = diagram_intake.advance(
+        request=request,
+        mode=mode,
+        existing_evidence=existing_evidence,
+        answers=bound_answers,
+        analysis=analysis_envelope["result"],
+        accept_assumptions=accept_assumptions,
+    )
+    state.update({
+        "intake_id": intake_id,
+        "request_sha256": request_sha256,
+    })
+    layout_contracts.require_diagram_intake(state)
+    turns_dir = intake_dir / "turns"
+    turn_number = 1
+    if turns_dir.is_dir():
+        turn_number += sum(1 for path in turns_dir.glob("*.json") if path.is_file())
+    turn_path = turns_dir / f"{turn_number:03d}.json"
+    supervisor.write_json(turn_path, state)
+    supervisor.write_json(intake_dir / "state.json", state)
+    completed_path = None
+    if state["status"] == "complete":
+        completed_path = workspace / ".diagram-intake" / f"{intake_id}.json"
+        if completed_path.is_file():
+            previous = supervisor.load_json(completed_path)
+            if previous != state:
+                raise supervisor.SupervisorError(
+                    "completed intake replay differs from persisted evidence"
+                )
+        else:
+            supervisor.write_json(completed_path, state)
+    return state, completed_path, {
+        "request": str(request_path.resolve()),
+        "input": str(role_input.resolve()),
+        "output": str(role_output.resolve()),
+        "turn": str(turn_path.resolve()),
+    }
 
 
 def resolve_run(reference, workspace):
@@ -3081,7 +3259,7 @@ def repair_loop(run_dir, workflow, cli, timeout, *, already_patching=False):
 def _start_run_impl(
     mode, diagram, request, workspace, cli, *, run_id, timeout=600,
     max_iterations=DEFAULT_MAX_ITERATIONS, review_handoff=None,
-    lock_recoveries=(), explicit_documents=(),
+    lock_recoveries=(), explicit_documents=(), intake_path=None,
 ):
     workspace = normalize_workspace(workspace)
     source = normalize_drawio(diagram, workspace, must_exist=(mode == "improve"))
@@ -3100,6 +3278,29 @@ def _start_run_impl(
         raise supervisor.SupervisorError("diagram request must not be empty")
     request_path = run_dir / "inputs" / "request.json"
     supervisor.write_json(request_path, {"schema_version": 1, "mode": mode, "diagram": str(source), "request": request})
+    if intake_path is not None:
+        intake_path = Path(intake_path).resolve()
+        if not intake_path.is_file() or not _inside(intake_path, workspace):
+            raise supervisor.SupervisorError(
+                "completed intake evidence must be a file inside the workspace"
+            )
+        intake_value = supervisor.load_json(intake_path)
+        layout_contracts.require_diagram_intake(intake_value)
+        if (
+            intake_value["status"] != "complete"
+            or intake_value["mode"] != mode
+            or intake_value["request_sha256"] != _intake_request_sha256(request)
+        ):
+            raise supervisor.SupervisorError(
+                "completed intake is not bound to this run request"
+            )
+        run_intake_path = run_dir / "inputs" / "diagram-intake.json"
+        atomic_write_bytes(run_intake_path, intake_path.read_bytes())
+        workflow["diagram_intake"] = {
+            "intake_id": intake_value["intake_id"],
+            **_relative_file(run_dir, run_intake_path),
+            "source_path": str(intake_path),
+        }
     supervisor.append_event(run_dir, "run_created", {"mode": mode, "request": str(request_path), "request_sha256": supervisor.sha256_file(request_path)})
     write_workflow(run_dir, workflow)
     lifecycle_v2.initialize(
@@ -3375,7 +3576,7 @@ def _start_run_impl(
 def start_run(
     mode, diagram, request, workspace, cli, *, run_id=None, timeout=600,
     max_iterations=DEFAULT_MAX_ITERATIONS, review_handoff=None,
-    explicit_documents=(),
+    explicit_documents=(), intake_path=None,
 ):
     normalized_workspace = normalize_workspace(workspace)
     # Reject invalid/existing targets before creating the lock/run hierarchy.
@@ -3393,6 +3594,7 @@ def start_run(
                     review_handoff=review_handoff,
                     lock_recoveries=run_lock.recovery_records,
                     explicit_documents=explicit_documents,
+                    intake_path=intake_path,
                 )
             except Exception as exc:
                 if run_dir.is_dir():
@@ -4733,6 +4935,9 @@ def main():
         cmd.add_argument("--workspace", default=str(Path.cwd()))
         cmd.add_argument("--cli", default=str(Path.home() / ".gigacode/bin/gigacode"))
         cmd.add_argument("--run-id")
+        cmd.add_argument("--intake-id")
+        cmd.add_argument("--intake-answer", action="append", default=[])
+        cmd.add_argument("--accept-intake-assumptions", action="store_true")
         cmd.add_argument("--timeout", type=int, default=600)
         cmd.add_argument("--max-iterations", type=int, default=DEFAULT_MAX_ITERATIONS)
         if name == "create":
@@ -4752,6 +4957,14 @@ def main():
     try:
         args = parser.parse_args(command_ux.argv_with_qwen_command_args())
         if args.command in {"create", "improve"}:
+            intake_replay = None
+            if args.intake_id and not args.input and args.request is None:
+                intake_replay = load_intake_request(
+                    args.workspace, args.intake_id, mode=args.command
+                )
+                args.request = intake_replay["request"]
+                if args.diagram is None:
+                    args.diagram = intake_replay["diagram"]
             diagram, request = command_ux.split_diagram_request(
                 args.input, diagram=args.diagram, request=args.request,
                 request_required=args.command == "create",
@@ -4774,7 +4987,9 @@ def main():
                     args.workspace, diagram=diagram, request=request,
                 )
                 explicit_documents = []
-            if args.request is not None:
+            if intake_replay is not None:
+                request_source = "intake_replay"
+            elif args.request is not None:
                 request_source = "explicit_flag"
             elif request_was_supplied:
                 request_source = "conversational_text"
@@ -4791,13 +5006,47 @@ def main():
                 resolution["review_handoff"] = handoff
             if explicit_documents:
                 resolution["renderer_source"] = str(renderer_source_path)
-            result = start_run(
-                args.command, resolved_diagram, request, args.workspace, args.cli,
-                run_id=args.run_id, timeout=args.timeout, max_iterations=args.max_iterations,
-                review_handoff=handoff,
-                explicit_documents=explicit_documents,
+            intake_answers = command_ux.parse_intake_answers(args.intake_answer)
+            intake_state, completed_intake_path, intake_evidence = run_preflight_intake(
+                mode=args.command,
+                diagram=resolved_diagram,
+                request=request,
+                workspace=args.workspace,
+                cli=args.cli,
+                intake_id=args.intake_id,
+                answers=intake_answers,
+                accept_assumptions=args.accept_intake_assumptions,
+                timeout=args.timeout,
             )
-            result = add_command_guidance(result, resolution)
+            if intake_state["status"] != "complete":
+                question = intake_state["questions"][0]
+                result = command_ux.intake_awaiting_input(
+                    intake_id=intake_state["intake_id"],
+                    question=question,
+                    command=args.command,
+                )
+                result.update({
+                    "mode": args.command,
+                    "classification": intake_state["classification"],
+                    "questions": intake_state["questions"],
+                    "answers": intake_state["answers"],
+                    "assumptions": intake_state["assumptions"],
+                    "completeness": intake_state["completeness"],
+                    "intake_evidence": intake_evidence,
+                    "command_resolution": resolution,
+                })
+            else:
+                result = start_run(
+                    args.command, resolved_diagram, request, args.workspace, args.cli,
+                    run_id=args.run_id, timeout=args.timeout,
+                    max_iterations=args.max_iterations,
+                    review_handoff=handoff,
+                    explicit_documents=explicit_documents,
+                    intake_path=completed_intake_path,
+                )
+                resolution["intake_id"] = intake_state["intake_id"]
+                resolution["intake"] = str(completed_intake_path)
+                result = add_command_guidance(result, resolution)
         elif args.command == "resume":
             run, decision, feedback = command_ux.parse_resume(
                 args.input, run=args.run, decision=args.decision, feedback=args.feedback,

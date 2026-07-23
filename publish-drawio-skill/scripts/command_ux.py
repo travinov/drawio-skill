@@ -87,6 +87,88 @@ def quote_command_value(value):
     return shlex.quote(str(value))
 
 
+def parse_intake_answers(values):
+    """Parse repeatable hidden answer flags without executing command text."""
+    answers = []
+    by_id = {}
+    for raw in values or []:
+        value = str(raw)
+        try:
+            parsed = json.loads(value) if value.lstrip().startswith("{") else None
+        except json.JSONDecodeError as exc:
+            raise CommandUXError(
+                "intake_answer_invalid",
+                f"intake answer is not valid JSON: {exc}",
+                hint='use "question-id=answer" or a JSON object',
+            ) from exc
+        if parsed is None:
+            if "=" not in value:
+                raise CommandUXError(
+                    "intake_answer_invalid",
+                    "intake answer must bind a question id with =",
+                    hint='--intake-answer "question-<id>=answer"',
+                )
+            question_id, text = value.split("=", 1)
+            parsed = {"question_id": question_id, "text": text}
+        if not isinstance(parsed, dict) or set(parsed) != {"question_id", "text"}:
+            raise CommandUXError(
+                "intake_answer_invalid",
+                "intake answer JSON must contain only question_id and text",
+            )
+        question_id = parsed.get("question_id")
+        text = parsed.get("text")
+        if (
+            not isinstance(question_id, str)
+            or not re.fullmatch(r"question-[a-f0-9]{20}", question_id)
+            or not isinstance(text, str)
+            or not text.strip()
+        ):
+            raise CommandUXError(
+                "intake_answer_invalid",
+                "intake answer requires a stable question id and non-empty text",
+            )
+        normalized = {"question_id": question_id, "text": text.strip()}
+        if question_id in by_id and by_id[question_id] != normalized["text"]:
+            raise CommandUXError(
+                "intake_answer_conflict",
+                f"conflicting answers supplied for {question_id}",
+            )
+        if question_id not in by_id:
+            answers.append(normalized)
+        by_id[question_id] = normalized["text"]
+    return answers
+
+
+def intake_awaiting_input(*, intake_id, question, command):
+    """Return one native-selection instruction; headless callers use it unchanged."""
+    if command not in {"create", "improve"}:
+        raise CommandUXError("intake_command_invalid", f"unsupported intake command: {command}")
+    answer_binding = f"{question['question_id']}=<answer>"
+    replay = (
+        f"/drawio:{command} --intake-id {quote_command_value(intake_id)} "
+        f"--intake-answer {quote_command_value(answer_binding)}"
+    )
+    accept_command = (
+        f"/drawio:{command} --intake-id {quote_command_value(intake_id)} "
+        "--accept-intake-assumptions"
+    )
+    return {
+        "schema_version": 1,
+        "status": "awaiting_input",
+        "intake_id": intake_id,
+        "selection_required": {
+            "question": question,
+            "replay": {
+                "intake_id": intake_id,
+                "answer_flag": "--intake-answer",
+                "accept_assumptions_flag": "--accept-intake-assumptions",
+                "command": replay,
+                "accept_assumptions_command": accept_command,
+            },
+        },
+    }
+
+
 def workspace_path(workspace):
     path = Path(workspace).expanduser().resolve()
     if not path.is_dir():
