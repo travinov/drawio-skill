@@ -109,6 +109,90 @@ def _canonical_points(points: Sequence[Mapping[str, Any]]) -> list[tuple[float, 
     return canonical
 
 
+def _edge_label_geometry(
+    label_bounds: Mapping[str, Any],
+    points: Sequence[tuple[float, float]],
+) -> tuple[float, float, tuple[float, float]]:
+    """Convert absolute label bounds to draw.io relative edge geometry.
+
+    ``mxGeometry.x`` is normalized arclength (-1 at source, +1 at target);
+    ``mxGeometry.y`` is signed perpendicular distance from the selected route
+    segment. The offset point carries only the residual world-space delta that
+    the relative representation cannot encode (normally exactly zero).
+    """
+    if len(points) < 2:
+        raise LayoutRenderError("edge label projection requires a non-empty route")
+    center = (
+        float(label_bounds["x"]) + float(label_bounds["width"]) / 2.0,
+        float(label_bounds["y"]) + float(label_bounds["height"]) / 2.0,
+    )
+    segments: list[dict[str, float | int]] = []
+    prefix = 0.0
+    for index, (start, end) in enumerate(zip(points, points[1:])):
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        length = abs(dx) + abs(dy)
+        if length <= 0:
+            raise LayoutRenderError("edge label projection cannot use a zero-length segment")
+        if dx != 0 and dy != 0:
+            raise LayoutRenderError("edge label projection requires a Manhattan route")
+        length_squared = dx * dx + dy * dy
+        parameter = (
+            (center[0] - start[0]) * dx + (center[1] - start[1]) * dy
+        ) / length_squared
+        parameter = max(0.0, min(1.0, parameter))
+        projected_x = start[0] + parameter * dx
+        projected_y = start[1] + parameter * dy
+        distance_squared = (
+            (center[0] - projected_x) ** 2 + (center[1] - projected_y) ** 2
+        )
+        segments.append(
+            {
+                "index": index,
+                "distance_squared": distance_squared,
+                "prefix": prefix,
+                "length": length,
+                "parameter": parameter,
+                "projected_x": projected_x,
+                "projected_y": projected_y,
+                "dx": dx,
+                "dy": dy,
+            }
+        )
+        prefix += length
+    if prefix <= 0 or not segments:
+        raise LayoutRenderError("edge label projection requires positive route length")
+
+    # Segment index is the stable tie-break for bends, loops and crossings.
+    selected = min(
+        segments,
+        key=lambda segment: (
+            float(segment["distance_squared"]),
+            int(segment["index"]),
+        ),
+    )
+    length = float(selected["length"])
+    unit_x = float(selected["dx"]) / length
+    unit_y = float(selected["dy"]) / length
+    normal_x, normal_y = -unit_y, unit_x
+    delta_x = center[0] - float(selected["projected_x"])
+    delta_y = center[1] - float(selected["projected_y"])
+    perpendicular = delta_x * normal_x + delta_y * normal_y
+    represented_x = float(selected["projected_x"]) + normal_x * perpendicular
+    represented_y = float(selected["projected_y"]) + normal_y * perpendicular
+    residual_x = center[0] - represented_x
+    residual_y = center[1] - represented_y
+    if abs(residual_x) < 1e-12:
+        residual_x = 0.0
+    if abs(residual_y) < 1e-12:
+        residual_y = 0.0
+    arclength = float(selected["prefix"]) + float(selected["parameter"]) * length
+    relative = 2.0 * arclength / prefix - 1.0
+    if relative < -1.0 - 1e-12 or relative > 1.0 + 1e-12:
+        raise LayoutRenderError("edge label projection is outside the representable route")
+    relative = max(-1.0, min(1.0, relative))
+    return relative, perpendicular, (residual_x, residual_y)
+
+
 def _unique_index(
     values: Sequence[Mapping[str, Any]], key: str, *, description: str
 ) -> dict[str, Mapping[str, Any]]:
@@ -334,28 +418,33 @@ def _render_page(
             for key in ("x", "y", "width", "height"):
                 attributes[f"data-label-{key}"] = _number(label_bounds[key])
         cell = ET.SubElement(root, "mxCell", attributes)
+        canonical_points = _canonical_points(route["waypoints"])
         geometry_attributes = {"relative": "1", "as": "geometry"}
+        label_offset = None
         if label_bounds is not None:
+            relative_x, perpendicular_y, label_offset = _edge_label_geometry(
+                label_bounds, canonical_points
+            )
             geometry_attributes.update(
                 {
-                    "x": "0",
-                    "y": "0",
+                    "x": _number(relative_x),
+                    "y": _number(perpendicular_y),
                     "width": _number(label_bounds["width"]),
                     "height": _number(label_bounds["height"]),
                 }
             )
         geometry = ET.SubElement(cell, "mxGeometry", geometry_attributes)
         points = ET.SubElement(geometry, "Array", {"as": "points"})
-        for x, y in _canonical_points(route["waypoints"]):
+        for x, y in canonical_points:
             ET.SubElement(points, "mxPoint", {"x": _number(x), "y": _number(y)})
-        if label_bounds is not None:
+        if label_offset is not None:
             ET.SubElement(
                 geometry,
                 "mxPoint",
                 {
                     "as": "offset",
-                    "x": _number(label_bounds["x"]),
-                    "y": _number(label_bounds["y"]),
+                    "x": _number(label_offset[0]),
+                    "y": _number(label_offset[1]),
                 },
             )
 

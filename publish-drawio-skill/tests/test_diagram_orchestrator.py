@@ -246,6 +246,13 @@ class DiagramOrchestratorTests(unittest.TestCase):
         self.assertTrue(
             (workspace / ".diagram-intake" / result["command_resolution"]["intake_id"]).is_dir()
         )
+        workflow = json.loads(
+            (Path(result["run_dir"]) / "workflow.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            workflow["renderer_adapter"]["options"],
+            {"backend": "legacy-generic-v2", "reflow": "full"},
+        )
 
     def test_ambiguous_intake_returns_native_selection_without_allocating_run(self):
         root, workspace, cli = self.create_workspace()

@@ -3455,8 +3455,10 @@ def _start_run_impl(
             generic_renderer=render_generic, timeout=timeout,
         )
         workflow["renderer_adapter"] = {
-            **adapter_run.record(),
             **adapter_input.record(),
+            # Selection evidence owns source binding/fallback provenance;
+            # the actual run owns invoked options, command and output.
+            **adapter_run.record(),
             "requested_semantic_diagram_type": semantic_analysis["result"]["diagram_type"],
         }
         lifecycle_v2.transition(

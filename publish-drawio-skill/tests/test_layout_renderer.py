@@ -232,9 +232,44 @@ class LayoutRendererTests(unittest.TestCase):
                 {key: edge.get(f"data-label-{key}") for key in ("x", "y", "width", "height")},
                 {"x": "390", "y": "185", "width": "70", "height": "20"},
             )
-            self.assertEqual((geometry.get("width"), geometry.get("height")), ("70", "20"))
+            self.assertEqual(
+                {
+                    key: geometry.get(key)
+                    for key in ("x", "y", "relative", "width", "height")
+                },
+                {
+                    "x": "0.3125",
+                    "y": "15",
+                    "relative": "1",
+                    "width": "70",
+                    "height": "20",
+                },
+            )
             offset = geometry.find("mxPoint[@as='offset']")
-            self.assertEqual((offset.get("x"), offset.get("y")), ("390", "185"))
+            self.assertEqual((offset.get("x"), offset.get("y")), ("0", "0"))
+
+            import diagram_supervisor
+
+            specification = diagram_supervisor.make_spec(output)
+            edge_spec = next(
+                item
+                for page in specification["pages"]
+                for item in page["cells"]
+                if page["id"] == "page-a" and item["id"] == "edge"
+            )
+            self.assertEqual(
+                edge_spec["geometry"]["label_offset"],
+                {"x": 0.3125, "y": 15.0, "offset": {"x": 0.0, "y": 0.0}},
+            )
+            self.assertEqual(
+                edge_spec["geometry"]["waypoints"],
+                [
+                    {"x": 300.0, "y": 177.5},
+                    {"x": 440.0, "y": 177.5},
+                    {"x": 440.0, "y": 217.5},
+                    {"x": 500.0, "y": 217.5},
+                ],
+            )
 
     def test_identical_inputs_produce_byte_identical_outputs(self):
         from layout_renderer import render_layout
@@ -245,6 +280,27 @@ class LayoutRendererTests(unittest.TestCase):
             render_layout(semantic_plan(), layout_result(), first)
             render_layout(copy.deepcopy(semantic_plan()), copy.deepcopy(layout_result()), second)
             self.assertEqual(first.read_bytes(), second.read_bytes())
+
+    def test_label_projection_uses_stable_first_segment_tie_break(self):
+        from layout_renderer import render_layout
+
+        result = layout_result()
+        result["pages"][1]["edges"][0]["label_bounds"] = {
+            "x": 425,
+            "y": 182.5,
+            "width": 10,
+            "height": 10,
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "tie.drawio"
+            render_layout(semantic_plan(), result, output)
+            geometry = cell_by_id(output, "page-a", "edge").find("mxGeometry")
+            # The center is equally distant from the horizontal and vertical
+            # bend segments. Stable index order selects the horizontal one.
+            self.assertAlmostEqual(float(geometry.get("x")), 1.0 / 12.0)
+            self.assertEqual(geometry.get("y"), "10")
+            offset = geometry.find("mxPoint[@as='offset']")
+            self.assertEqual((offset.get("x"), offset.get("y")), ("0", "0"))
 
     def test_route_group_is_not_inferred_when_contract_omits_it(self):
         from layout_renderer import render_layout
@@ -267,6 +323,32 @@ class LayoutRendererTests(unittest.TestCase):
             output = Path(temp) / "invalid.drawio"
             with self.assertRaises(Exception):
                 render_layout(semantic_plan(), result, output)
+            self.assertFalse(output.exists())
+
+    def test_zero_length_route_is_refused_without_partial_output(self):
+        from layout_renderer import LayoutRenderError, render_layout
+
+        plan = semantic_plan()
+        edge = plan["result"]["pages"][1]["edges"][0]
+        edge["target"] = {"page_id": "page-a", "cell_id": "child"}
+        result = layout_result(plan)
+        route = result["pages"][1]["edges"][0]
+        route.update(
+            {
+                "target": "child",
+                "edge_class": "self_loop",
+                "target_port": "east",
+                "target_pin": 0.25,
+                "waypoints": [
+                    {"x": 300, "y": 177.5},
+                    {"x": 300, "y": 177.5},
+                ],
+            }
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "zero.drawio"
+            with self.assertRaisesRegex(LayoutRenderError, "distinct waypoints"):
+                render_layout(plan, result, output)
             self.assertFalse(output.exists())
 
     def test_missing_extra_duplicate_and_cross_page_bindings_are_refused(self):
