@@ -371,8 +371,7 @@ class DiagramOrchestratorTests(unittest.TestCase):
             "intent": {"action": "edge_reroute"},
         }
 
-    def _complete_unindexed_local_attempt(self, run_id):
-        case = self._prepare_local_reflow_case(run_id)
+    def _execute_local_attempt(self, case, scope):
         with mock.patch.object(
             orchestrator.supervisor,
             "compare_reports",
@@ -387,14 +386,19 @@ class DiagramOrchestratorTests(unittest.TestCase):
                 run_dir=case["run_dir"],
                 adapter_input=case["adapter_input"],
                 mode="local_reflow",
-                scope=orchestrator._scope_refs_from_layout_state(
-                    case["payload"]["layout_scope"]
-                ),
+                scope=orchestrator._scope_refs_from_layout_state(scope),
                 strategy=orchestrator.LAYOUT_STRATEGIES[0],
                 timeout=30,
                 baseline=case["payload"]["baseline"]["diagram_spec"],
                 baseline_artifact=case["baseline"],
             )
+        return attempt
+
+    def _complete_unindexed_local_attempt(self, run_id):
+        case = self._prepare_local_reflow_case(run_id)
+        attempt = self._execute_local_attempt(
+            case, case["payload"]["layout_scope"],
+        )
         case["attempt"] = attempt
         case["workflow"] = orchestrator.load_workflow(case["run_dir"])
         return case
@@ -429,6 +433,10 @@ class DiagramOrchestratorTests(unittest.TestCase):
         tampered = json.loads(json.dumps(case["attempt"]))
         tampered["preservation"]["valid"] = False
         case["workflow"]["layout_attempts"].append(tampered)
+        expanded = orchestrator._next_layout_scope_expansion(
+            case["workflow"], case["payload"]["baseline"]["diagram_spec"],
+        )
+        self.assertEqual(expanded["last_action"], "adjacent_nodes")
         orchestrator.write_workflow(case["run_dir"], case["workflow"])
         workflow_bytes = (case["run_dir"] / "workflow.json").read_bytes()
         event_count = len(orchestrator.lifecycle_v2.replay(case["run_dir"])["events"])
@@ -443,6 +451,47 @@ class DiagramOrchestratorTests(unittest.TestCase):
         self.assertEqual(
             (case["run_dir"] / "workflow.json").read_bytes(), workflow_bytes
         )
+        self.assertEqual(
+            len(orchestrator.lifecycle_v2.replay(case["run_dir"])["events"]),
+            event_count,
+        )
+
+    def test_local_reflow_recovery_filters_valid_history_to_current_expanded_scope(self):
+        case = self._complete_unindexed_local_attempt(
+            "expanded-local-recovery-run"
+        )
+        initial = case["attempt"]
+        case["workflow"]["layout_attempts"].append(initial)
+        expanded = orchestrator._next_layout_scope_expansion(
+            case["workflow"], case["payload"]["baseline"]["diagram_spec"],
+        )
+        self.assertEqual(expanded["last_action"], "adjacent_nodes")
+        expanded_refs = orchestrator._scope_refs_from_layout_state(expanded)
+        expanded_refs["node_refs"] = expanded_refs["movable_node_refs"]
+        with mock.patch.object(
+            orchestrator, "_scope_refs_from_layout_state",
+            return_value=expanded_refs,
+        ):
+            current = self._execute_local_attempt(case, expanded)
+            case["workflow"]["layout_attempts"].append(current)
+            orchestrator.write_workflow(case["run_dir"], case["workflow"])
+            event_count = len(
+                orchestrator.lifecycle_v2.replay(case["run_dir"])["events"]
+            )
+            with mock.patch.object(
+                orchestrator, "execute_layout_attempt",
+                side_effect=AssertionError(
+                    "recovery started a new layout strategy"
+                ),
+            ), mock.patch.object(
+                orchestrator.supervisor, "compare_reports",
+                side_effect=[initial["comparison"], current["comparison"]],
+            ):
+                recovered = orchestrator._run_layout_intent_attempts(
+                    case["run_dir"], case["workflow"], case["payload"],
+                    case["intent"], timeout=30,
+                )
+        self.assertEqual(recovered["attempt_id"], current["attempt_id"])
         self.assertEqual(
             len(orchestrator.lifecycle_v2.replay(case["run_dir"])["events"]),
             event_count,
@@ -493,6 +542,7 @@ class DiagramOrchestratorTests(unittest.TestCase):
             == failed[0]["attempt_id"]
         ]
         self.assertEqual(statuses, ["started", "failed"])
+        return case, failed[0]
 
     def test_validator_exception_records_failed_attempt_and_advances_to_next_strategy(self):
         self._assert_local_stage_failure(
@@ -504,6 +554,77 @@ class DiagramOrchestratorTests(unittest.TestCase):
         self._assert_local_stage_failure(
             "patch-apply-failure-run", "apply_patch_file",
             "patch_apply", "patch apply boom",
+        )
+
+    def _assert_tampered_failed_attempt_rejected(self, run_id, *, indexed):
+        case, failed = self._assert_local_stage_failure(
+            run_id, "apply_patch_file", "patch_apply", "patch apply boom",
+        )
+        if indexed:
+            failed["failure_evidence"]["sha256"] = "0" * 64
+            for position, item in enumerate(case["workflow"]["layout_attempts"]):
+                if item["attempt_id"] == failed["attempt_id"]:
+                    case["workflow"]["layout_attempts"][position] = failed
+            orchestrator.write_workflow(case["run_dir"], case["workflow"])
+        else:
+            case["workflow"]["layout_attempts"] = [
+                item for item in case["workflow"]["layout_attempts"]
+                if item["attempt_id"] != failed["attempt_id"]
+            ]
+            orchestrator.write_workflow(case["run_dir"], case["workflow"])
+        workflow_bytes = (case["run_dir"] / "workflow.json").read_bytes()
+        replayed = orchestrator.lifecycle_v2.replay(case["run_dir"])
+        event_count = len(replayed["events"])
+        if not indexed:
+            replayed = json.loads(json.dumps(replayed))
+            for record in replayed["events"]:
+                payload = record["event"].get("payload", {})
+                if (
+                    payload.get("attempt_id") == failed["attempt_id"]
+                    and payload.get("status") == "failed"
+                ):
+                    payload["artifact_snapshots"]["failure_evidence"][
+                        "sha256"
+                    ] = "0" * 64
+        with self.assertRaises(orchestrator.supervisor.SupervisorError):
+            if indexed:
+                completed = next(
+                    item for item in case["workflow"]["layout_attempts"]
+                    if item["status"] == "completed"
+                )
+                with mock.patch.object(
+                    orchestrator.supervisor, "compare_reports",
+                    return_value=completed["comparison"],
+                ):
+                    orchestrator._run_layout_intent_attempts(
+                        case["run_dir"], case["workflow"], case["payload"],
+                        case["intent"], timeout=30,
+                    )
+            else:
+                orchestrator._recover_layout_attempts_from_ledger(
+                    case["run_dir"], case["workflow"], replayed,
+                    known_attempt_ids={
+                        item["attempt_id"]
+                        for item in case["workflow"]["layout_attempts"]
+                    },
+                    mode="local_reflow",
+                )
+        self.assertEqual(
+            (case["run_dir"] / "workflow.json").read_bytes(), workflow_bytes,
+        )
+        self.assertEqual(
+            len(orchestrator.lifecycle_v2.replay(case["run_dir"])["events"]),
+            event_count,
+        )
+
+    def test_indexed_failed_layout_attempt_rejects_tampered_failure_evidence(self):
+        self._assert_tampered_failed_attempt_rejected(
+            "indexed-failed-tamper-run", indexed=True,
+        )
+
+    def test_ledger_recovered_failed_layout_attempt_rejects_tampered_failure_evidence(self):
+        self._assert_tampered_failed_attempt_rejected(
+            "ledger-failed-tamper-run", indexed=False,
         )
 
     def test_semantic_patch_ignores_stale_layout_scope_preservation_gate(self):

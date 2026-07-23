@@ -1975,10 +1975,129 @@ def _layout_attempt_event_artifacts(run_dir, paths):
     }
 
 
+def _verified_layout_event_artifacts(run_dir, attempt_id, event):
+    snapshots = event.get("payload", {}).get("artifact_snapshots")
+    if not isinstance(snapshots, dict):
+        raise supervisor.SupervisorError(
+            f"layout attempt {attempt_id} event artifacts are invalid"
+        )
+    for name, descriptor in snapshots.items():
+        if not isinstance(descriptor, dict) or not isinstance(
+            descriptor.get("byte_length"), int
+        ):
+            raise supervisor.SupervisorError(
+                f"layout attempt {attempt_id} event artifact {name} is incomplete"
+            )
+        absolute = copy.deepcopy(descriptor)
+        absolute["path"] = str(
+            (Path(run_dir).resolve() / str(descriptor.get("path", ""))).resolve()
+        )
+        _verified_layout_file(
+            run_dir, absolute, label=f"{attempt_id} event artifact {name}",
+        )
+    return snapshots
+
+
+def _verify_failed_layout_attempt(run_dir, workflow, attempt, replayed):
+    attempt_id = attempt.get("attempt_id") if isinstance(attempt, dict) else None
+    if not attempt_id or attempt.get("status") != "failed":
+        raise supervisor.SupervisorError("persisted failed layout attempt is invalid")
+    request_path = _verified_layout_file(
+        run_dir, attempt.get("layout_request"),
+        label=f"{attempt_id} layout request",
+    )
+    failure_path = _verified_layout_file(
+        run_dir, attempt.get("failure_evidence"),
+        label=f"{attempt_id} failure evidence",
+    )
+    request = supervisor.load_json(request_path)
+    layout_contracts.require_layout_request(request)
+    failure = supervisor.load_json(failure_path)
+    request_sha256 = canonical_json_sha256(request)
+    context = {
+        "mode": request.get("mode"),
+        "workflow_iteration": attempt.get("workflow_iteration"),
+        "baseline_sha256": attempt.get("baseline_sha256"),
+        "scope_sha256": canonical_json_sha256(request["scope"]),
+    }
+    expected_key = "|".join(layout_backend.attempt_key(request))
+    if any((
+        request.get("request_id") != attempt_id,
+        request_sha256 != attempt.get("request_sha256"),
+        request.get("semantic_plan_sha256")
+        != workflow["semantic_plan_v2"]["sha256"],
+        attempt.get("semantic_plan_sha256")
+        != request.get("semantic_plan_sha256"),
+        request.get("strategy") != attempt.get("strategy"),
+        request.get("strategy_options", {})
+        != attempt.get("strategy_options", {}),
+        attempt.get("attempt_key") != expected_key,
+        expected_key not in workflow.get("layout_attempt_keys", []),
+        any(attempt.get(key) != value for key, value in context.items()),
+    )):
+        raise supervisor.SupervisorError(
+            f"failed layout attempt {attempt_id} differs from its request"
+        )
+    events = [
+        record["event"] for record in replayed["events"]
+        if record["event"].get("event_type") == "tool_attempt"
+        and record["event"].get("payload", {}).get("tool") == "layout-engine"
+        and record["event"].get("payload", {}).get("attempt_id") == attempt_id
+    ]
+    if [event["payload"].get("status") for event in events] != [
+        "started", "failed",
+    ]:
+        raise supervisor.SupervisorError(
+            f"failed layout attempt {attempt_id} has invalid event sequence"
+        )
+    started, failed_event = events
+    started_artifacts = _verified_layout_event_artifacts(
+        run_dir, attempt_id, started,
+    )
+    failed_artifacts = _verified_layout_event_artifacts(
+        run_dir, attempt_id, failed_event,
+    )
+    expected_request = _relative_file(run_dir, request_path)
+    expected_failure = _relative_file(run_dir, failure_path)
+    failed_payload = failed_event["payload"]
+    bound = {
+        "request_sha256": request_sha256,
+        "semantic_plan_sha256": request["semantic_plan_sha256"],
+        "strategy": request["strategy"],
+        **context,
+        "failure_stage": failure.get("failure_stage"),
+    }
+    if any((
+        started_artifacts.get("layout_request") != expected_request,
+        failed_artifacts != {
+            **failure.get("artifacts", {}),
+            "failure_evidence": expected_failure,
+        },
+        any(failure.get(key) != attempt.get(key) for key in (
+            "attempt_id", "request_sha256", "semantic_plan_sha256", "strategy",
+            "strategy_options", "mode", "workflow_iteration", "baseline_sha256",
+            "scope_sha256", "failure_stage", "error", "artifacts",
+        )),
+        any(failed_payload.get(key) != value for key, value in bound.items()),
+        failed_payload.get("error") != failure.get("error", "")[-1000:],
+        any(started["payload"].get(key) != value for key, value in {
+            **bound, "attempt_key": layout_backend.attempt_key(request),
+        }.items() if key != "failure_stage"),
+    )):
+        raise supervisor.SupervisorError(
+            f"failed layout attempt {attempt_id} evidence differs"
+        )
+    return copy.deepcopy(attempt)
+
+
 def _verify_persisted_layout_attempt(
-    run_dir, workflow, attempt, replayed, *, expected_local=None,
+    run_dir, workflow, attempt, replayed,
 ):
     """Fail closed unless a workflow attempt is bound to immutable run evidence."""
+    if isinstance(attempt, dict) and attempt.get("status") == "failed":
+        return _verify_failed_layout_attempt(
+            run_dir, workflow, attempt, replayed,
+        )
     if not isinstance(attempt, dict) or attempt.get("status") != "completed":
         raise supervisor.SupervisorError(
             "persisted layout attempt is not a completed object"
@@ -2030,9 +2149,7 @@ def _verify_persisted_layout_attempt(
     request = supervisor.load_json(paths["layout_request"])
     layout_contracts.require_layout_request(request)
     mode = request.get("mode")
-    if mode not in {"create", "local_reflow"} or (
-        expected_local is not None and mode != "local_reflow"
-    ):
+    if mode not in {"create", "local_reflow"}:
         raise supervisor.SupervisorError(
             f"persisted layout attempt {attempt_id} has unsupported mode"
         )
@@ -2122,13 +2239,6 @@ def _verify_persisted_layout_attempt(
         if (
             attempt.get("mode") != mode
             or any(attempt.get(key) != value for key, value in context.items())
-            or (
-                expected_local is not None
-                and any(
-                    context[key] != expected_local[key]
-                    for key in context
-                )
-            )
         ):
             raise supervisor.SupervisorError(
                 f"persisted layout attempt {attempt_id} local context differs"
@@ -2243,7 +2353,6 @@ def _recover_layout_attempts_from_ledger(
     *,
     known_attempt_ids,
     mode="create",
-    expected_local=None,
 ):
     """Rebuild the workflow index after a crash using terminal events."""
     recovered = []
@@ -2281,25 +2390,15 @@ def _recover_layout_attempts_from_ledger(
         if status == "failed":
             failure_path = event_path("failure_evidence")
             failure = supervisor.load_json(failure_path)
-            bound_artifacts = {
-                name: descriptor for name, descriptor in snapshots.items()
-                if name != "failure_evidence"
-            }
-            if any((
-                failure.get("attempt_id") != attempt_id,
-                failure.get("request_sha256") != payload.get("request_sha256"),
-                failure.get("failure_stage") != payload.get("failure_stage"),
-                failure.get("artifacts") != bound_artifacts,
-            )):
-                raise supervisor.SupervisorError(
-                    f"failed layout attempt {attempt_id} evidence differs"
-                )
-            recovered.append({
+            attempt = {
                 **copy.deepcopy(failure),
                 "attempt_key": "|".join(layout_backend.attempt_key(request)),
                 "layout_request": _workflow_file_descriptor(request_path),
                 "failure_evidence": _workflow_file_descriptor(failure_path),
-            })
+            }
+            recovered.append(_verify_persisted_layout_attempt(
+                run_dir, workflow, attempt, replayed,
+            ))
             known_attempt_ids.add(attempt_id)
             continue
         required = {
@@ -2404,7 +2503,6 @@ def _recover_layout_attempts_from_ledger(
                 workflow,
                 attempt,
                 replayed,
-                expected_local=expected_local,
             )
         )
         known_attempt_ids.add(attempt_id)
@@ -2472,7 +2570,7 @@ def _run_generic_create_layouts(
         raise supervisor.SupervisorError(
             "persisted layout progress contains duplicate attempt keys"
         )
-    completed = [
+    verified_attempts = [
         _verify_persisted_layout_attempt(
             run_dir,
             workflow,
@@ -2480,7 +2578,11 @@ def _run_generic_create_layouts(
             replayed,
         )
         for attempt in workflow["layout_attempts"]
-        if attempt.get("status") == "completed"
+        if attempt.get("status") in {"completed", "failed"}
+    ]
+    completed = [
+        attempt for attempt in verified_attempts
+        if attempt["status"] == "completed"
     ]
     recovered = _recover_layout_attempts_from_ledger(
         run_dir,
@@ -4519,25 +4621,29 @@ def _run_layout_intent_attempts(run_dir, workflow, payload, intent, *, timeout):
         else {"events": []}
     completed = []
     for attempt in workflow.setdefault("layout_attempts", []):
-        if attempt.get("status") != "completed":
+        if attempt.get("status") not in {"completed", "failed"}:
             continue
         request_path = _verified_layout_file(
             run_dir, attempt.get("layout_request"), label="layout request")
         if supervisor.load_json(request_path).get("mode") == "local_reflow":
-            completed.append(_verify_persisted_layout_attempt(
-                run_dir, workflow, attempt, replayed, expected_local=expected_local,
-            ))
+            verified = _verify_persisted_layout_attempt(
+                run_dir, workflow, attempt, replayed,
+            )
+            if verified["status"] == "completed":
+                completed.append(verified)
     recovered = _recover_layout_attempts_from_ledger(
         run_dir, workflow, replayed, mode="local_reflow",
         known_attempt_ids={item["attempt_id"] for item in workflow["layout_attempts"]},
-        expected_local=expected_local,
     ) if baseline_artifact.is_file() else []
     if recovered:
         workflow["layout_attempts"].extend(copy.deepcopy(recovered))
         completed.extend(item for item in recovered if item["status"] == "completed")
         write_workflow(run_dir, workflow)
-    eligible = [item for item in completed if item["preservation"]["valid"]
-                and item["comparison"]["accepted"]]
+    eligible = [
+        item for item in completed
+        if all(item.get(key) == value for key, value in expected_local.items())
+        and item["preservation"]["valid"] and item["comparison"]["accepted"]
+    ]
     if eligible:
         order = {name: index for index, (name, _) in enumerate(LAYOUT_STRATEGIES)}
         selected = min(eligible, key=lambda item: order[item["strategy"]])

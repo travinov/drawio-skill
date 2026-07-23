@@ -50,6 +50,9 @@ RED:
 - Second-review terminality regressions: validator and patch-application
   exceptions advanced the schedule without persisting a terminal failed
   attempt.
+- Final-review recovery regressions: a valid earlier local scope blocked
+  expanded-scope recovery; indexed failed attempts were skipped; and
+  ledger-only failed-event descriptors were trusted without file verification.
 
 GREEN:
 
@@ -70,6 +73,10 @@ GREEN:
   passed (5 tests in 21.722s).
 - Final authorized `tests.test_diagram_orchestrator` run — 67 tests passed in
   177.603s.
+- Final-review three-test RED became green, then the combined seven-test local
+  recovery gate passed in 39.528s.
+- Single authorized final-review `tests.test_diagram_orchestrator` run —
+  70 tests passed in 183.266s.
 
 ## Review cleanup
 
@@ -80,5 +87,5 @@ GREEN:
   before the final test run.
 - Kept the second-review recovery commit at the agreed +550 net-line cap:
   orchestrator +495/-143 and tests +198.
-- No known Task 11 correctness concern remains after the focused recovery and
-  final 67-test orchestrator passes.
+- Kept the final-review recovery fix at +227 net lines before this report.
+- No known Task 11 correctness concern remains after the final 70-test pass.
