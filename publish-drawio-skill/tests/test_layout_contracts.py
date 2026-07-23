@@ -136,6 +136,14 @@ class LayoutContractTests(unittest.TestCase):
         value["pages"][0]["edges"][0]["label_size"] = {"width": 40, "height": 20}
         self.assertEqual(layout_contracts.validate_layout_request(value), [])
 
+    def test_layout_request_accepts_same_page_parent_and_rejects_invalid_parent_graph(self):
+        value = valid_layout_request()
+        value["pages"][0]["nodes"][1]["parent_id"] = "node-1"
+        self.assertEqual(layout_contracts.validate_layout_request(value), [])
+        value["pages"][0]["nodes"][0]["parent_id"] = "node-2"
+        codes = {item["code"] for item in layout_contracts.validate_layout_request(value)}
+        self.assertIn("layout.parent.cycle", codes)
+
     def test_layout_request_rejects_unknown_quality_profile_version(self):
         value = valid_layout_request()
         value["quality_profile_version"] = 3

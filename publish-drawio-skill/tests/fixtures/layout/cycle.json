@@ -1,0 +1,14 @@
+{
+  "nodes": [
+    {"node_id": "a"},
+    {"node_id": "b"},
+    {"node_id": "c"},
+    {"node_id": "d"}
+  ],
+  "edges": [
+    {"edge_id": "cycle-ab", "source": "a", "target": "b"},
+    {"edge_id": "cycle-bc", "source": "b", "target": "c"},
+    {"edge_id": "cycle-ca", "source": "c", "target": "a"},
+    {"edge_id": "tail-cd", "source": "c", "target": "d"}
+  ]
+}

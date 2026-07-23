@@ -36,7 +36,13 @@ def _layout_diagnostics(value: Any, *, request: bool) -> list[dict[str, str]]:
             continue
         nodes = page.get("nodes")
         if isinstance(nodes, list):
-            for node in nodes:
+            page_node_ids = {
+                node.get("node_id")
+                for node in nodes
+                if isinstance(node, dict) and isinstance(node.get("node_id"), str)
+            }
+            parents: dict[str, str] = {}
+            for node_index, node in enumerate(nodes):
                 if isinstance(node, dict) and isinstance(node.get("node_id"), str):
                     ref = (page_id, node["node_id"])
                     known_nodes.add(ref)
@@ -44,6 +50,35 @@ def _layout_diagnostics(value: Any, *, request: bool) -> list[dict[str, str]]:
                         locked_nodes.add(ref)
                     elif node.get("locked") is False:
                         unlocked_nodes.add(ref)
+                    parent_id = node.get("parent_id")
+                    if isinstance(parent_id, str):
+                        if parent_id not in page_node_ids:
+                            diagnostics.append(_diagnostic(
+                                "layout.parent.missing",
+                                f"/pages/{page_index}/nodes/{node_index}/parent_id",
+                                f"parent {parent_id!r} is not a node on page {page_id!r}",
+                            ))
+                        elif parent_id == node["node_id"]:
+                            diagnostics.append(_diagnostic(
+                                "layout.parent.self",
+                                f"/pages/{page_index}/nodes/{node_index}/parent_id",
+                                "a layout node cannot parent itself",
+                            ))
+                        else:
+                            parents[node["node_id"]] = parent_id
+            for start in sorted(parents):
+                seen: set[str] = set()
+                current = start
+                while current in parents:
+                    if current in seen:
+                        diagnostics.append(_diagnostic(
+                            "layout.parent.cycle",
+                            f"/pages/{page_index}/nodes",
+                            f"layout parent cycle begins at {current!r}",
+                        ))
+                        break
+                    seen.add(current)
+                    current = parents[current]
         edges = page.get("edges")
         if not isinstance(edges, list):
             continue

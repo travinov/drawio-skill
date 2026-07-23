@@ -1,0 +1,13 @@
+{
+  "nodes": [
+    {"node_id": "lane", "x": 0, "y": 0, "width": 200, "height": 100, "locked": false},
+    {"node_id": "group", "x": 0, "y": 0, "width": 180, "height": 90, "locked": false, "parent_id": "lane"},
+    {"node_id": "task-a", "x": 0, "y": 0, "width": 100, "height": 60, "locked": false, "parent_id": "group"},
+    {"node_id": "task-b", "x": 0, "y": 0, "width": 100, "height": 60, "locked": false, "parent_id": "group"},
+    {"node_id": "outside", "x": 0, "y": 0, "width": 100, "height": 60, "locked": false}
+  ],
+  "edges": [
+    {"edge_id": "a-b", "source": "task-a", "target": "task-b", "edge_class": "main", "source_port": "east", "target_port": "west", "locked": false},
+    {"edge_id": "b-out", "source": "task-b", "target": "outside", "edge_class": "main", "source_port": "east", "target_port": "west", "locked": false}
+  ]
+}

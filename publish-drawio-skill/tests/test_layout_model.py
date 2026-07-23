@@ -187,6 +187,38 @@ class LayoutModelTests(unittest.TestCase):
         self.assertFalse(locks[("page-a", "edge")])
         self.assertTrue(locks[("page-b", "edge")])
 
+    def test_request_preserves_only_same_page_semantic_parent(self):
+        plan = {
+            "result": {
+                "diagram_type": "flowchart", "direction": "LR",
+                "pages": [{"page_id": "page-a", "name": "A", "nodes": [
+                    {"stable_identity": {"page_id": "page-a", "cell_id": "group"}, "label": "Group", "semantic_type": "group", "parent": None},
+                    {"stable_identity": {"page_id": "page-a", "cell_id": "child"}, "label": "Child", "semantic_type": "process", "parent": {"page_id": "page-a", "cell_id": "group"}},
+                ], "edges": []}],
+            }
+        }
+        request = layout_model.build_layout_request(
+            plan, run_id="run-1", semantic_plan_sha256=SHA, mode="create",
+            backend="builtin", strategy_id="layered", quality_profile_version=2,
+        )
+        nodes = {node["node_id"]: node for node in request["pages"][0]["nodes"]}
+        self.assertEqual(nodes["child"]["parent_id"], "group")
+
+    def test_request_rejects_cross_page_semantic_parent(self):
+        plan = {
+            "result": {
+                "diagram_type": "flowchart", "direction": "LR",
+                "pages": [{"page_id": "page-a", "name": "A", "nodes": [
+                    {"stable_identity": {"page_id": "page-a", "cell_id": "child"}, "label": "Child", "semantic_type": "process", "parent": {"page_id": "page-b", "cell_id": "group"}},
+                ], "edges": []}],
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "same page"):
+            layout_model.build_layout_request(
+                plan, run_id="run-1", semantic_plan_sha256=SHA, mode="create",
+                backend="builtin", strategy_id="layered", quality_profile_version=2,
+            )
+
     def test_ambiguous_unscoped_finding_is_rejected(self):
         spec = {"pages": [
             {"id": "page-a", "cells": [{"id": "edge", "kind": "edge", "source_id": "a", "target_id": "b"}]},

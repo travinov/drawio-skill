@@ -273,6 +273,17 @@ def build_layout_request(
                 "height": height,
                 "locked": locked,
             }
+            parent = node.get("parent")
+            if isinstance(parent, Mapping):
+                parent_page = parent.get("page_id")
+                parent_id = parent.get("cell_id")
+                if parent_page != page_id:
+                    raise ValueError(
+                        f"layout parent for {page_id}/{node_id} must be on the same page"
+                    )
+                if not isinstance(parent_id, str) or not parent_id:
+                    raise ValueError(f"layout parent for {page_id}/{node_id} requires a cell id")
+                value["parent_id"] = parent_id
             if baseline_cell is not None:
                 value["element_sha256"] = _baseline_hash(baseline_cell)
             output_nodes.append(value)
