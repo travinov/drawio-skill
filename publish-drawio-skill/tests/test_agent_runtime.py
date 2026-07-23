@@ -8,6 +8,59 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import agent_runtime
+from test_lifecycle_v2 import reviewer_input_v2, semantic_analysis_v2
+
+
+def reviewer_v2_input_with_blocker():
+    payload = reviewer_input_v2()
+    payload["candidate"]["report"]["content"] = {
+        "result": "failed",
+        "findings": [{
+            "code": "artifact.xml.invalid",
+            "severity": "error",
+            "blocking": True,
+            "deterministic": True,
+        }],
+    }
+    payload["candidate"]["receipt"]["content"] = {
+        "strict": True, "exit_code": 1, "result": "failed",
+    }
+    payload["candidate"]["strict_passed"] = False
+    return payload
+
+
+def legacy_reviewer_approve_for_v2_input(payload):
+    return {
+        "schema_version": 1,
+        "verdict_id": "legacy-review-1",
+        "run_id": payload["run_id"],
+        "candidate_sha256": payload["candidate"]["artifact"]["sha256"],
+        "report_sha256": payload["candidate"]["report"]["sha256"],
+        "receipt_sha256": payload["candidate"]["receipt"]["sha256"],
+        "verdict": "approve",
+        "reviewed_at": "2026-07-24T00:00:00Z",
+        "findings": [],
+    }
+
+
+def semantic_v2_output_with_route():
+    output = semantic_analysis_v2()
+    identity_a = output["result"]["pages"][0]["nodes"][0]["stable_identity"]
+    identity_b = output["result"]["pages"][0]["nodes"][1]["stable_identity"]
+    output["result"]["pages"][0]["edges"].append({
+        "stable_identity": {"page_id": "page-1", "cell_id": "edge-a-b"},
+        "source": identity_a,
+        "target": identity_b,
+        "label": "next",
+        "relationship": "sequence",
+        "route": {
+            "orthogonal": True,
+            "source_pin": {"x": 1.0, "y": 0.5},
+            "target_pin": {"x": 0.0, "y": 0.5},
+            "waypoints": [{"x": 200, "y": 40}, {"x": 200, "y": 160}],
+        },
+    })
+    return output
 
 
 class AgentRuntimeIntakeTests(unittest.TestCase):
@@ -73,6 +126,41 @@ class AgentRuntimeIntakeTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "blocking deterministic"):
             agent_runtime.validate_role_output("reviewer", output, payload)
 
+    def test_reviewer_v2_legacy_approve_cannot_bypass_blocking_evidence_or_finalize(self):
+        payload = reviewer_v2_input_with_blocker()
+        approve = legacy_reviewer_approve_for_v2_input(payload)
+        self.assertEqual(agent_runtime.validate_role_input("reviewer", payload), payload)
+
+        with self.assertRaisesRegex(Exception, "blocking deterministic"):
+            agent_runtime.validate_role_output("reviewer", approve, payload)
+        with self.assertRaisesRegex(Exception, "blocking deterministic"):
+            agent_runtime.finalize_role_output("reviewer", payload, approve)
+
+        corrected = {**approve, "verdict": "reject"}
+        validated = agent_runtime.validate_role_output("reviewer", corrected, payload)
+        finalized, proof = agent_runtime.finalize_role_output(
+            "reviewer", payload, validated
+        )
+        self.assertEqual(finalized["schema_version"], 2)
+        self.assertEqual(finalized["verdict"], "reject")
+        self.assertTrue(proof["verified"])
+
+    def test_semantic_v2_rejects_model_produced_pins_waypoints_and_coordinates(self):
+        output = semantic_v2_output_with_route()
+        payload = {"schema_version": 2, "mode": "create"}
+        with self.assertRaisesRegex(Exception, "ordinary geometry"):
+            agent_runtime.validate_role_output("semantic_analyst", output, payload)
+
+    def test_semantic_v2_rejects_coordinate_bounds_with_role_specific_diagnostic(self):
+        output = semantic_v2_output_with_route()
+        output["result"]["pages"][0]["edges"][0].pop("route")
+        output["result"]["pages"][0]["nodes"][0]["geometry"] = {
+            "x": 10, "y": 20, "width": 120, "height": 60,
+        }
+        payload = {"schema_version": 2, "mode": "create"}
+        with self.assertRaisesRegex(Exception, "coordinate/bounds"):
+            agent_runtime.validate_role_output("semantic_analyst", output, payload)
+
     def test_layout_repair_rejects_legacy_unbounded_intent(self):
         payload = {
             "schema_version": 1,
@@ -132,6 +220,33 @@ class AgentRuntimeIntakeTests(unittest.TestCase):
         contract = agent_runtime.role_output_contract("semantic_analyst", payload)
         self.assertIn("diagram-intake-analysis.v1.schema.json", contract)
         self.assertIn("host assigns", contract.lower())
+
+    def test_semantic_intake_classification_remains_geometry_free_and_valid(self):
+        payload = {
+            "schema_version": 1,
+            "phase": "intake",
+            "mode": "create",
+            "request": "Покажи сервисы",
+            "existing_evidence": None,
+            "answers": [],
+        }
+        output = {
+            "schema_version": 1,
+            "role": "semantic_analyst",
+            "status": "ok",
+            "result": {
+                "diagram_type": "dependency",
+                "confidence": 0.9,
+                "alternatives": [],
+                "sufficient": True,
+                "blocking_questions": [],
+                "assumptions": [],
+            },
+        }
+        self.assertEqual(
+            agent_runtime.validate_role_output("semantic_analyst", output, payload),
+            output,
+        )
 
     def test_intake_analysis_contract_rejects_host_owned_fields(self):
         payload = {

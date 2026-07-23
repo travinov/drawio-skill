@@ -828,6 +828,157 @@ def _schema_contract_diagnostics(schema, parsed):
     return diagnostics
 
 
+def _reviewer_authoritative_evidence_diagnostics(payload, parsed):
+    """Reject approval that contradicts immutable deterministic input evidence."""
+    if not isinstance(parsed, dict) or parsed.get("verdict") != "approve":
+        return []
+    candidate = payload.get("candidate") if isinstance(payload, dict) else None
+    if not isinstance(candidate, dict):
+        return []
+
+    diagnostics = []
+    report = candidate.get("report")
+    report_content = report.get("content") if isinstance(report, dict) else None
+    if isinstance(report_content, dict):
+        for index, finding in enumerate(report_content.get("findings", [])):
+            if not isinstance(finding, dict):
+                continue
+            severity = str(finding.get("severity", "")).lower()
+            if finding.get("blocking") is True or severity in {
+                "error", "fatal", "critical"
+            }:
+                diagnostics.append(
+                    {
+                        "code": "reviewer.approve_with_blocking_deterministic_finding",
+                        "pointer": f"/candidate/report/content/findings/{index}",
+                        "rule": "deterministic_validator_authority",
+                        "message": (
+                            "approve is invalid while authoritative input contains "
+                            "a blocking deterministic validator finding"
+                        ),
+                    }
+                )
+                break
+        report_result = str(report_content.get("result", "")).lower()
+        if report_result in {"failed", "failure", "error", "invalid", "blocked"}:
+            diagnostics.append(
+                {
+                    "code": "reviewer.approve_with_failed_deterministic_report",
+                    "pointer": "/candidate/report/content/result",
+                    "rule": "deterministic_validator_authority",
+                    "message": (
+                        "approve is invalid while authoritative input contains "
+                        "a blocking deterministic validation report"
+                    ),
+                }
+            )
+
+    receipt = candidate.get("receipt")
+    receipt_content = receipt.get("content") if isinstance(receipt, dict) else None
+    receipt_failed = candidate.get("strict_passed") is False
+    if isinstance(receipt_content, dict):
+        receipt_result = str(receipt_content.get("result", "")).lower()
+        exit_code = receipt_content.get("exit_code")
+        receipt_failed = receipt_failed or receipt_content.get("strict") is False
+        receipt_failed = receipt_failed or receipt_result in {
+            "failed", "failure", "error", "invalid", "blocked"
+        }
+        receipt_failed = receipt_failed or (
+            isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0
+        )
+    if receipt_failed:
+        diagnostics.append(
+            {
+                "code": "reviewer.approve_with_failed_deterministic_receipt",
+                "pointer": "/candidate/receipt/content",
+                "rule": "deterministic_validator_authority",
+                "message": (
+                    "approve is invalid while authoritative input contains "
+                    "a blocking deterministic validation receipt"
+                ),
+            }
+        )
+    return diagnostics
+
+
+def _semantic_geometry_contract_diagnostics(payload, parsed):
+    """Keep v2 Semantic Analyst output topology-only and layout-host neutral."""
+    if (
+        contract_version(payload) != 2
+        or not isinstance(payload, dict)
+        or payload.get("phase") == "intake"
+        or not isinstance(parsed, dict)
+    ):
+        return []
+
+    diagnostics = []
+    pages = parsed.get("result", {}).get("pages", [])
+    forbidden_fields = {
+        "geometry", "bounds", "coordinates", "position",
+        "x", "y", "width", "height",
+    }
+    for page_index, page in enumerate(pages):
+        if not isinstance(page, dict):
+            continue
+        for collection in ("nodes", "edges"):
+            for element_index, element in enumerate(page.get(collection, [])):
+                if not isinstance(element, dict):
+                    continue
+                pointer = f"/result/pages/{page_index}/{collection}/{element_index}"
+                if "route" in element:
+                    diagnostics.append(
+                        {
+                            "code": "semantic.analysis.ordinary_geometry_forbidden",
+                            "pointer": f"{pointer}/route",
+                            "rule": "semantic_role_ownership",
+                            "message": (
+                                "Semantic Analyst must omit ordinary geometry, including "
+                                "routes, source/target pins, waypoints, and coordinates"
+                            ),
+                        }
+                    )
+                for field in sorted(forbidden_fields.intersection(element)):
+                    diagnostics.append(
+                        {
+                            "code": "semantic.analysis.ordinary_geometry_forbidden",
+                            "pointer": f"{pointer}/{field}",
+                            "rule": "semantic_role_ownership",
+                            "message": (
+                                "Semantic Analyst must omit ordinary geometry and "
+                                "coordinate/bounds fields"
+                            ),
+                        }
+                    )
+    return diagnostics
+
+
+def _role_ownership_contract_diagnostics(role, payload, parsed):
+    diagnostics = []
+    if role == "reviewer":
+        diagnostics.extend(
+            _reviewer_authoritative_evidence_diagnostics(payload, parsed)
+        )
+    if role == "semantic_analyst":
+        diagnostics.extend(_semantic_geometry_contract_diagnostics(payload, parsed))
+    diagnostics.sort(
+        key=lambda item: (
+            item.get("pointer", ""), item.get("code", ""), item.get("message", "")
+        )
+    )
+    return diagnostics
+
+
+def _raise_role_contract_error(role, diagnostics, failure_kind="cross_field"):
+    first = diagnostics[0]
+    error = SupervisorError(
+        f"isolated {role} output contract failed at "
+        f"{first['pointer'] or '/'}: {first['message']}"
+    )
+    error.contract_diagnostics = diagnostics
+    error.contract_failure_kind = failure_kind
+    raise error
+
+
 def validate_role_input(role, payload):
     """Fail closed on versioned role inputs before any isolated model call."""
     if (
@@ -962,30 +1113,6 @@ def _cross_field_contract_diagnostics(role, payload, parsed):
                     "message": "approve is invalid while any error-level finding remains",
                 }
             )
-    if role == "reviewer" and parsed.get("verdict") == "approve":
-        candidate = payload.get("candidate") if isinstance(payload, dict) else None
-        report = candidate.get("report") if isinstance(candidate, dict) else None
-        content = report.get("content") if isinstance(report, dict) else None
-        findings = content.get("findings", []) if isinstance(content, dict) else []
-        for finding in findings:
-            if not isinstance(finding, dict) or finding.get("severity") != "error":
-                continue
-            code = str(finding.get("code", ""))
-            deterministic = (
-                finding.get("deterministic") is True
-                or finding.get("blocking") is True
-                or code.startswith(("artifact.", "semantic.", "security."))
-            )
-            if deterministic:
-                diagnostics.append(
-                    {
-                        "code": "reviewer.approve_with_blocking_deterministic_finding",
-                        "pointer": "/verdict",
-                        "rule": "deterministic_validator_authority",
-                        "message": "approve is invalid while a blocking deterministic validator finding remains",
-                    }
-                )
-                break
     if role == "repair" and isinstance(payload, dict) and payload.get("repair_mode") == "layout_intent":
         result = parsed.get("result", {})
         if not all(key in result for key in ("target_edges", "movable_nodes", "locked_nodes")):
@@ -1069,22 +1196,26 @@ def validate_role_output(role, parsed, payload=None):
             error.contract_diagnostics = legacy_diagnostics
             error.contract_failure_kind = "output_schema"
             raise error
+        ownership_diagnostics = _role_ownership_contract_diagnostics(
+            role, payload, parsed
+        )
+        if ownership_diagnostics:
+            _raise_role_contract_error(role, ownership_diagnostics)
         return parsed
     schema = role_output_schema(role, payload)
-    diagnostics = _schema_contract_diagnostics(schema, parsed)
-    failure_kind = "output_schema"
-    if not diagnostics:
-        diagnostics = _cross_field_contract_diagnostics(role, payload, parsed)
+    schema_diagnostics = _schema_contract_diagnostics(schema, parsed)
+    ownership_diagnostics = _role_ownership_contract_diagnostics(
+        role, payload, parsed
+    )
+    if schema_diagnostics:
+        diagnostics = ownership_diagnostics + schema_diagnostics
+        failure_kind = "output_schema"
+    else:
+        diagnostics = ownership_diagnostics
+        diagnostics.extend(_cross_field_contract_diagnostics(role, payload, parsed))
         failure_kind = "cross_field"
     if diagnostics:
-        first = diagnostics[0]
-        error = SupervisorError(
-            f"isolated {role} output contract failed at "
-            f"{first['pointer'] or '/'}: {first['message']}"
-        )
-        error.contract_diagnostics = diagnostics
-        error.contract_failure_kind = failure_kind
-        raise error
+        _raise_role_contract_error(role, diagnostics, failure_kind)
     return parsed
 
 
@@ -1092,6 +1223,11 @@ def finalize_role_output(role, payload, parsed):
     """Construct host-owned envelopes after validating the model decision."""
     if role != "reviewer":
         return parsed, None
+    ownership_diagnostics = _reviewer_authoritative_evidence_diagnostics(
+        payload, parsed
+    )
+    if ownership_diagnostics:
+        _raise_role_contract_error(role, ownership_diagnostics)
     if contract_version(payload) == 2:
         # Reviewer v2 is analysis-only. The lifecycle host binds runtime proof,
         # input/output hashes, candidate evidence, and source/semantic hashes in
