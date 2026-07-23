@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile><diagram name="shared-trunk"><mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/>
+<mxCell id="source" parent="1" vertex="1"><mxGeometry x="0" y="40" width="20" height="20" as="geometry"/></mxCell>
+<mxCell id="target-a" parent="1" vertex="1"><mxGeometry x="200" y="0" width="20" height="20" as="geometry"/></mxCell>
+<mxCell id="target-b" parent="1" vertex="1"><mxGeometry x="200" y="40" width="20" height="20" as="geometry"/></mxCell>
+<mxCell id="target-c" parent="1" vertex="1"><mxGeometry x="200" y="80" width="20" height="20" as="geometry"/></mxCell>
+<mxCell id="target-d" parent="1" vertex="1"><mxGeometry x="200" y="120" width="20" height="20" as="geometry"/></mxCell>
+<mxCell id="e1" edge="1" source="source" target="target-a" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="40" y="50"/><mxPoint x="160" y="50"/></Array></mxGeometry></mxCell>
+<mxCell id="e2" edge="1" source="source" target="target-b" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="40" y="50"/><mxPoint x="160" y="50"/></Array></mxGeometry></mxCell>
+<mxCell id="e3" edge="1" source="source" target="target-c" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="40" y="50"/><mxPoint x="160" y="50"/></Array></mxGeometry></mxCell>
+<mxCell id="e4" edge="1" source="source" target="target-d" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="40" y="50"/><mxPoint x="160" y="50"/></Array></mxGeometry></mxCell>
+</root></mxGraphModel></diagram></mxfile>

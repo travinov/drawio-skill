@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile><diagram name="detour-bends"><mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="a" parent="1" vertex="1"><mxGeometry x="0" y="0" width="20" height="20" as="geometry"/></mxCell><mxCell id="b" parent="1" vertex="1"><mxGeometry x="200" y="0" width="20" height="20" as="geometry"/></mxCell>
+<mxCell id="detour" edge="1" source="a" target="b" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="10" y="100"/><mxPoint x="30" y="100"/><mxPoint x="30" y="-100"/><mxPoint x="50" y="-100"/><mxPoint x="50" y="100"/><mxPoint x="70" y="100"/><mxPoint x="70" y="-100"/><mxPoint x="90" y="-100"/><mxPoint x="90" y="100"/><mxPoint x="110" y="100"/></Array></mxGeometry></mxCell>
+</root></mxGraphModel></diagram></mxfile>

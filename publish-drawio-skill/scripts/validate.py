@@ -39,11 +39,22 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 
+import layout_geometry
 from validation_common import ValidationReport, print_report
 
 RESERVED = {"0", "1"}
 MIN_TERMINAL_SEGMENT = 20.0
-VALIDATOR_VERSION = "2.0.0"
+VALIDATOR_VERSION = "2.1.0"
+
+LAYOUT_THRESHOLDS_V2 = {
+    "shared_segment_min": 30.0,
+    "fanout_exemption_max": 24.0,
+    "route_congestion_count": 3,
+    "port_congestion_count": 4,
+    "detour_ratio": 3.0,
+    "bend_count": 8,
+    "aspect_ratio": 4.0,
+}
 
 
 def rect(cell):
@@ -889,6 +900,22 @@ def _profile_gitflow(tree, source, report):
 
 
 def _code(message, severity):
+    if "share " in message and "route segment" in message:
+        return "artifact.readability.shared_segment"
+    if "congest route segment" in message:
+        return "artifact.readability.route_congestion"
+    if "edge label" in message and "collid" in message:
+        return "artifact.readability.edge_label_collision"
+    if " port " in message and "is used by edges" in message:
+        return "artifact.readability.port_congestion"
+    if "excessive detour" in message:
+        return "artifact.layout.excessive_detour"
+    if "excessive bends" in message:
+        return "artifact.layout.excessive_bends"
+    if "feedback route intrudes" in message:
+        return "artifact.layout.feedback_intrusion"
+    if "excessive aspect ratio" in message:
+        return "artifact.layout.aspect_ratio"
     if "missing required id" in message:
         return "artifact.id.missing"
     if "duplicate id" in message:
@@ -944,8 +971,14 @@ def _remediation(code):
     if code in {
         "artifact.readability.crossing",
         "artifact.readability.route_through",
+        "artifact.readability.shared_segment",
+        "artifact.readability.route_congestion",
+        "artifact.readability.port_congestion",
         "artifact.layout.terminal_segment",
         "artifact.layout.routing_uncertain",
+        "artifact.layout.excessive_detour",
+        "artifact.layout.excessive_bends",
+        "artifact.layout.feedback_intrusion",
     }:
         return "edge-route", "deterministic"
     if code in {
@@ -954,8 +987,10 @@ def _remediation(code):
         "artifact.readability.overlap",
     }:
         return "geometry", "candidate"
-    if code == "artifact.readability.text_overflow":
+    if code in {"artifact.readability.text_overflow", "artifact.readability.edge_label_collision"}:
         return "label-layout", "candidate"
+    if code == "artifact.layout.aspect_ratio":
+        return "geometry", "candidate"
     if code.startswith("artifact.reference") or code.startswith("artifact.structure"):
         return "structural", "manual"
     return "manual-review", "unknown"
@@ -999,6 +1034,125 @@ def _route_metrics(page):
     return bend_count, route_length
 
 
+def _layout_v2_page(page):
+    """Return deterministic v2 layout warnings and page-local metrics."""
+    model = page.find("mxGraphModel")
+    root = model.find("root") if model is not None else None
+    cells = list(root) if root is not None else []
+    by_id = {cell.get("id"): cell for cell in cells if cell.get("id")}
+    edges = [cell for cell in cells if cell.get("edge") == "1"]
+    routes = []
+    port_uses = {}
+    for edge in edges:
+        route = edge_route(edge, by_id)
+        if not route:
+            continue
+        edge_id = edge.get("id")
+        routes.append((edge_id, edge, route))
+        for end in ("source", "target"):
+            point = endpoint(edge, end, by_id)
+            if point is not None:
+                key = (edge.get(end), round(point[0], 6), round(point[1], 6))
+                port_uses.setdefault(key, []).append(edge_id)
+
+    warns = []
+    shared_pairs = 0
+    exact_segments = {}
+    for edge_id, edge, route in routes:
+        for segment in layout_geometry.route_segments(route):
+            exact_segments.setdefault(layout_geometry.canonical_segment(*segment), []).append(edge_id)
+    for segment, edge_ids in sorted(exact_segments.items()):
+        unique = sorted(set(edge_ids))
+        if len(unique) >= LAYOUT_THRESHOLDS_V2["route_congestion_count"]:
+            joined = ", ".join(repr(edge_id) for edge_id in unique)
+            warns.append(f"edges {joined} congest route segment {segment!r}")
+
+    for index, (left_id, left_edge, left_route) in enumerate(routes):
+        for right_id, right_edge, right_route in routes[index + 1:]:
+            left_ends = {left_edge.get("source"), left_edge.get("target")}
+            right_ends = {right_edge.get("source"), right_edge.get("target")}
+            if left_edge.get("source") == left_edge.get("target") or right_edge.get("source") == right_edge.get("target"):
+                continue
+            if (left_edge.get("source"), left_edge.get("target")) == (right_edge.get("source"), right_edge.get("target")):
+                continue
+            if left_edge.get("data-route-group") == "bus" and right_edge.get("data-route-group") == "bus":
+                continue
+            shared = layout_geometry.shared_route_length(left_route, right_route)
+            if not shared:
+                continue
+            if left_ends & right_ends and shared <= LAYOUT_THRESHOLDS_V2["fanout_exemption_max"]:
+                continue
+            if shared >= LAYOUT_THRESHOLDS_V2["shared_segment_min"]:
+                shared_pairs += 1
+                warns.append(
+                    f"edges {left_id!r} and {right_id!r} share {shared:g}px route segment"
+                )
+
+    for (vertex_id, x, y), edge_ids in sorted(port_uses.items()):
+        unique = sorted(set(edge_ids))
+        if len(unique) >= LAYOUT_THRESHOLDS_V2["port_congestion_count"]:
+            joined = ", ".join(repr(edge_id) for edge_id in unique)
+            warns.append(f"vertex {vertex_id!r} port {x:g},{y:g} is used by edges {joined}")
+
+    for edge_id, edge, route in routes:
+        detour = layout_geometry.detour_ratio(route)
+        bends = layout_geometry.bend_count(route)
+        if detour > LAYOUT_THRESHOLDS_V2["detour_ratio"]:
+            warns.append(f"edge {edge_id!r} has excessive detour ratio {detour:g}")
+        if bends > LAYOUT_THRESHOLDS_V2["bend_count"]:
+            warns.append(f"edge {edge_id!r} has excessive bends {bends}")
+        source, target = endpoint(edge, "source", by_id), endpoint(edge, "target", by_id)
+        if source and target and source[0] > target[0]:
+            low, high = sorted((source[1], target[1]))
+            if any(point[1] < low - 1e-6 or point[1] > high + 1e-6 for point in route[1:-1]):
+                warns.append(f"edge {edge_id!r} feedback route intrudes into diagram body")
+
+    labels = [cell for cell in cells if cell.get("vertex") == "1" and is_edge_label(cell)]
+    vertices = [
+        cell for cell in cells
+        if cell.get("vertex") == "1" and not is_edge_label(cell) and abs_rect(cell, by_id) is not None
+    ]
+    label_boxes = [(cell.get("id"), abs_rect(cell, by_id)) for cell in labels if abs_rect(cell, by_id) is not None]
+    label_collisions = 0
+    for label_id, label_box in label_boxes:
+        for vertex in vertices:
+            if layout_geometry.rects_overlap(label_box, abs_rect(vertex, by_id)):
+                label_collisions += 1
+                warns.append(f"edge label {label_id!r} collides with vertex {vertex.get('id')!r}")
+        for other_id, other_box in label_boxes:
+            if label_id < other_id and layout_geometry.rects_overlap(label_box, other_box):
+                label_collisions += 1
+                warns.append(f"edge labels {label_id!r} and {other_id!r} collide")
+
+    boxes = [abs_rect(cell, by_id) for cell in vertices]
+    aspect_ratio = 0.0
+    if boxes:
+        left = min(box[0] for box in boxes)
+        top = min(box[1] for box in boxes)
+        right = max(box[0] + box[2] for box in boxes)
+        bottom = max(box[1] + box[3] for box in boxes)
+        # A diagram's visual canvas includes working margin around its content;
+        # do not punish ordinary narrow flows solely from their tight cell box.
+        width, height = right - left + 160.0, bottom - top + 160.0
+        if width > 0 and height > 0:
+            aspect_ratio = max(width / height, height / width)
+            if aspect_ratio > LAYOUT_THRESHOLDS_V2["aspect_ratio"]:
+                warns.append(f"page canvas has excessive aspect ratio {aspect_ratio:g}")
+    return warns, {
+        "shared_segment_pairs": shared_pairs,
+        "route_congested_segments": sum(
+            1 for edge_ids in exact_segments.values()
+            if len(set(edge_ids)) >= LAYOUT_THRESHOLDS_V2["route_congestion_count"]
+        ),
+        "label_collisions": label_collisions,
+        "port_congested_ports": sum(
+            1 for edge_ids in port_uses.values()
+            if len(set(edge_ids)) >= LAYOUT_THRESHOLDS_V2["port_congestion_count"]
+        ),
+        "aspect_ratio": round(aspect_ratio, 6),
+    }
+
+
 def validate_tree(tree, strict=False, profile=None, source=None, artifact_sha256=None):
     report = ValidationReport(report_version=2)
     report.details["validator"] = {"name": "publish-drawio-validator", "version": VALIDATOR_VERSION}
@@ -1010,11 +1164,15 @@ def validate_tree(tree, strict=False, profile=None, source=None, artifact_sha256
         report.schema_version = int(version) if version and version.isdigit() else None
     total_bends = 0
     total_route_length = 0.0
+    layout_metrics_v2 = []
     for page_index, page in enumerate(pages):
         bends, length = _route_metrics(page)
         total_bends += bends
         total_route_length += length
         errors, warnings = check_page(page)
+        v2_warnings, v2_metrics = _layout_v2_page(page)
+        warnings += v2_warnings
+        layout_metrics_v2.append(v2_metrics)
         for message in errors:
             code = _code(message, "error")
             remediation_class, reconstructability = _remediation(code)
@@ -1047,6 +1205,7 @@ def validate_tree(tree, strict=False, profile=None, source=None, artifact_sha256
         "route_complexity": total_bends * 1_000_000 + int(round(total_route_length)),
         "route_complexity_encoding": "bend_count*1000000+rounded_route_length",
     }
+    report.details["layout_metrics_v2"] = layout_metrics_v2
     return report.finish(strict=strict)
 
 

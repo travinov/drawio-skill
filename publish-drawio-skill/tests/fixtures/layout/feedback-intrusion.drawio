@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile><diagram name="feedback-intrusion"><mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="left" parent="1" vertex="1"><mxGeometry x="0" y="0" width="20" height="20" as="geometry"/></mxCell><mxCell id="right" parent="1" vertex="1"><mxGeometry x="200" y="0" width="20" height="20" as="geometry"/></mxCell><mxCell id="intruded" parent="1" vertex="1"><mxGeometry x="100" y="40" width="30" height="20" as="geometry"/></mxCell>
+<mxCell id="feedback" edge="1" source="right" target="left" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="180" y="50"/><mxPoint x="20" y="50"/></Array></mxGeometry></mxCell>
+</root></mxGraphModel></diagram></mxfile>

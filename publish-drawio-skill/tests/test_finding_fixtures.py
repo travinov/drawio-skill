@@ -18,6 +18,7 @@ FIXTURES = ROOT / "tests" / "fixtures"
 ROADMAP = FIXTURES / "roadmap"
 GITFLOW = FIXTURES / "gitflow"
 ARTIFACT = FIXTURES / "artifact"
+LAYOUT = FIXTURES / "layout"
 sys.path.insert(0, str(SCRIPTS))
 
 import gitflow_validate
@@ -222,6 +223,34 @@ def mutate_artifact(path, mutations):
 
 
 class ArtifactFindingFixtureTests(unittest.TestCase):
+    def test_layout_geometry_fixtures_cover_v2_codes_and_exemptions(self):
+        cases = {
+            "shared-trunk.drawio": {
+                "artifact.readability.shared_segment",
+                "artifact.readability.route_congestion",
+                "artifact.readability.port_congestion",
+            },
+            "label-collisions.drawio": {"artifact.readability.edge_label_collision"},
+            "detour-bends.drawio": {
+                "artifact.layout.excessive_detour",
+                "artifact.layout.excessive_bends",
+            },
+            "feedback-intrusion.drawio": {"artifact.layout.feedback_intrusion"},
+            "extreme-aspect.drawio": {"artifact.layout.aspect_ratio"},
+        }
+        for filename, expected in cases.items():
+            with self.subTest(fixture=filename):
+                proc = run_script("validate.py", LAYOUT / filename, "--strict", "--json")
+                self.assertNotEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+                self.assertTrue(expected.issubset(finding_codes(json.loads(proc.stdout))))
+
+    def test_layout_geometry_exemptions_do_not_emit_shared_segment(self):
+        for filename in ("allowed-fanout.drawio", "intentional-bus.drawio"):
+            with self.subTest(fixture=filename):
+                proc = run_script("validate.py", LAYOUT / filename, "--strict", "--json")
+                self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+                self.assertNotIn("artifact.readability.shared_segment", finding_codes(json.loads(proc.stdout)))
+
     def test_malformed_structural_and_readability_fixtures_cover_stable_codes(self):
         cases = {
             "malformed_xml.drawio": {"artifact.xml.parse"},
