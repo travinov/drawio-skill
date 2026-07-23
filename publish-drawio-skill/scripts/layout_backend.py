@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import selectors
+import signal
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -24,6 +27,9 @@ ELKJS_VERSION = "0.11.1"
 ELK_BACKEND_ID = f"elk-layered-{ELKJS_VERSION}"
 NODE_VERSION_PATTERN = re.compile(r"^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 BACKENDS = frozenset({"auto", "elk", "python", "legacy-generic-v2"})
+DEFAULT_CAPTURE_MAX_BYTES = 4 * 1024 * 1024
+MAX_CAPTURE_MAX_BYTES = 64 * 1024 * 1024
+PROBE_CAPTURE_MAX_BYTES = 64 * 1024
 
 
 class LayoutBackendError(RuntimeError):
@@ -51,6 +57,19 @@ class BackendExecutionError(LayoutBackendError):
 class BackendAttempt:
     result: dict
     evidence: dict
+
+
+@dataclass(frozen=True)
+class _ProcessCapture:
+    returncode: int | None
+    timed_out: bool
+    limit_stream: str | None
+    process_group_isolated: bool
+    process_reaped: bool
+    stdout_bytes_observed: int
+    stderr_bytes_observed: int
+    stdout_truncated: bool
+    stderr_truncated: bool
 
 
 def effective_options(request: Mapping[str, Any]) -> dict[str, str]:
@@ -83,10 +102,220 @@ def attempt_key(request: Mapping[str, Any]) -> tuple[str, str, str]:
 
 def _subprocess_environment(environ: Mapping[str, str] | None) -> dict[str, str]:
     source = os.environ if environ is None else environ
-    result = {str(key): str(value) for key, value in source.items()}
-    result.pop("NODE_OPTIONS", None)
-    result.pop("NODE_PATH", None)
-    return result
+    allowed = (
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TZ",
+        "SYSTEMROOT",
+        "COMSPEC",
+        "PATHEXT",
+    )
+    return {
+        key: str(source[key])
+        for key in allowed
+        if key in source and source[key] is not None
+    }
+
+
+def _capture_limit(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("layout_capture_max_bytes must be an integer")
+    if value <= 0 or value > MAX_CAPTURE_MAX_BYTES:
+        raise ValueError(
+            "layout_capture_max_bytes must be between 1 and "
+            f"{MAX_CAPTURE_MAX_BYTES}"
+        )
+    return value
+
+
+def _kill_and_reap(
+    process: subprocess.Popen,
+    *,
+    process_group_isolated: bool,
+) -> bool:
+    """Kill the isolated process group when possible, then reap the direct child."""
+    if process_group_isolated and os.name == "posix" and hasattr(os, "killpg"):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            try:
+                process.kill()
+            except OSError:
+                pass
+    else:
+        try:
+            process.kill()
+        except OSError:
+            pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        process.wait()
+    return process.returncode is not None
+
+
+def _run_bounded_process(
+    command: list[str],
+    *,
+    input_bytes: bytes | None,
+    timeout_seconds: float,
+    capture_max_bytes: int,
+    stdout_path: Path,
+    stderr_path: Path,
+    environ: Mapping[str, str] | None,
+) -> _ProcessCapture:
+    """Stream captures to bounded files and terminate the whole group on breach."""
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or timeout_seconds <= 0
+    ):
+        raise ValueError("timeout_seconds must be a positive number")
+    capture_max_bytes = _capture_limit(capture_max_bytes)
+    stdout_path.parent.mkdir(parents=True, exist_ok=True)
+    stderr_path.parent.mkdir(parents=True, exist_ok=True)
+    stdout_path.write_bytes(b"")
+    stderr_path.write_bytes(b"")
+    process_group_isolated = os.name == "posix" and hasattr(os, "killpg")
+    process: subprocess.Popen | None = None
+    streams: dict[str, Any] = {}
+    selector: selectors.BaseSelector | None = None
+    input_handle = tempfile.TemporaryFile()
+    if input_bytes is not None:
+        input_handle.write(input_bytes)
+        input_handle.seek(0)
+    try:
+        with stdout_path.open("wb") as stdout_handle, stderr_path.open("wb") as stderr_handle:
+            kwargs: dict[str, Any] = {
+                "stdin": input_handle if input_bytes is not None else subprocess.DEVNULL,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "env": _subprocess_environment(environ),
+                "close_fds": True,
+            }
+            if process_group_isolated:
+                kwargs["start_new_session"] = True
+            try:
+                process = subprocess.Popen(command, **kwargs)
+            except TypeError:
+                if not process_group_isolated:
+                    raise
+                process_group_isolated = False
+                kwargs.pop("start_new_session", None)
+                process = subprocess.Popen(command, **kwargs)
+            if process.stdout is None or process.stderr is None:
+                raise RuntimeError("bounded process capture pipes are unavailable")
+            selector = selectors.DefaultSelector()
+            observed = {"stdout": 0, "stderr": 0}
+            written = {"stdout": 0, "stderr": 0}
+            handles = {"stdout": stdout_handle, "stderr": stderr_handle}
+            streams = {"stdout": process.stdout, "stderr": process.stderr}
+            for stream_name, stream in streams.items():
+                os.set_blocking(stream.fileno(), False)
+                selector.register(stream, selectors.EVENT_READ, stream_name)
+            started = time.monotonic()
+            timed_out = False
+            limit_stream: str | None = None
+            process_reaped = False
+            while selector.get_map() or process.poll() is None:
+                remaining = float(timeout_seconds) - (time.monotonic() - started)
+                if remaining <= 0:
+                    timed_out = True
+                    process_reaped = _kill_and_reap(
+                        process, process_group_isolated=process_group_isolated
+                    )
+                    break
+                if selector.get_map():
+                    events = selector.select(timeout=min(0.02, remaining))
+                else:
+                    time.sleep(min(0.02, remaining))
+                    events = []
+                for key, _ in events:
+                    stream_name = key.data
+                    try:
+                        chunk = os.read(key.fileobj.fileno(), 64 * 1024)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        key.fileobj.close()
+                        continue
+                    observed[stream_name] += len(chunk)
+                    allowance = max(0, capture_max_bytes - written[stream_name])
+                    if allowance:
+                        retained = chunk[:allowance]
+                        handles[stream_name].write(retained)
+                        written[stream_name] += len(retained)
+                    if len(chunk) > allowance:
+                        limit_stream = stream_name
+                        process_reaped = _kill_and_reap(
+                            process, process_group_isolated=process_group_isolated
+                        )
+                        break
+                if limit_stream is not None:
+                    break
+                if process.poll() is not None and not selector.get_map():
+                    process.wait()
+                    process_reaped = True
+                    break
+            if (timed_out or limit_stream is not None) and selector.get_map():
+                for key in list(selector.get_map().values()):
+                    try:
+                        selector.unregister(key.fileobj)
+                    except (KeyError, ValueError):
+                        pass
+                    key.fileobj.close()
+            selector.close()
+            selector = None
+            if not process_reaped:
+                process.wait()
+                process_reaped = True
+            stdout_handle.flush()
+            stderr_handle.flush()
+    finally:
+        if process is not None and process.poll() is None:
+            _kill_and_reap(
+                process, process_group_isolated=process_group_isolated
+            )
+        if selector is not None:
+            selector.close()
+        for stream in streams.values():
+            if not stream.closed:
+                stream.close()
+        input_handle.close()
+
+    stdout_observed = observed["stdout"]
+    stderr_observed = observed["stderr"]
+    stdout_truncated = stdout_observed > stdout_path.stat().st_size
+    stderr_truncated = stderr_observed > stderr_path.stat().st_size
+    return _ProcessCapture(
+        returncode=process.returncode if process is not None else None,
+        timed_out=timed_out,
+        limit_stream=limit_stream,
+        process_group_isolated=process_group_isolated,
+        process_reaped=process_reaped,
+        stdout_bytes_observed=stdout_observed,
+        stderr_bytes_observed=stderr_observed,
+        stdout_truncated=stdout_truncated,
+        stderr_truncated=stderr_truncated,
+    )
+
+
+def _capture_text(path: Path, capture_max_bytes: int) -> str:
+    with path.open("rb") as handle:
+        return handle.read(capture_max_bytes).decode("utf-8", errors="replace")
 
 
 def _probe_node(
@@ -99,32 +328,57 @@ def _probe_node(
         return None
     environment = _subprocess_environment(environ)
     try:
-        version_run = subprocess.run(
-            [str(candidate), "--version"],
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            env=environment,
-            check=False,
-        )
-        version = version_run.stdout.strip()
-        if (
-            version_run.returncode != 0
-            or version_run.stderr.strip()
-            or not NODE_VERSION_PATTERN.fullmatch(version)
-        ):
-            return None
-        bridge_run = subprocess.run(
-            [str(candidate), str(ELK_RUNNER), "--probe"],
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            env=environment,
-            check=False,
-        )
-        if bridge_run.returncode != 0 or bridge_run.stderr.strip():
-            return None
-        proof = json.loads(bridge_run.stdout)
+        with tempfile.TemporaryDirectory(prefix="drawio-node-probe-") as temp:
+            capture_root = Path(temp)
+            version_stdout = capture_root / "version.stdout"
+            version_stderr = capture_root / "version.stderr"
+            version_run = _run_bounded_process(
+                [str(candidate), "--version"],
+                input_bytes=None,
+                timeout_seconds=timeout_seconds,
+                capture_max_bytes=PROBE_CAPTURE_MAX_BYTES,
+                stdout_path=version_stdout,
+                stderr_path=version_stderr,
+                environ=environment,
+            )
+            version = _capture_text(
+                version_stdout, PROBE_CAPTURE_MAX_BYTES
+            ).strip()
+            version_error = _capture_text(
+                version_stderr, PROBE_CAPTURE_MAX_BYTES
+            ).strip()
+            if (
+                version_run.returncode != 0
+                or version_run.timed_out
+                or version_run.limit_stream is not None
+                or version_error
+                or not NODE_VERSION_PATTERN.fullmatch(version)
+            ):
+                return None
+            bridge_stdout = capture_root / "bridge.stdout"
+            bridge_stderr = capture_root / "bridge.stderr"
+            bridge_run = _run_bounded_process(
+                [str(candidate), str(ELK_RUNNER), "--probe"],
+                input_bytes=None,
+                timeout_seconds=timeout_seconds,
+                capture_max_bytes=PROBE_CAPTURE_MAX_BYTES,
+                stdout_path=bridge_stdout,
+                stderr_path=bridge_stderr,
+                environ=environment,
+            )
+            bridge_error = _capture_text(
+                bridge_stderr, PROBE_CAPTURE_MAX_BYTES
+            ).strip()
+            if (
+                bridge_run.returncode != 0
+                or bridge_run.timed_out
+                or bridge_run.limit_stream is not None
+                or bridge_error
+            ):
+                return None
+            proof = json.loads(
+                _capture_text(bridge_stdout, PROBE_CAPTURE_MAX_BYTES)
+            )
         if (
             not isinstance(proof, dict)
             or proof.get("bridge") != "drawio-elk-runner"
@@ -171,18 +425,12 @@ def _artifact_directory() -> Path:
     return Path(tempfile.mkdtemp(prefix="drawio-layout-elk-")).resolve()
 
 
-def _write_capture(path: Path, value: str | bytes | None) -> None:
-    if isinstance(value, bytes):
-        path.write_bytes(value)
-    else:
-        path.write_text(value or "", encoding="utf-8")
-
-
 def _base_evidence(
     request: Mapping[str, Any],
     *,
     node: Path | None,
     timeout_seconds: float,
+    capture_max_bytes: int,
 ) -> dict[str, Any]:
     request_sha256, strategy_id, options_sha256 = attempt_key(request)
     return {
@@ -192,11 +440,18 @@ def _base_evidence(
         "node_version": None,
         "elkjs_version": ELKJS_VERSION,
         "timeout_seconds": timeout_seconds,
+        "capture_max_bytes": capture_max_bytes,
         "exit_code": None,
         "stdout_path": None,
         "stdout_sha256": None,
         "stderr_path": None,
         "stderr_sha256": None,
+        "stdout_bytes_observed": 0,
+        "stderr_bytes_observed": 0,
+        "stdout_truncated": False,
+        "stderr_truncated": False,
+        "process_group_isolated": False,
+        "process_reaped": False,
         "request_sha256": request_sha256,
         "result_sha256": None,
         "schema_valid": False,
@@ -285,13 +540,20 @@ def run_elk(
     *,
     node: Path,
     timeout_seconds: float,
+    capture_max_bytes: int = DEFAULT_CAPTURE_MAX_BYTES,
 ) -> BackendAttempt:
     """Run the committed bridge once and accept only strict request-bound JSON."""
     layout_contracts.require_layout_request(request)
     if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be a positive number")
+    capture_max_bytes = _capture_limit(capture_max_bytes)
     node = Path(node).expanduser().resolve()
-    evidence = _base_evidence(request, node=node, timeout_seconds=float(timeout_seconds))
+    evidence = _base_evidence(
+        request,
+        node=node,
+        timeout_seconds=float(timeout_seconds),
+        capture_max_bytes=capture_max_bytes,
+    )
     proof = _probe_node(node, environ=os.environ)
     if proof is None:
         evidence["fallback_reason"] = "node_or_bridge_probe_failed"
@@ -304,38 +566,19 @@ def run_elk(
     bridge_request = dict(request)
     bridge_request["__request_sha256"] = evidence["request_sha256"]
     command = [str(node), str(ELK_RUNNER)]
-    stdout_value = ""
-    stderr_value = ""
     try:
-        completed = subprocess.run(
+        completed = _run_bounded_process(
             command,
-            input=canonical_json_bytes(bridge_request).decode("utf-8"),
-            capture_output=True,
-            text=True,
-            timeout=float(timeout_seconds),
-            env=_subprocess_environment(os.environ),
-            check=False,
+            input_bytes=canonical_json_bytes(bridge_request),
+            timeout_seconds=float(timeout_seconds),
+            capture_max_bytes=capture_max_bytes,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            environ=os.environ,
         )
-        stdout_value, stderr_value = completed.stdout, completed.stderr
-        evidence["exit_code"] = completed.returncode
-    except subprocess.TimeoutExpired as exc:
-        stdout_value, stderr_value = exc.stdout or "", exc.stderr or ""
-        _write_capture(stdout_path, stdout_value)
-        _write_capture(stderr_path, stderr_value)
-        evidence.update(
-            {
-                "stdout_path": str(stdout_path),
-                "stdout_sha256": file_sha256(stdout_path),
-                "stderr_path": str(stderr_path),
-                "stderr_sha256": file_sha256(stderr_path),
-                "fallback_reason": "elk_timeout",
-            }
-        )
-        raise BackendExecutionError("elk_timeout", evidence) from exc
     except OSError as exc:
-        stderr_value = str(exc)
-        _write_capture(stdout_path, "")
-        _write_capture(stderr_path, stderr_value)
+        stdout_path.write_bytes(b"")
+        stderr_path.write_text(str(exc), encoding="utf-8")
         evidence.update(
             {
                 "stdout_path": str(stdout_path),
@@ -347,19 +590,36 @@ def run_elk(
         )
         raise BackendExecutionError("elk_process_error", evidence) from exc
 
-    _write_capture(stdout_path, stdout_value)
-    _write_capture(stderr_path, stderr_value)
     evidence.update(
         {
+            "exit_code": completed.returncode,
             "stdout_path": str(stdout_path),
             "stdout_sha256": file_sha256(stdout_path),
             "stderr_path": str(stderr_path),
             "stderr_sha256": file_sha256(stderr_path),
+            "stdout_bytes_observed": completed.stdout_bytes_observed,
+            "stderr_bytes_observed": completed.stderr_bytes_observed,
+            "stdout_truncated": completed.stdout_truncated,
+            "stderr_truncated": completed.stderr_truncated,
+            "process_group_isolated": completed.process_group_isolated,
+            "process_reaped": completed.process_reaped,
         }
     )
+    if completed.limit_stream is not None:
+        reason = f"elk_capture_limit_exceeded_{completed.limit_stream}"
+        evidence["fallback_reason"] = reason
+        raise BackendExecutionError(reason, evidence)
+    if completed.timed_out:
+        evidence["fallback_reason"] = "elk_timeout"
+        raise BackendExecutionError("elk_timeout", evidence)
     if evidence["exit_code"] != 0:
         evidence["fallback_reason"] = "elk_nonzero_exit"
         raise BackendExecutionError("elk_nonzero_exit", evidence)
+    stdout_value = _capture_text(stdout_path, capture_max_bytes)
+    stderr_value = _capture_text(stderr_path, capture_max_bytes)
+    if stderr_value.strip():
+        evidence["fallback_reason"] = "elk_stderr_nonempty"
+        raise BackendExecutionError("elk_stderr_nonempty", evidence)
     try:
         result = _strict_json(stdout_value)
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
@@ -408,11 +668,18 @@ def _python_attempt(
         "node_version": None,
         "elkjs_version": ELKJS_VERSION,
         "timeout_seconds": None,
+        "capture_max_bytes": None,
         "exit_code": None,
         "stdout_path": None,
         "stdout_sha256": None,
         "stderr_path": None,
         "stderr_sha256": None,
+        "stdout_bytes_observed": 0,
+        "stderr_bytes_observed": 0,
+        "stdout_truncated": False,
+        "stderr_truncated": False,
+        "process_group_isolated": False,
+        "process_reaped": False,
         "request_sha256": request_sha256,
         "result_sha256": canonical_json_sha256(result),
         "schema_valid": True,
@@ -430,11 +697,18 @@ def _python_attempt(
             "node_executable",
             "node_version",
             "timeout_seconds",
+            "capture_max_bytes",
             "exit_code",
             "stdout_path",
             "stdout_sha256",
             "stderr_path",
             "stderr_sha256",
+            "stdout_bytes_observed",
+            "stderr_bytes_observed",
+            "stdout_truncated",
+            "stderr_truncated",
+            "process_group_isolated",
+            "process_reaped",
         ):
             evidence[field] = elk_evidence.get(field)
     return BackendAttempt(result=result, evidence=evidence)
@@ -478,12 +752,22 @@ def run_layout(
             fallback_reason="verified_node_unavailable",
         )
     timeout_seconds = config.get("layout_timeout_seconds", 30)
+    capture_max_bytes = config.get(
+        "layout_capture_max_bytes", DEFAULT_CAPTURE_MAX_BYTES
+    )
     try:
-        attempt = run_elk(request, node=node, timeout_seconds=timeout_seconds)
+        attempt = run_elk(
+            request,
+            node=node,
+            timeout_seconds=timeout_seconds,
+            capture_max_bytes=capture_max_bytes,
+        )
         evidence = dict(attempt.evidence)
         evidence["backend_requested"] = str(backend)
         return BackendAttempt(result=attempt.result, evidence=evidence)
     except BackendExecutionError as exc:
+        if backend == "elk":
+            raise
         return _python_attempt(
             request,
             requested_backend=str(backend),

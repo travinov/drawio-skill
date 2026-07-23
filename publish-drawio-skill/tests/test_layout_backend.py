@@ -1,4 +1,4 @@
-import copy
+import hashlib
 import json
 import os
 import stat
@@ -108,11 +108,10 @@ import os
 import sys
 import time
 
-log = os.environ.get("FAKE_NODE_LOG")
-if log:
-    with open(log, "a", encoding="utf-8") as handle:
-        handle.write(os.path.basename(sys.argv[0]) + " " + " ".join(sys.argv[1:]) + "\n")
-mode = os.environ.get("FAKE_NODE_MODE", "success")
+log = sys.argv[0] + ".log"
+with open(log, "a", encoding="utf-8") as handle:
+    handle.write(os.path.basename(sys.argv[0]) + " " + " ".join(sys.argv[1:]) + "\n")
+mode = "success"
 if sys.argv[1:] == ["--version"]:
     if mode == "bad-version":
         print("not-node")
@@ -129,12 +128,31 @@ request = json.load(sys.stdin)
 digest = request.pop("__request_sha256")
 if mode == "timeout":
     time.sleep(2)
+if mode == "timeout-child":
+    import subprocess
+    marker = sys.argv[0] + ".marker"
+    subprocess.Popen([
+        sys.executable, "-c",
+        "import pathlib,time,sys; time.sleep(0.35); pathlib.Path(sys.argv[1]).write_text('leaked')",
+        marker,
+    ])
+    time.sleep(2)
 if mode == "nonzero":
     print("synthetic elk failure", file=sys.stderr)
     raise SystemExit(2)
 if mode == "invalid-json":
     print("not json")
     raise SystemExit(0)
+if mode == "oversized-stdout":
+    sys.stdout.write("x" * 8192)
+    sys.stdout.flush()
+    time.sleep(2)
+if mode == "oversized-stderr":
+    sys.stderr.write("x" * 8192)
+    sys.stderr.flush()
+    time.sleep(2)
+if mode == "environment-check" and os.environ.get("DRAWIO_TEST_SECRET"):
+    print("parent environment leaked", file=sys.stderr)
 result = {
     "schema_version": 1,
     "result_id": "elk-" + digest[:16],
@@ -170,6 +188,10 @@ if mode == "diagonal":
 if mode == "wrong-request":
     result["request_sha256"] = "b" * 64
 print(json.dumps(result, allow_nan=True, separators=(",", ":")))
+if mode == "stderr-warning":
+    print("unexpected warning", file=sys.stderr)
+if mode == "stderr-whitespace":
+    print("  ", file=sys.stderr)
 """
 
 
@@ -191,6 +213,10 @@ class LayoutBackendTests(unittest.TestCase):
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
         return path
 
+    def _node_for_mode(self, mode, *, name=None):
+        source = FAKE_NODE.replace('mode = "success"', f'mode = {mode!r}')
+        return self._executable(name or f"node-{mode}", source)
+
     def _environment(self, **values):
         result = dict(os.environ)
         result.update({key: str(value) for key, value in values.items()})
@@ -198,32 +224,28 @@ class LayoutBackendTests(unittest.TestCase):
 
     def test_configured_absolute_node_wins_after_version_and_bridge_probe(self):
         path_node = self._executable("node", FAKE_NODE)
-        log = self.root / "node.log"
         environ = self._environment(
             PATH=str(self.root),
-            FAKE_NODE_LOG=log,
-            FAKE_NODE_MODE="success",
         )
         resolved = layout_backend.resolve_node({"node_bin": str(self.node)}, environ=environ)
         self.assertEqual(resolved, self.node.resolve())
-        calls = log.read_text(encoding="utf-8")
+        calls = Path(str(self.node) + ".log").read_text(encoding="utf-8")
         self.assertIn("configured-node --version", calls)
         self.assertIn("configured-node ", calls)
         self.assertNotIn(f"\n{path_node.name} --version\n", f"\n{calls}")
 
     def test_path_node_requires_a_valid_version_and_bridge_probe(self):
         self._executable("node", FAKE_NODE)
-        good = self._environment(PATH=str(self.root), FAKE_NODE_MODE="success")
-        bad_version = self._environment(PATH=str(self.root), FAKE_NODE_MODE="bad-version")
-        bad_probe = self._environment(PATH=str(self.root), FAKE_NODE_MODE="bad-probe")
+        good = self._environment(PATH=str(self.root))
         self.assertEqual(layout_backend.resolve_node({"node_bin": None}, environ=good), (self.root / "node").resolve())
-        self.assertIsNone(layout_backend.resolve_node({"node_bin": None}, environ=bad_version))
-        self.assertIsNone(layout_backend.resolve_node({"node_bin": None}, environ=bad_probe))
+        self._node_for_mode("bad-version", name="node")
+        self.assertIsNone(layout_backend.resolve_node({"node_bin": None}, environ=good))
+        self._node_for_mode("bad-probe", name="node")
+        self.assertIsNone(layout_backend.resolve_node({"node_bin": None}, environ=good))
 
     def test_run_elk_accepts_only_strict_request_bound_json_and_records_proof(self):
         request = layout_request()
-        with mock.patch.dict(os.environ, {"FAKE_NODE_MODE": "success"}, clear=False):
-            attempt = layout_backend.run_elk(request, node=self.node, timeout_seconds=1)
+        attempt = layout_backend.run_elk(request, node=self.node, timeout_seconds=1)
         self.assertEqual(attempt.result, valid_elk_result(request))
         self.assertEqual(layout_contracts.validate_layout_result(
             attempt.result, expected_request_sha256=canonical_json_sha256(request)
@@ -242,14 +264,13 @@ class LayoutBackendTests(unittest.TestCase):
         request = layout_request()
         expected_digest = canonical_json_sha256(request)
         for mode in ("timeout", "nonzero", "invalid-json", "nonfinite", "missing-edge", "diagonal", "wrong-request"):
+            node = self._node_for_mode(mode)
             with self.subTest(mode=mode), mock.patch.dict(
-                os.environ,
-                {"FAKE_NODE_MODE": mode, "PATH": str(self.root)},
-                clear=False,
+                os.environ, {"PATH": str(self.root)}, clear=False
             ):
                 attempt = layout_backend.run_layout(
                     request,
-                    config={"node_bin": str(self.node), "layout_backend": "auto", "layout_timeout_seconds": 0.1},
+                    config={"node_bin": str(node), "layout_backend": "auto", "layout_timeout_seconds": 0.1},
                 )
             self.assertEqual(attempt.result["backend"], "python-layered")
             self.assertEqual(attempt.result["request_sha256"], expected_digest)
@@ -289,8 +310,8 @@ class LayoutBackendTests(unittest.TestCase):
 
     def test_runtime_never_invokes_package_or_network_commands(self):
         marker = self.root / "forbidden.log"
-        trap = """#!/bin/sh
-echo "$0 $@" >> "$FORBIDDEN_LOG"
+        trap = f"""#!/bin/sh
+echo "$0 $@" >> "{marker}"
 exit 99
 """
         for name in ("npm", "npx", "curl"):
@@ -301,8 +322,6 @@ exit 99
             os.environ,
             {
                 "PATH": str(self.root),
-                "FAKE_NODE_MODE": "success",
-                "FORBIDDEN_LOG": str(marker),
             },
             clear=False,
         ):
@@ -310,6 +329,98 @@ exit 99
         self.assertEqual(attempt.result["backend"], "elk-layered-0.11.1")
         self.assertEqual(attempt.evidence["backend_requested"], "auto")
         self.assertFalse(marker.exists())
+
+    def test_runtime_passes_only_the_environment_allowlist(self):
+        request = layout_request()
+        node = self._node_for_mode("environment-check")
+        with mock.patch.dict(
+            os.environ,
+            {
+                "DRAWIO_TEST_SECRET": "must-not-reach-node",
+                "NODE_OPTIONS": "--require=/does/not/exist.js",
+            },
+            clear=False,
+        ):
+            attempt = layout_backend.run_layout(
+                request,
+                config={"layout_backend": "auto", "node_bin": str(node)},
+            )
+        self.assertEqual(attempt.result["backend"], "elk-layered-0.11.1")
+        self.assertEqual(attempt.evidence["stderr_bytes_observed"], 0)
+
+    def test_nonempty_stderr_is_rejected_but_whitespace_is_accepted(self):
+        request = layout_request()
+        warning_node = self._node_for_mode("stderr-warning")
+        attempt = layout_backend.run_layout(
+            request,
+            config={"layout_backend": "auto", "node_bin": str(warning_node)},
+        )
+        self.assertEqual(attempt.result["backend"], "python-layered")
+        self.assertEqual(attempt.evidence["fallback_reason"], "elk_stderr_nonempty")
+        self.assertEqual(
+            Path(attempt.evidence["stderr_path"]).read_text(encoding="utf-8").strip(),
+            "unexpected warning",
+        )
+        with self.assertRaises(layout_backend.BackendExecutionError) as raised:
+            layout_backend.run_layout(
+                request,
+                config={"layout_backend": "elk", "node_bin": str(warning_node)},
+            )
+        self.assertEqual(raised.exception.reason, "elk_stderr_nonempty")
+
+        whitespace_node = self._node_for_mode("stderr-whitespace")
+        accepted = layout_backend.run_layout(
+            request,
+            config={"layout_backend": "auto", "node_bin": str(whitespace_node)},
+        )
+        self.assertEqual(accepted.result["backend"], "elk-layered-0.11.1")
+
+    def test_timeout_kills_the_process_group_and_reaps_spawned_helper(self):
+        request = layout_request()
+        node = self._node_for_mode("timeout-child")
+        attempt = layout_backend.run_layout(
+            request,
+            config={
+                "layout_backend": "auto",
+                "node_bin": str(node),
+                "layout_timeout_seconds": 0.1,
+            },
+        )
+        self.assertEqual(attempt.evidence["fallback_reason"], "elk_timeout")
+        self.assertTrue(attempt.evidence["process_group_isolated"])
+        self.assertTrue(attempt.evidence["process_reaped"])
+        import time
+        time.sleep(0.5)
+        self.assertFalse(Path(str(node) + ".marker").exists())
+
+    def test_capture_limit_kills_oversized_stdout_and_stderr_with_truthful_evidence(self):
+        request = layout_request()
+        for mode, stream in (("oversized-stdout", "stdout"), ("oversized-stderr", "stderr")):
+            node = self._node_for_mode(mode)
+            with self.subTest(mode=mode):
+                attempt = layout_backend.run_layout(
+                    request,
+                    config={
+                        "layout_backend": "auto",
+                        "node_bin": str(node),
+                        "layout_timeout_seconds": 1,
+                        "layout_capture_max_bytes": 1024,
+                    },
+                )
+            self.assertEqual(
+                attempt.evidence["fallback_reason"],
+                f"elk_capture_limit_exceeded_{stream}",
+            )
+            self.assertEqual(attempt.evidence["capture_max_bytes"], 1024)
+            self.assertTrue(attempt.evidence[f"{stream}_truncated"])
+            path = Path(attempt.evidence[f"{stream}_path"])
+            self.assertLessEqual(path.stat().st_size, 1024)
+            self.assertEqual(
+                hashlib.sha256(path.read_bytes()).hexdigest(),
+                attempt.evidence[f"{stream}_sha256"],
+            )
+            self.assertGreater(attempt.evidence[f"{stream}_bytes_observed"], 1024)
+            self.assertTrue(attempt.evidence["process_reaped"])
 
 
 if __name__ == "__main__":

@@ -46,6 +46,7 @@ Configuration:
   "node_bin": null,
   "layout_backend": "auto",
   "layout_timeout_seconds": 30,
+  "layout_capture_max_bytes": 4194304,
   "layout_wall_clock_seconds": 180
 }
 ```
@@ -54,11 +55,18 @@ Configuration:
 
 - `auto`: verified vendored ELK first, then the Python backend on any bounded
   ELK execution or contract failure;
-- `elk`: require a verified Node executable, while still falling back to
-  Python if an ELK execution/result fails after Node verification;
+- `elk`: require a verified Node executable and fail closed on every ELK
+  execution, stderr, capture, or result-contract failure;
 - `python`: do not resolve or start Node;
 - `legacy-generic-v2`: explicit compatibility renderer selection only; it is
   never an automatic layout default.
 
-`layout_timeout_seconds` bounds one ELK subprocess. The lifecycle host owns the
-larger `layout_wall_clock_seconds` budget across a finite strategy set.
+`layout_timeout_seconds` bounds one ELK subprocess. The subprocess runs in an
+isolated process group on macOS/POSIX; timeout or capture overflow kills and
+reaps the full group, with a direct-child fallback on platforms without process
+group APIs. `layout_capture_max_bytes` bounds each of stdout and stderr while
+they stream to evidence files (default 4 MiB, hard maximum 64 MiB). A truncated
+prefix is retained and hashed with observed-byte and truncation evidence; it is
+never parsed as a result. Any non-whitespace stderr is a failed ELK attempt.
+The lifecycle host owns the larger `layout_wall_clock_seconds` budget across a
+finite strategy set.

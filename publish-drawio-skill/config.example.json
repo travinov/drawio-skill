@@ -3,5 +3,6 @@
   "node_bin": null,
   "layout_backend": "auto",
   "layout_timeout_seconds": 30,
+  "layout_capture_max_bytes": 4194304,
   "layout_wall_clock_seconds": 180
 }
