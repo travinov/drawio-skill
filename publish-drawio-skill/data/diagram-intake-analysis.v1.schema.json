@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agents365.local/drawio-skill/schemas/diagram-intake-analysis.v1.schema.json",
+  "title": "Diagram intake analysis v1", "type": "object",
+  "required": ["schema_version", "role", "status", "result"], "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1}, "role": {"const": "semantic_analyst"},
+    "status": {"enum": ["ok", "needs_human", "failed"]}, "result": {"$ref": "#/$defs/result"}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1}, "sha": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "diagramType": {"enum": ["flowchart", "bpmn", "c4", "er", "dependency", "sequence", "roadmap", "git-flow", "generic"]},
+    "question": {"type": "object", "required": ["question_id", "text"], "additionalProperties": false, "properties": {"question_id": {"$ref": "#/$defs/id"}, "text": {"$ref": "#/$defs/id"}}},
+    "answer": {"type": "object", "required": ["question_id", "text"], "additionalProperties": false, "properties": {"question_id": {"$ref": "#/$defs/id"}, "text": {"type": "string"}}},
+    "note": {"type": "object", "required": ["note_id", "text"], "additionalProperties": false, "properties": {"note_id": {"$ref": "#/$defs/id"}, "text": {"$ref": "#/$defs/id"}}},
+    "result": {"type": "object", "required": ["schema_version", "intake_id", "mode", "request_sha256", "status", "classification", "questions", "answers", "assumptions", "completeness"], "additionalProperties": false, "properties": {"schema_version": {"const": 1}, "intake_id": {"$ref": "#/$defs/id"}, "mode": {"enum": ["create", "preserve", "local_reflow", "full_reflow"]}, "request_sha256": {"$ref": "#/$defs/sha"}, "status": {"enum": ["pending", "complete", "needs_human"]}, "classification": {"$ref": "#/$defs/diagramType"}, "questions": {"type": "array", "items": {"$ref": "#/$defs/question"}}, "answers": {"type": "array", "items": {"$ref": "#/$defs/answer"}}, "assumptions": {"type": "array", "items": {"$ref": "#/$defs/note"}}, "completeness": {"type": "number", "minimum": 0, "maximum": 1}}}
+  }
+}

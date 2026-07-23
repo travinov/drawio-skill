@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://agents365.local/drawio-skill/schemas/layout-repair-intent.v1.schema.json", "title": "Layout repair intent v1", "type": "object",
+  "required": ["schema_version", "role", "status", "run_id", "baseline_sha256", "result"], "additionalProperties": false,
+  "properties": {"schema_version": {"const": 1}, "role": {"const": "repair"}, "status": {"enum": ["ok", "needs_human", "failed"]}, "run_id": {"$ref": "#/$defs/id"}, "baseline_sha256": {"$ref": "#/$defs/sha"}, "result": {"$ref": "#/$defs/result"}},
+  "$defs": {"id": {"type": "string", "minLength": 1}, "sha": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "result": {"type": "object", "required": ["action", "page_id", "node_ids", "edge_ids", "reason"], "additionalProperties": false, "properties": {"action": {"enum": ["reroute_edges", "move_adjacent_nodes", "expand_layer", "expand_component", "finish_best_effort"]}, "page_id": {"$ref": "#/$defs/id"}, "node_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}}, "edge_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}}, "reason": {"$ref": "#/$defs/id"}}}}
+}

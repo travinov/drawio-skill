@@ -43,6 +43,19 @@ class SchemaCompilationTests(unittest.TestCase):
             with self.subTest(path=path.name):
                 jsonschema.Draft202012Validator.check_schema(json.loads(path.read_text(encoding="utf-8")))
 
+    def test_layout_schema_kinds_are_bundled(self):
+        import lifecycle_contracts
+
+        for kind in (
+            "diagram-intake",
+            "diagram-intake-analysis",
+            "layout-request",
+            "layout-result",
+            "layout-repair-intent",
+        ):
+            with self.subTest(kind=kind):
+                self.assertEqual(lifecycle_contracts.load_schema(kind, 1)["$schema"], "https://json-schema.org/draft/2020-12/schema")
+
 
 class RoadmapContractTests(unittest.TestCase):
     def test_every_scale_validates_generates_profiles_and_is_deterministic(self):
