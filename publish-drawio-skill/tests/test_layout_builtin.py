@@ -130,6 +130,55 @@ class LayoutBuiltinTests(unittest.TestCase):
         self.assertEqual(bounds["page-a/end"]["y"], 0)
         self.assertFalse(_overlap(bounds["page-a/left"], bounds["page-a/right"]))
 
+    def test_locked_parent_contains_multiple_movable_children_without_moving(self):
+        parent = _node("parent", x=100, y=100, width=500, height=350, locked=True)
+        request = layout_request(nodes=[
+            parent,
+            _node("child-a", width=120, height=70, parent_id="parent"),
+            _node("child-b", width=120, height=70, parent_id="parent"),
+        ], edges=[_edge("a-b", "child-a", "child-b")])
+        before = {"x": 100, "y": 100, "width": 500, "height": 350}
+        bounds = layout_builtin.assign_coordinates(request, {"parent": 0, "child-a": 1, "child-b": 2})
+        self.assertEqual(bounds["page-a/parent"], before)
+        self.assertTrue(_contains(bounds["page-a/parent"], bounds["page-a/child-a"]))
+        self.assertTrue(_contains(bounds["page-a/parent"], bounds["page-a/child-b"]))
+        self.assertFalse(_overlap(bounds["page-a/child-a"], bounds["page-a/child-b"]))
+
+    def test_locked_outer_parent_contains_nested_unlocked_subtree(self):
+        request = layout_request(nodes=[
+            _node("outer", x=100, y=100, width=600, height=500, locked=True),
+            _node("inner", width=200, height=120, parent_id="outer"),
+            _node("first", width=110, height=70, parent_id="inner"),
+            _node("second", width=110, height=70, parent_id="inner"),
+        ], edges=[_edge("first-second", "first", "second")])
+        bounds = layout_builtin.assign_coordinates(request, {"outer": 0, "inner": 1, "first": 2, "second": 3})
+        outer = bounds["page-a/outer"]
+        for node_id in ("inner", "first", "second"):
+            self.assertTrue(_contains(outer, bounds[f"page-a/{node_id}"]))
+
+    def test_insufficient_locked_parent_capacity_fails_closed(self):
+        request = layout_request(nodes=[
+            _node("parent", x=0, y=0, width=180, height=120, locked=True),
+            _node("child-a", width=100, height=60, parent_id="parent"),
+            _node("child-b", width=100, height=60, parent_id="parent"),
+        ], edges=[_edge("a-b", "child-a", "child-b")])
+        with self.assertRaisesRegex(ValueError, "locked parent.*capacity"):
+            layout_builtin.assign_coordinates(request, {"parent": 0, "child-a": 1, "child-b": 2})
+
+    def test_locked_descendant_is_unchanged_or_rejected_when_outside_locked_parent(self):
+        valid = layout_request(nodes=[
+            _node("parent", x=0, y=0, width=400, height=300, locked=True),
+            _node("child", x=100, y=100, width=100, height=60, locked=True, parent_id="parent"),
+        ], edges=[])
+        bounds = layout_builtin.assign_coordinates(valid, {"parent": 0, "child": 1})
+        self.assertEqual(bounds["page-a/child"], {"x": 100, "y": 100, "width": 100, "height": 60})
+        invalid = layout_request(nodes=[
+            _node("parent", x=0, y=0, width=200, height=120, locked=True),
+            _node("child", x=150, y=80, width=100, height=60, locked=True, parent_id="parent"),
+        ], edges=[])
+        with self.assertRaisesRegex(ValueError, "locked parent.*locked child"):
+            layout_builtin.assign_coordinates(invalid, {"parent": 0, "child": 1})
+
     def test_nested_containers_and_lanes_keep_children_inside_parents(self):
         fixture = json.loads((FIXTURES / "nested-containers.json").read_text(encoding="utf-8"))
         request = layout_request(nodes=fixture["nodes"], edges=fixture["edges"])

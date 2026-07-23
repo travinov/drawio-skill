@@ -294,6 +294,141 @@ def _expand_containers(
             raise ValueError("layout parent hierarchy contains a cycle")
 
 
+def _subtree_ids(root_id: str, children: Mapping[str, Sequence[str]]) -> list[str]:
+    output: list[str] = []
+
+    def visit(node_id: str) -> None:
+        output.append(node_id)
+        for child_id in children.get(node_id, ()):
+            visit(child_id)
+
+    visit(root_id)
+    return output
+
+
+def _translate_subtree(
+    root_id: str, children: Mapping[str, Sequence[str]], bounds: dict[str, dict[str, float]], *, x: float, y: float
+) -> None:
+    original = bounds[root_id]
+    dx, dy = x - original["x"], y - original["y"]
+    for node_id in _subtree_ids(root_id, children):
+        bounds[node_id] = {
+            **bounds[node_id],
+            "x": bounds[node_id]["x"] + dx,
+            "y": bounds[node_id]["y"] + dy,
+        }
+
+
+def _rectangles_overlap(first: Mapping[str, float], second: Mapping[str, float]) -> bool:
+    return not (
+        first["x"] + first["width"] <= second["x"]
+        or second["x"] + second["width"] <= first["x"]
+        or first["y"] + first["height"] <= second["y"]
+        or second["y"] + second["height"] <= first["y"]
+    )
+
+
+def _contains_bounds(parent: Mapping[str, float], child: Mapping[str, float]) -> bool:
+    return (
+        parent["x"] <= child["x"]
+        and parent["y"] <= child["y"]
+        and parent["x"] + parent["width"] >= child["x"] + child["width"]
+        and parent["y"] + parent["height"] >= child["y"] + child["height"]
+    )
+
+
+def _parent_candidates(
+    parent: Mapping[str, float], child: Mapping[str, float], *, grid_size: float, padding: float, direction: str
+) -> list[tuple[float, float]]:
+    left, top = parent["x"] + padding, parent["y"] + padding
+    right, bottom = parent["x"] + parent["width"] - padding, parent["y"] + parent["height"] - padding
+    max_x, max_y = right - child["width"], bottom - child["height"]
+    if max_x < left or max_y < top:
+        return []
+    xs = [left + index * grid_size for index in range(int((max_x - left) // grid_size) + 1)]
+    ys = [top + index * grid_size for index in range(int((max_y - top) // grid_size) + 1)]
+    pairs = ((x, y) for x in xs for y in ys) if direction == "TB" else ((x, y) for y in ys for x in xs)
+    return list(pairs)
+
+
+def _reserve_with_separation(bounds: Mapping[str, float], separation: float) -> dict[str, float]:
+    return {
+        "x": bounds["x"] - separation,
+        "y": bounds["y"] - separation,
+        "width": bounds["width"] + separation * 2,
+        "height": bounds["height"] + separation * 2,
+    }
+
+
+def _contain_locked_parents(
+    nodes: Sequence[Mapping[str, Any]], bounds: dict[str, dict[str, float]], *, grid_size: float,
+    separation: float, direction: str,
+) -> None:
+    """Pack unlocked child subtrees inside immutable structural parents.
+
+    An immutable parent is a user lock, so its bounds are never changed.  Its
+    direct unlocked children are placed in a deterministic padded content area;
+    descendants move together with an unlocked container.  A child that cannot
+    fit is a placement error rather than a reason to expand or move the lock.
+    """
+    by_id = {_node_id(node): node for node in nodes}
+    children = _children_by_parent(nodes)
+    parent_of = {
+        _node_id(node): node["parent_id"]
+        for node in nodes
+        if isinstance(node.get("parent_id"), str)
+    }
+    locked_parents = [node_id for node_id in children if by_id[node_id].get("locked")]
+
+    def depth(node_id: str) -> int:
+        value, result = node_id, 0
+        seen: set[str] = set()
+        while value in parent_of:
+            if value in seen:
+                raise ValueError("layout parent hierarchy contains a cycle")
+            seen.add(value)
+            result += 1
+            value = parent_of[value]
+        return result
+
+    for parent_id in sorted(locked_parents, key=lambda item: (-depth(item), item)):
+        parent_bounds = bounds[parent_id]
+        direct_children = list(children[parent_id])
+        occupied: list[dict[str, float]] = []
+        for child_id in direct_children:
+            child = by_id[child_id]
+            if child.get("locked"):
+                if not _contains_bounds(parent_bounds, bounds[child_id]):
+                    raise ValueError(
+                        f"locked parent {parent_id!r} capacity does not contain locked child {child_id!r}"
+                    )
+                occupied.append(_reserve_with_separation(bounds[child_id], separation))
+        for child_id in direct_children:
+            child = by_id[child_id]
+            if child.get("locked"):
+                continue
+            current = bounds[child_id]
+            selected: tuple[float, float] | None = None
+            for x, y in _parent_candidates(
+                parent_bounds, current, grid_size=grid_size, padding=grid_size * 2, direction=direction
+            ):
+                candidate = {**current, "x": x, "y": y}
+                if all(not _rectangles_overlap(candidate, reservation) for reservation in occupied):
+                    selected = (x, y)
+                    occupied.append(_reserve_with_separation(candidate, separation))
+                    break
+            if selected is None:
+                raise ValueError(
+                    f"locked parent {parent_id!r} capacity cannot fit child {child_id!r}"
+                )
+            _translate_subtree(child_id, children, bounds, x=selected[0], y=selected[1])
+        for descendant_id in _subtree_ids(parent_id, children)[1:]:
+            if not _contains_bounds(parent_bounds, bounds[descendant_id]):
+                raise ValueError(
+                    f"locked parent {parent_id!r} capacity cannot contain descendant {descendant_id!r}"
+                )
+
+
 def _next_free_cross_coordinate(
     start: float, size: float, reserved: list[tuple[float, float]], separation: float
 ) -> float:
@@ -382,6 +517,9 @@ def assign_coordinates(request: Mapping[str, Any], layers: Mapping[Any, Any]) ->
                 max_primary_size = max(max_primary_size, primary_size)
             primary_cursor = max(primary_cursor, layer_primary + max_primary_size + layer_separation)
         _expand_containers(ordered, page_bounds, grid_size)
+        _contain_locked_parents(
+            ordered, page_bounds, grid_size=grid_size, separation=node_separation, direction=direction
+        )
         output.update({f"{page_id}/{node_id}": page_bounds[node_id] for node_id in sorted(page_bounds)})
     return output
 
