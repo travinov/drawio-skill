@@ -59,7 +59,13 @@ def valid_layout_request(mode="create"):
                 "waypoints": [{"x": 100, "y": 30}, {"x": 200, "y": 30}],
             }],
         }],
-        "scope": {"page_ids": ["page-1"], "node_ids": ["node-1", "node-2"], "edge_ids": ["edge-1"], "movable_nodes": ["node-2"], "reroutable_edges": ["edge-1"]},
+        "scope": {
+            "page_ids": ["page-1"],
+            "node_refs": [{"page_id": "page-1", "cell_id": "node-1"}, {"page_id": "page-1", "cell_id": "node-2"}],
+            "edge_refs": [{"page_id": "page-1", "cell_id": "edge-1"}],
+            "movable_node_refs": [{"page_id": "page-1", "cell_id": "node-2"}],
+            "reroutable_edge_refs": [{"page_id": "page-1", "cell_id": "edge-1"}],
+        },
         "constraints": {"grid_size": 10, "node_separation": 40, "layer_separation": 80},
     }
 
@@ -147,19 +153,22 @@ class LayoutContractTests(unittest.TestCase):
     def test_layout_request_rejects_unlocked_out_of_scope_node(self):
         value = valid_layout_request(mode="local_reflow")
         value["pages"][0]["nodes"][1]["locked"] = False
-        value["scope"]["movable_nodes"] = []
+        value["scope"]["movable_node_refs"] = []
         diagnostics = layout_contracts.validate_layout_request(value)
         self.assertTrue(diagnostics)
 
     def test_layout_request_rejects_movable_node_outside_declared_scope(self):
         value = valid_layout_request(mode="local_reflow")
-        value["scope"]["movable_nodes"] = ["outside"]
+        value["scope"]["movable_node_refs"] = [{"page_id": "page-1", "cell_id": "outside"}]
         codes = {item["code"] for item in layout_contracts.validate_layout_request(value)}
         self.assertIn("layout.scope.movable_node_outside", codes)
 
     def test_layout_request_rejects_overlapping_locked_and_movable_sets(self):
         value = valid_layout_request(mode="local_reflow")
-        value["scope"]["movable_nodes"] = ["node-1", "node-2"]
+        value["scope"]["movable_node_refs"] = [
+            {"page_id": "page-1", "cell_id": "node-1"},
+            {"page_id": "page-1", "cell_id": "node-2"},
+        ]
         codes = {item["code"] for item in layout_contracts.validate_layout_request(value)}
         self.assertIn("layout.scope.locked_movable_overlap", codes)
 

@@ -148,15 +148,46 @@ def _normalize_mode(mode: str) -> str:
     return normalized
 
 
+Ref = tuple[str, str]
+
+
+def _normalize_ref(value: Any) -> Ref:
+    if not isinstance(value, Mapping):
+        raise ValueError("layout scope references must include page_id and cell_id")
+    page_id, cell_id = value.get("page_id"), value.get("cell_id")
+    if not isinstance(page_id, str) or not page_id or not isinstance(cell_id, str) or not cell_id:
+        raise ValueError("layout scope references must include non-empty page_id and cell_id")
+    return page_id, cell_id
+
+
+def _normalize_refs(value: Any) -> set[Ref]:
+    if value is None:
+        return set()
+    if not isinstance(value, list):
+        raise ValueError("layout scope references must be arrays")
+    return {_normalize_ref(item) for item in value}
+
+
+def _ref_value(value: Ref) -> dict[str, str]:
+    return {"page_id": value[0], "cell_id": value[1]}
+
+
 def _scope_shape(
-    *, page_ids: list[str], node_ids: list[str], edge_ids: list[str], movable_nodes: list[str], reroutable_edges: list[str]
-) -> dict[str, list[str]]:
+    *, node_refs: set[Ref] | list[Ref] = (), edge_refs: set[Ref] | list[Ref] = (),
+    movable_node_refs: set[Ref] | list[Ref] = (), reroutable_edge_refs: set[Ref] | list[Ref] = (),
+    page_ids: set[str] | list[str] = (),
+) -> dict[str, list[Any]]:
+    nodes = set(node_refs)
+    edges = set(edge_refs)
+    movable = set(movable_node_refs)
+    reroutable = set(reroutable_edge_refs)
+    pages = set(page_ids) | {page_id for page_id, _ in nodes | edges | movable | reroutable}
     return {
-        "page_ids": sorted(set(page_ids)),
-        "node_ids": sorted(set(node_ids)),
-        "edge_ids": sorted(set(edge_ids)),
-        "movable_nodes": sorted(set(movable_nodes)),
-        "reroutable_edges": sorted(set(reroutable_edges)),
+        "page_ids": sorted(pages),
+        "node_refs": [_ref_value(ref) for ref in sorted(nodes)],
+        "edge_refs": [_ref_value(ref) for ref in sorted(edges)],
+        "movable_node_refs": [_ref_value(ref) for ref in sorted(movable)],
+        "reroutable_edge_refs": [_ref_value(ref) for ref in sorted(reroutable)],
     }
 
 
@@ -182,23 +213,26 @@ def _model_pages(semantic_plan: Mapping[str, Any], baseline: Mapping[str, Any] |
 
 def _scope_for_request(
     pages: list[dict[str, Any]], mode: str, scope: Mapping[str, Any] | None
-) -> dict[str, list[str]]:
-    all_pages = [page["page_id"] for page in pages]
-    all_nodes = [node_id for page in pages for node_id in page["nodes"]]
-    all_edges = [edge_id for page in pages for edge_id in page["edges"]]
+) -> dict[str, list[Any]]:
+    all_pages = {page["page_id"] for page in pages}
+    all_nodes = {(page["page_id"], node_id) for page in pages for node_id in page["nodes"]}
+    all_edges = {(page["page_id"], edge_id) for page in pages for edge_id in page["edges"]}
     requested = scope if isinstance(scope, Mapping) else {}
     if mode in {"create", "full_reflow"}:
-        return _scope_shape(page_ids=all_pages, node_ids=all_nodes, edge_ids=all_edges, movable_nodes=all_nodes, reroutable_edges=all_edges)
+        return _scope_shape(page_ids=all_pages, node_refs=all_nodes, edge_refs=all_edges, movable_node_refs=all_nodes, reroutable_edge_refs=all_edges)
     if mode == "preserve":
-        return _scope_shape(page_ids=all_pages, node_ids=all_nodes, edge_ids=all_edges, movable_nodes=[], reroutable_edges=[])
-    edge_ids = [value for value in requested.get("edge_ids", []) if isinstance(value, str)]
-    if not edge_ids:
+        return _scope_shape(page_ids=all_pages, node_refs=all_nodes, edge_refs=all_edges)
+    edge_refs = _normalize_refs(requested.get("edge_refs"))
+    if not edge_refs:
         raise ValueError("local_reflow requires an explicit edge-only scope")
-    page_ids = [value for value in requested.get("page_ids", []) if isinstance(value, str)]
-    node_ids = [value for value in requested.get("node_ids", []) if isinstance(value, str)]
-    movable = [value for value in requested.get("movable_nodes", []) if isinstance(value, str)]
-    reroutable = [value for value in requested.get("reroutable_edges", edge_ids) if isinstance(value, str)]
-    return _scope_shape(page_ids=page_ids, node_ids=node_ids, edge_ids=edge_ids, movable_nodes=movable, reroutable_edges=reroutable)
+    if edge_refs - all_edges:
+        raise ValueError(f"local_reflow references unknown edges: {sorted(edge_refs - all_edges)!r}")
+    node_refs = _normalize_refs(requested.get("node_refs"))
+    movable = _normalize_refs(requested.get("movable_node_refs"))
+    reroutable = _normalize_refs(requested.get("reroutable_edge_refs")) or edge_refs
+    if node_refs - all_nodes or movable - all_nodes or reroutable - all_edges:
+        raise ValueError("local_reflow scope references an unknown page-scoped element")
+    return _scope_shape(node_refs=node_refs, edge_refs=edge_refs, movable_node_refs=movable, reroutable_edge_refs=reroutable)
 
 
 def build_layout_request(
@@ -230,7 +264,7 @@ def build_layout_request(
             if bounds is not None:
                 width = _grid_ceil(float(bounds.get("width", width)))
                 height = _grid_ceil(float(bounds.get("height", height)))
-            locked = normalized_mode in {"preserve", "local_reflow"} and node_id not in request_scope["movable_nodes"]
+            locked = normalized_mode in {"preserve", "local_reflow"} and (page_id, node_id) not in _normalize_refs(request_scope["movable_node_refs"])
             value = {
                 "node_id": node_id,
                 "x": _grid_ceil(float(bounds.get("x", 0))) if bounds is not None else 0,
@@ -251,7 +285,7 @@ def build_layout_request(
             baseline_cell = baseline_cells.get((page_id, edge_id))
             semantic_route = edge.get("route") if isinstance(edge.get("route"), Mapping) else None
             route = copy.deepcopy(semantic_route.get("waypoints")) if semantic_route else _baseline_waypoints(baseline_cell) if baseline_cell else None
-            locked = bool(semantic_route) or (normalized_mode in {"preserve", "local_reflow"} and edge_id not in request_scope["reroutable_edges"])
+            locked = bool(semantic_route) or (normalized_mode in {"preserve", "local_reflow"} and (page_id, edge_id) not in _normalize_refs(request_scope["reroutable_edge_refs"]))
             if locked and (not isinstance(route, list) or len(route) < 2):
                 raise ValueError(f"locked edge {page_id}/{edge_id} requires an explicit baseline route")
             value = {
@@ -285,7 +319,7 @@ def build_layout_request(
     return request
 
 
-def _edge_records(diagram_spec: Mapping[str, Any]) -> list[tuple[str, str, str, str]]:
+def _edge_records(diagram_spec: Mapping[str, Any]) -> list[tuple[Ref, Ref, Ref]]:
     records = []
     for page in diagram_spec.get("pages", []):
         if not isinstance(page, Mapping):
@@ -300,76 +334,84 @@ def _edge_records(diagram_spec: Mapping[str, Any]) -> list[tuple[str, str, str, 
             source = _reference_cell_id(source_ref) if isinstance(source_ref, Mapping) else str(cell.get("source_id") or source_ref or "")
             target = _reference_cell_id(target_ref) if isinstance(target_ref, Mapping) else str(cell.get("target_id") or target_ref or "")
             if edge_id and source and target:
-                records.append((page_id, edge_id, source, target))
+                records.append(((page_id, edge_id), (page_id, source), (page_id, target)))
     return sorted(records)
-
-
-def _node_ids_by_page(diagram_spec: Mapping[str, Any]) -> dict[str, set[str]]:
-    result: dict[str, set[str]] = {}
-    for page in diagram_spec.get("pages", []):
-        if not isinstance(page, Mapping):
-            continue
-        page_id = _page_id(page)
-        result[page_id] = {
-            str(cell.get("id") or cell.get("node_id"))
-            for cell in page.get("cells", [])
-            if isinstance(cell, Mapping) and not _is_baseline_edge(cell) and str(cell.get("id") or cell.get("node_id") or "") not in {"", "0", "1"}
-        }
-    return result
 
 
 def infer_scope_from_findings(diagram_spec: Mapping[str, Any], findings: list[Mapping[str, Any]]) -> dict:
     """Start local repair with only explicitly found edges reroutable."""
-    known = {edge_id for _, edge_id, _, _ in _edge_records(diagram_spec)}
-    edge_ids = sorted({
-        str(finding.get("edge_id") or finding.get("element_id") or finding.get("cell_id") or "")
-        for finding in findings if isinstance(finding, Mapping)
-    } - {""})
-    unknown = sorted(set(edge_ids) - known)
-    if unknown:
-        raise ValueError(f"findings reference unknown edges: {', '.join(unknown)}")
-    return _scope_shape(page_ids=[], node_ids=[], edge_ids=edge_ids, movable_nodes=[], reroutable_edges=edge_ids)
+    records = _edge_records(diagram_spec)
+    known = {edge_ref for edge_ref, _, _ in records}
+    by_cell_id: dict[str, list[Ref]] = {}
+    for edge_ref in known:
+        by_cell_id.setdefault(edge_ref[1], []).append(edge_ref)
+    selected: set[Ref] = set()
+    for finding in findings:
+        if not isinstance(finding, Mapping):
+            continue
+        explicit = finding.get("edge_ref")
+        if explicit is None and isinstance(finding.get("page_id"), str):
+            explicit = {"page_id": finding["page_id"], "cell_id": finding.get("edge_id") or finding.get("cell_id")}
+        if isinstance(explicit, Mapping):
+            edge_ref = _normalize_ref(explicit)
+            if edge_ref not in known:
+                raise ValueError(f"finding references unknown edge {edge_ref!r}")
+            selected.add(edge_ref)
+            continue
+        edge_id = finding.get("edge_id") or finding.get("element_id") or finding.get("cell_id")
+        if not isinstance(edge_id, str) or not edge_id:
+            raise ValueError("finding must identify an edge")
+        matches = by_cell_id.get(edge_id, [])
+        if len(matches) != 1:
+            raise ValueError(f"finding edge {edge_id!r} is ambiguous or unknown; provide page_id")
+        selected.add(matches[0])
+    return _scope_shape(edge_refs=selected, reroutable_edge_refs=selected)
 
 
 def expand_scope(diagram_spec: Mapping[str, Any], scope: Mapping[str, Any], level: str) -> dict:
     """Expand a repair scope one safe, explicit level at a time."""
     current = _scope_shape(
-        page_ids=list(scope.get("page_ids", [])), node_ids=list(scope.get("node_ids", [])),
-        edge_ids=list(scope.get("edge_ids", [])), movable_nodes=list(scope.get("movable_nodes", [])),
-        reroutable_edges=list(scope.get("reroutable_edges", [])),
+        page_ids={value for value in scope.get("page_ids", []) if isinstance(value, str)},
+        node_refs=_normalize_refs(scope.get("node_refs")), edge_refs=_normalize_refs(scope.get("edge_refs")),
+        movable_node_refs=_normalize_refs(scope.get("movable_node_refs")),
+        reroutable_edge_refs=_normalize_refs(scope.get("reroutable_edge_refs")),
     )
     records = _edge_records(diagram_spec)
-    nodes_by_page = _node_ids_by_page(diagram_spec)
+    current_edges = _normalize_refs(current["edge_refs"])
+    current_movable = _normalize_refs(current["movable_node_refs"])
+    current_reroutable = _normalize_refs(current["reroutable_edge_refs"])
     if level == "adjacent_nodes":
-        if current["movable_nodes"] or not current["edge_ids"]:
+        if current_movable or not current_edges:
             raise ValueError("adjacent_nodes expansion requires edge-only scope")
-        selected = [record for record in records if record[1] in set(current["edge_ids"])]
-        nodes = sorted({node for _, _, source, target in selected for node in (source, target)})
-        return _scope_shape(page_ids=[], node_ids=nodes, edge_ids=current["edge_ids"], movable_nodes=nodes, reroutable_edges=current["reroutable_edges"])
+        selected = [record for record in records if record[0] in current_edges]
+        nodes = {node for _, source, target in selected for node in (source, target)}
+        return _scope_shape(node_refs=nodes, edge_refs=current_edges, movable_node_refs=nodes, reroutable_edge_refs=current_reroutable)
     if level == "layer":
-        if not current["movable_nodes"] or current["page_ids"]:
+        if not current_movable or not current_edges:
             raise ValueError("layer expansion requires the adjacent-nodes scope")
-        pages = sorted({page_id for page_id, _, source, target in records if source in current["movable_nodes"] or target in current["movable_nodes"]})
-        nodes = sorted({node for page_id in pages for node in nodes_by_page.get(page_id, set())})
-        return _scope_shape(page_ids=pages, node_ids=nodes, edge_ids=current["edge_ids"], movable_nodes=nodes, reroutable_edges=current["reroutable_edges"])
+        one_hop = [record for record in records if record[1] in current_movable or record[2] in current_movable]
+        nodes = current_movable | {node for _, source, target in one_hop for node in (source, target)}
+        edges = current_edges | {edge_ref for edge_ref, _, _ in one_hop}
+        return _scope_shape(node_refs=nodes, edge_refs=edges, movable_node_refs=nodes, reroutable_edge_refs=edges)
     if level == "component":
-        if not current["page_ids"]:
+        if not current["page_ids"] or not current_movable:
             raise ValueError("component expansion requires the layer scope")
-        component_nodes = set(current["movable_nodes"])
-        component_edges = set(current["edge_ids"])
+        allowed_pages = set(current["page_ids"])
+        component_nodes = set(current_movable)
+        component_edges = set(current_edges)
         changed = True
         while changed:
             changed = False
-            for page_id, edge_id, source, target in records:
-                if page_id not in current["page_ids"]:
+            for edge_ref, source, target in records:
+                if edge_ref[0] not in allowed_pages:
                     continue
                 if source in component_nodes or target in component_nodes:
-                    if edge_id not in component_edges:
-                        component_edges.add(edge_id)
+                    if edge_ref not in component_edges:
+                        component_edges.add(edge_ref)
                         changed = True
                     for node in (source, target):
                         if node not in component_nodes:
                             component_nodes.add(node)
                             changed = True
-        return _scope_shape(page_ids=current["page_ids"], node_ids=sorted(component_nodes), edge_ids=sorted(component_edges), movable_nodes=sorted(component_nodes), reroutable_edges=sorted(component_edges))
+        return _scope_shape(page_ids=allowed_pages, node_refs=component_nodes, edge_refs=component_edges, movable_node_refs=component_nodes, reroutable_edge_refs=component_edges)
     raise ValueError(f"unsupported scope expansion {level!r}")

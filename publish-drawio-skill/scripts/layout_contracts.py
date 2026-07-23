@@ -22,24 +22,43 @@ def _layout_diagnostics(value: Any, *, request: bool) -> list[dict[str, str]]:
     if not isinstance(pages, list):
         return diagnostics
 
-    locked_nodes: set[str] = set()
-    unlocked_nodes: set[str] = set()
+    locked_nodes: set[tuple[str, str]] = set()
+    unlocked_nodes: set[tuple[str, str]] = set()
+    locked_edges: set[tuple[str, str]] = set()
+    unlocked_edges: set[tuple[str, str]] = set()
+    known_nodes: set[tuple[str, str]] = set()
+    known_edges: set[tuple[str, str]] = set()
     for page_index, page in enumerate(pages):
         if not isinstance(page, dict):
+            continue
+        page_id = page.get("page_id")
+        if not isinstance(page_id, str):
             continue
         nodes = page.get("nodes")
         if isinstance(nodes, list):
             for node in nodes:
                 if isinstance(node, dict) and isinstance(node.get("node_id"), str):
+                    ref = (page_id, node["node_id"])
+                    known_nodes.add(ref)
                     if node.get("locked") is True:
-                        locked_nodes.add(node["node_id"])
+                        locked_nodes.add(ref)
                     elif node.get("locked") is False:
-                        unlocked_nodes.add(node["node_id"])
+                        unlocked_nodes.add(ref)
         edges = page.get("edges")
         if not isinstance(edges, list):
             continue
         for edge_index, edge in enumerate(edges):
-            if not isinstance(edge, dict) or not isinstance(edge.get("waypoints"), list):
+            if not isinstance(edge, dict):
+                continue
+            edge_id = edge.get("edge_id")
+            if isinstance(edge_id, str):
+                ref = (page_id, edge_id)
+                known_edges.add(ref)
+                if edge.get("locked") is True:
+                    locked_edges.add(ref)
+                elif edge.get("locked") is False:
+                    unlocked_edges.add(ref)
+            if not isinstance(edge.get("waypoints"), list):
                 continue
             points = edge["waypoints"]
             previous: tuple[float, float] | None = None
@@ -63,18 +82,24 @@ def _layout_diagnostics(value: Any, *, request: bool) -> list[dict[str, str]]:
         scope = value.get("scope")
         if not isinstance(scope, dict):
             return diagnostics
-        node_ids = _string_set(scope.get("node_ids"))
-        edge_ids = _string_set(scope.get("edge_ids"))
-        movable = _string_set(scope.get("movable_nodes"))
-        reroutable = _string_set(scope.get("reroutable_edges"))
-        for node_id in sorted(movable - node_ids):
-            diagnostics.append(_diagnostic("layout.scope.movable_node_outside", "/scope/movable_nodes", f"movable node {node_id!r} is outside declared node scope"))
-        for edge_id in sorted(reroutable - edge_ids):
-            diagnostics.append(_diagnostic("layout.scope.reroutable_edge_outside", "/scope/reroutable_edges", f"reroutable edge {edge_id!r} is outside declared edge scope"))
-        for node_id in sorted(locked_nodes & movable):
-            diagnostics.append(_diagnostic("layout.scope.locked_movable_overlap", "/scope/movable_nodes", f"locked node {node_id!r} cannot be movable"))
-        for node_id in sorted(unlocked_nodes - movable):
-            diagnostics.append(_diagnostic("layout.scope.unlocked_node_not_movable", "/scope/movable_nodes", f"unlocked local-reflow node {node_id!r} must be movable"))
+        node_refs = _ref_set(scope.get("node_refs"))
+        edge_refs = _ref_set(scope.get("edge_refs"))
+        movable = _ref_set(scope.get("movable_node_refs"))
+        reroutable = _ref_set(scope.get("reroutable_edge_refs"))
+        for node_ref in sorted(movable - node_refs):
+            diagnostics.append(_diagnostic("layout.scope.movable_node_outside", "/scope/movable_node_refs", f"movable node {node_ref!r} is outside declared node scope"))
+        for edge_ref in sorted(reroutable - edge_refs):
+            diagnostics.append(_diagnostic("layout.scope.reroutable_edge_outside", "/scope/reroutable_edge_refs", f"reroutable edge {edge_ref!r} is outside declared edge scope"))
+        for node_ref in sorted(node_refs - known_nodes):
+            diagnostics.append(_diagnostic("layout.scope.node_missing", "/scope/node_refs", f"scoped node {node_ref!r} does not exist"))
+        for edge_ref in sorted(edge_refs - known_edges):
+            diagnostics.append(_diagnostic("layout.scope.edge_missing", "/scope/edge_refs", f"scoped edge {edge_ref!r} does not exist"))
+        for node_ref in sorted(locked_nodes & movable):
+            diagnostics.append(_diagnostic("layout.scope.locked_movable_overlap", "/scope/movable_node_refs", f"locked node {node_ref!r} cannot be movable"))
+        for node_ref in sorted(unlocked_nodes - movable):
+            diagnostics.append(_diagnostic("layout.scope.unlocked_node_not_movable", "/scope/movable_node_refs", f"unlocked local-reflow node {node_ref!r} must be movable"))
+        for edge_ref in sorted(unlocked_edges - reroutable):
+            diagnostics.append(_diagnostic("layout.scope.unlocked_edge_not_reroutable", "/scope/reroutable_edge_refs", f"unlocked local-reflow edge {edge_ref!r} must be reroutable"))
     return diagnostics
 
 
@@ -108,8 +133,16 @@ def _non_finite_number_diagnostics(value: Any, path: tuple[Any, ...] = ()) -> li
     return []
 
 
-def _string_set(value: Any) -> set[str]:
-    return {item for item in value if isinstance(item, str)} if isinstance(value, list) else set()
+def _ref_set(value: Any) -> set[tuple[str, str]]:
+    if not isinstance(value, list):
+        return set()
+    return {
+        (item["page_id"], item["cell_id"])
+        for item in value
+        if isinstance(item, dict)
+        and isinstance(item.get("page_id"), str)
+        and isinstance(item.get("cell_id"), str)
+    }
 
 
 def validate_diagram_intake(value: Any) -> list[dict[str, str]]:

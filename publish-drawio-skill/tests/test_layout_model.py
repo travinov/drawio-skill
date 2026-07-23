@@ -102,11 +102,11 @@ class LayoutModelTests(unittest.TestCase):
             strategy_id="layered",
             quality_profile_version=2,
             baseline=baseline(),
-            scope={"edge_ids": ["a-edge"]},
+            scope={"edge_refs": [{"page_id": "page-a", "cell_id": "a-edge"}]},
         )
-        self.assertEqual(request["scope"]["edge_ids"], ["a-edge"])
-        self.assertEqual(request["scope"]["movable_nodes"], [])
-        self.assertEqual(request["scope"]["reroutable_edges"], ["a-edge"])
+        self.assertEqual(request["scope"]["edge_refs"], [{"page_id": "page-a", "cell_id": "a-edge"}])
+        self.assertEqual(request["scope"]["movable_node_refs"], [])
+        self.assertEqual(request["scope"]["reroutable_edge_refs"], [{"page_id": "page-a", "cell_id": "a-edge"}])
         nodes = {node["node_id"]: node for page in request["pages"] for node in page["nodes"]}
         edges = {edge["edge_id"]: edge for page in request["pages"] for edge in page["edges"]}
         self.assertTrue(nodes["a-node"]["locked"])
@@ -120,14 +120,14 @@ class LayoutModelTests(unittest.TestCase):
 
     def test_expansion_progresses_only_from_edge_to_adjacent_nodes_then_layer_then_component(self):
         spec = baseline()
-        edge = {"edge_ids": ["a-edge"]}
+        edge = {"edge_refs": [{"page_id": "page-a", "cell_id": "a-edge"}]}
         adjacent = layout_model.expand_scope(spec, edge, "adjacent_nodes")
-        self.assertEqual(adjacent["movable_nodes"], ["a-node", "z-node"])
+        self.assertEqual(adjacent["movable_node_refs"], [{"page_id": "page-a", "cell_id": "a-node"}, {"page_id": "page-a", "cell_id": "z-node"}])
         layer = layout_model.expand_scope(spec, adjacent, "layer")
         self.assertEqual(layer["page_ids"], ["page-a"])
-        self.assertEqual(layer["node_ids"], ["a-node", "z-node"])
+        self.assertEqual(layer["node_refs"], [{"page_id": "page-a", "cell_id": "a-node"}, {"page_id": "page-a", "cell_id": "z-node"}])
         component = layout_model.expand_scope(spec, layer, "component")
-        self.assertEqual(component["edge_ids"], ["a-edge", "z-edge"])
+        self.assertEqual(component["edge_refs"], [{"page_id": "page-a", "cell_id": "a-edge"}, {"page_id": "page-a", "cell_id": "z-edge"}])
         with self.assertRaises(ValueError):
             layout_model.expand_scope(spec, edge, "component")
 
@@ -136,9 +136,9 @@ class LayoutModelTests(unittest.TestCase):
             baseline(),
             [{"edge_id": "a-edge", "code": "route_through"}],
         )
-        self.assertEqual(scope["edge_ids"], ["a-edge"])
-        self.assertEqual(scope["movable_nodes"], [])
-        self.assertEqual(scope["reroutable_edges"], ["a-edge"])
+        self.assertEqual(scope["edge_refs"], [{"page_id": "page-a", "cell_id": "a-edge"}])
+        self.assertEqual(scope["movable_node_refs"], [])
+        self.assertEqual(scope["reroutable_edge_refs"], [{"page_id": "page-a", "cell_id": "a-edge"}])
 
     def test_findings_accept_v2_page_scoped_edge_references(self):
         spec = {
@@ -156,8 +156,69 @@ class LayoutModelTests(unittest.TestCase):
             }]
         }
         scope = layout_model.infer_scope_from_findings(spec, [{"edge_id": "edge-1"}])
-        self.assertEqual(scope["edge_ids"], ["edge-1"])
-        self.assertEqual(layout_model.expand_scope(spec, scope, "adjacent_nodes")["movable_nodes"], ["left", "right"])
+        self.assertEqual(scope["edge_refs"], [{"page_id": "page-1", "cell_id": "edge-1"}])
+        self.assertEqual(layout_model.expand_scope(spec, scope, "adjacent_nodes")["movable_node_refs"], [{"page_id": "page-1", "cell_id": "left"}, {"page_id": "page-1", "cell_id": "right"}])
+
+    def test_duplicate_cell_ids_are_scoped_to_the_requested_page(self):
+        plan = {
+            "result": {
+                "diagram_type": "flowchart", "direction": "LR",
+                "pages": [
+                    {"page_id": "page-a", "name": "A", "nodes": [
+                        {"stable_identity": {"page_id": "page-a", "cell_id": "left"}, "label": "L", "semantic_type": "process"},
+                        {"stable_identity": {"page_id": "page-a", "cell_id": "right"}, "label": "R", "semantic_type": "process"},
+                    ], "edges": [{"stable_identity": {"page_id": "page-a", "cell_id": "edge"}, "source": {"page_id": "page-a", "cell_id": "left"}, "target": {"page_id": "page-a", "cell_id": "right"}, "label": "", "relationship": "flow"}]},
+                    {"page_id": "page-b", "name": "B", "nodes": [
+                        {"stable_identity": {"page_id": "page-b", "cell_id": "left"}, "label": "L", "semantic_type": "process"},
+                        {"stable_identity": {"page_id": "page-b", "cell_id": "right"}, "label": "R", "semantic_type": "process"},
+                    ], "edges": [{"stable_identity": {"page_id": "page-b", "cell_id": "edge"}, "source": {"page_id": "page-b", "cell_id": "left"}, "target": {"page_id": "page-b", "cell_id": "right"}, "label": "", "relationship": "flow"}]},
+                ],
+            }
+        }
+        shared_baseline = {"pages": [
+            {"id": page, "cells": [
+                {"id": "left", "kind": "vertex", "geometry": {"bounds": {"x": 0, "y": 0, "width": 100, "height": 60}}},
+                {"id": "right", "kind": "vertex", "geometry": {"bounds": {"x": 200, "y": 0, "width": 100, "height": 60}}},
+                {"id": "edge", "kind": "edge", "source_id": "left", "target_id": "right", "geometry": {"waypoints": [{"x": 100, "y": 30}, {"x": 200, "y": 30}]}},
+            ]} for page in ("page-a", "page-b")
+        ]}
+        request = layout_model.build_layout_request(plan, run_id="run-1", semantic_plan_sha256=SHA, mode="local_reflow", backend="builtin", strategy_id="layered", quality_profile_version=2, baseline=shared_baseline, scope={"edge_refs": [{"page_id": "page-a", "cell_id": "edge"}]})
+        locks = {(page["page_id"], edge["edge_id"]): edge["locked"] for page in request["pages"] for edge in page["edges"]}
+        self.assertFalse(locks[("page-a", "edge")])
+        self.assertTrue(locks[("page-b", "edge")])
+
+    def test_ambiguous_unscoped_finding_is_rejected(self):
+        spec = {"pages": [
+            {"id": "page-a", "cells": [{"id": "edge", "kind": "edge", "source_id": "a", "target_id": "b"}]},
+            {"id": "page-b", "cells": [{"id": "edge", "kind": "edge", "source_id": "a", "target_id": "b"}]},
+        ]}
+        with self.assertRaises(ValueError):
+            layout_model.infer_scope_from_findings(spec, [{"edge_id": "edge"}])
+
+    def test_layer_expands_exactly_one_graph_hop_without_unrelated_page_cells(self):
+        def edge(edge_id, source, target):
+            return {"id": edge_id, "kind": "edge", "source_id": source, "target_id": target}
+        spec = {"pages": [
+            {"id": "page-a", "cells": [
+                *[{"id": node, "kind": "vertex"} for node in ("a", "b", "c", "d", "x", "y")],
+                edge("ab", "a", "b"), edge("bc", "b", "c"), edge("cd", "c", "d"), edge("xy", "x", "y"),
+            ]},
+            {"id": "page-b", "cells": [{"id": "foreign", "kind": "vertex"}, edge("foreign-edge", "foreign", "foreign")]},
+        ]}
+        edge_scope = {"edge_refs": [{"page_id": "page-a", "cell_id": "ab"}]}
+        adjacent = layout_model.expand_scope(spec, edge_scope, "adjacent_nodes")
+        layer = layout_model.expand_scope(spec, adjacent, "layer")
+        self.assertEqual(layer["node_refs"], [
+            {"page_id": "page-a", "cell_id": "a"}, {"page_id": "page-a", "cell_id": "b"}, {"page_id": "page-a", "cell_id": "c"},
+        ])
+        self.assertEqual(layer["edge_refs"], [
+            {"page_id": "page-a", "cell_id": "ab"}, {"page_id": "page-a", "cell_id": "bc"},
+        ])
+        component = layout_model.expand_scope(spec, layer, "component")
+        self.assertEqual(component["node_refs"], [
+            {"page_id": "page-a", "cell_id": "a"}, {"page_id": "page-a", "cell_id": "b"}, {"page_id": "page-a", "cell_id": "c"}, {"page_id": "page-a", "cell_id": "d"},
+        ])
+        self.assertNotIn({"page_id": "page-b", "cell_id": "foreign"}, component["node_refs"])
 
     def test_identical_semantic_plan_has_identical_canonical_json_and_sha256(self):
         first = self.build_create()
