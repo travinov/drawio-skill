@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import numbers
 from typing import Any
 
 import lifecycle_contracts
@@ -13,7 +14,7 @@ def _diagnostic(code: str, pointer: str, message: str) -> dict[str, str]:
 
 
 def _layout_diagnostics(value: Any, *, request: bool) -> list[dict[str, str]]:
-    diagnostics: list[dict[str, str]] = []
+    diagnostics = _non_finite_number_diagnostics(value)
     if not isinstance(value, dict):
         return diagnostics
 
@@ -47,11 +48,6 @@ def _layout_diagnostics(value: Any, *, request: bool) -> list[dict[str, str]]:
                     continue
                 x, y = point.get("x"), point.get("y")
                 if not _finite_number(x) or not _finite_number(y):
-                    diagnostics.append(_diagnostic(
-                        "layout.route.point_non_finite",
-                        f"/pages/{page_index}/edges/{edge_index}/waypoints/{point_index}",
-                        "route waypoint coordinates must be finite",
-                    ))
                     previous = None
                     continue
                 current = (float(x), float(y))
@@ -83,7 +79,33 @@ def _layout_diagnostics(value: Any, *, request: bool) -> list[dict[str, str]]:
 
 
 def _finite_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    if isinstance(value, bool) or not isinstance(value, numbers.Number):
+        return False
+    try:
+        return math.isfinite(value)
+    except (OverflowError, TypeError, ValueError):
+        return False
+
+
+def _non_finite_number_diagnostics(value: Any, path: tuple[Any, ...] = ()) -> list[dict[str, str]]:
+    """Report non-finite numbers at every contract-owned value location."""
+    if isinstance(value, dict):
+        diagnostics: list[dict[str, str]] = []
+        for key in sorted(value):
+            diagnostics.extend(_non_finite_number_diagnostics(value[key], path + (key,)))
+        return diagnostics
+    if isinstance(value, list):
+        diagnostics = []
+        for index, item in enumerate(value):
+            diagnostics.extend(_non_finite_number_diagnostics(item, path + (index,)))
+        return diagnostics
+    if isinstance(value, numbers.Number) and not isinstance(value, bool) and not _finite_number(value):
+        return [_diagnostic(
+            "layout.number.non_finite",
+            lifecycle_contracts.json_pointer(path),
+            "numeric values must be finite",
+        )]
+    return []
 
 
 def _string_set(value: Any) -> set[str]:

@@ -121,6 +121,43 @@ class LayoutContractTests(unittest.TestCase):
         diagnostics = layout_contracts.validate_layout_result(value, expected_request_sha256="b" * 64)
         self.assertEqual(diagnostics[0]["code"], "layout.result.request_sha256_mismatch")
 
+    def test_layout_request_rejects_non_finite_contract_numbers(self):
+        locations = (
+            ("pages", 0, "nodes", 0, "x"),
+            ("pages", 0, "nodes", 0, "width"),
+            ("constraints", "grid_size"),
+            ("constraints", "node_separation"),
+            ("constraints", "layer_separation"),
+        )
+        for number in (float("nan"), float("inf"), float("-inf")):
+            for location in locations:
+                with self.subTest(number=number, location=location):
+                    value = valid_layout_request()
+                    target = value
+                    for part in location[:-1]:
+                        target = target[part]
+                    target[location[-1]] = number
+                    codes = {item["code"] for item in layout_contracts.validate_layout_request(value)}
+                    self.assertIn("layout.number.non_finite", codes)
+
+    def test_layout_result_rejects_non_finite_contract_numbers(self):
+        locations = (
+            ("pages", 0, "nodes", 0, "x"),
+            ("pages", 0, "nodes", 0, "height"),
+            ("metrics", "crossings"),
+            ("metrics", "route_length"),
+        )
+        for number in (float("nan"), float("inf"), float("-inf")):
+            for location in locations:
+                with self.subTest(number=number, location=location):
+                    value = valid_layout_result()
+                    target = value
+                    for part in location[:-1]:
+                        target = target[part]
+                    target[location[-1]] = number
+                    codes = {item["code"] for item in layout_contracts.validate_layout_result(value)}
+                    self.assertIn("layout.number.non_finite", codes)
+
     def test_require_helpers_raise_contract_error_for_diagnostics(self):
         invalid = copy.deepcopy(valid_layout_result())
         invalid["pages"][0]["edges"][0]["waypoints"][1]["y"] = 10
