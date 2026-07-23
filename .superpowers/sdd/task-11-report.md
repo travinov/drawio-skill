@@ -57,6 +57,8 @@ RED:
   could skip indexed attempts before immutable terminal verification.
 - Terminal-retry regression: repeated resumes appended `skipped` events to
   already verified completed/failed local attempt histories.
+- Raw-key regression: an unverified local attempt key could suppress backend
+  execution and emit a false `skipped` event.
 
 GREEN:
 
@@ -85,6 +87,8 @@ GREEN:
   full orchestrator run passed 72 tests in 196.082s.
 - Terminal retry plus recovery gate passed 10 tests in 58.104s. After correcting
   one invalid mock plan, the final full run passed 73 tests in 203.087s.
+- Raw-key plus recovery gate passed 11 tests in 63.730s; the full orchestrator
+  run passed 74 tests in 210.929s.
 
 ## Review cleanup
 

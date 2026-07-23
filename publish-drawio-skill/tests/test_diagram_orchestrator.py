@@ -507,6 +507,35 @@ class DiagramOrchestratorTests(unittest.TestCase):
             event_count,
         )
 
+    def test_local_reflow_current_scope_key_does_not_skip_first_strategy(self):
+        case = self._prepare_local_reflow_case("current-scope-key-run")
+        scope = orchestrator._scope_refs_from_layout_state(
+            case["payload"]["layout_scope"]
+        )
+        key = orchestrator._strategy_attempt_key(
+            case["workflow"], case["semantic_plan"], case["adapter_input"],
+            orchestrator.LAYOUT_STRATEGIES[0], mode="local_reflow",
+            baseline=case["payload"]["baseline"]["diagram_spec"], scope=scope,
+        )
+        case["workflow"]["layout_attempt_keys"] = [key]
+        orchestrator.write_workflow(case["run_dir"], case["workflow"])
+        with mock.patch.object(
+            orchestrator.supervisor, "compare_reports",
+            return_value={"accepted": True, "reason": "improved"},
+        ):
+            selected = orchestrator._run_layout_intent_attempts(
+                case["run_dir"], case["workflow"], case["payload"],
+                case["intent"], timeout=30,
+            )
+        events = orchestrator.lifecycle_v2.replay(case["run_dir"])["events"]
+        self.assertEqual(selected["strategy"], orchestrator.LAYOUT_STRATEGIES[0][0])
+        self.assertEqual(case["workflow"]["layout_attempt_keys"].count(key), 1)
+        self.assertFalse(any(
+            record["event"]["payload"].get("status") == "skipped"
+            for record in events if record["event"].get("event_type") == "tool_attempt"
+        ))
+        orchestrator.lifecycle_v2.require_mutable(case["run_dir"], case["workflow"]["run_id"])
+
     def _assert_local_stage_failure(
         self, run_id, target_name, expected_stage, message,
     ):

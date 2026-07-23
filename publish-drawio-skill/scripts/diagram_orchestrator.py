@@ -1481,6 +1481,7 @@ def execute_layout_attempt(
     timeout,
     baseline=None,
     baseline_artifact=None,
+    trusted_duplicate_keys=None,
 ):
     """Execute one immutable request through backend, renderer and validator."""
     run_dir = Path(run_dir).resolve()
@@ -1531,7 +1532,12 @@ def execute_layout_attempt(
     }
     attempt_key = layout_backend.attempt_key(request)
     serialized_key = "|".join(attempt_key)
-    if serialized_key in workflow.setdefault("layout_attempt_keys", []):
+    recorded_keys = workflow.setdefault("layout_attempt_keys", [])
+    duplicate_keys = (
+        recorded_keys if mode == "create" and trusted_duplicate_keys is None
+        else trusted_duplicate_keys or ()
+    )
+    if serialized_key in duplicate_keys:
         lifecycle_v2.record_tool_attempt(
             run_dir,
             tool="layout-engine",
@@ -1613,7 +1619,8 @@ def execute_layout_attempt(
             **copy.deepcopy(context),
         },
     )
-    workflow["layout_attempt_keys"].append(serialized_key)
+    if serialized_key not in recorded_keys:
+        recorded_keys.append(serialized_key)
     write_workflow(run_dir, workflow)
 
     backend_config = {
@@ -4694,6 +4701,7 @@ def _run_layout_intent_attempts(run_dir, workflow, payload, intent, *, timeout):
                     adapter_input=adapter_input, mode="local_reflow", scope=scope,
                     strategy=strategy, timeout=max(0.1, deadline - time.time()),
                     baseline=diagram_spec, baseline_artifact=baseline_artifact,
+                    trusted_duplicate_keys=terminal_attempt_keys,
                 )
             except Exception as exc:
                 workflow.setdefault("layout_failures", []).append({
