@@ -194,6 +194,135 @@ else:
 
 
 class DiagramOrchestratorTests(unittest.TestCase):
+    def test_layout_intent_runs_deterministic_attempt_and_persists_candidate_before_selection(self):
+        workflow = {
+            "run_id": "intent-worker-run",
+            "quality_profile_version": 2,
+            "layout_attempts": [],
+            "layout_attempt_keys": [],
+            "semantic_plan_v2": {"path": "/tmp/plan.json", "sha256": "a" * 64},
+        }
+        payload = {
+            "baseline": {"diagram_spec": {"pages": []}},
+            "layout_scope": {
+                "page_id": "page-1", "target_edges": ["edge-1"],
+                "movable_nodes": [], "locked_nodes": ["node-1", "node-2"],
+                "locked_edges": [], "expansion_count": 0,
+            },
+        }
+        intent = {
+            "action": "edge_reroute", "page_id": "page-1",
+            "target_edges": ["edge-1"], "movable_nodes": [],
+            "locked_nodes": ["node-1", "node-2"], "locked_edges": [],
+            "reason": "route locally",
+        }
+        completed = {
+            "status": "completed", "attempt_id": "layout-intent-1",
+            "candidate": {"path": "/tmp/candidate.drawio", "sha256": "b" * 64},
+            "validation": {"strict_passed": True},
+            "preservation": {"valid": True},
+            "comparison": {"accepted": True, "reason": "lexicographic_improvement:crossings"},
+        }
+        with mock.patch.object(orchestrator, "_source_bundle_bound_to_plan", return_value={}), \
+             mock.patch.object(orchestrator.supervisor, "load_json", return_value={"schema_version": 2}), \
+             mock.patch.object(orchestrator.renderer_adapters, "select_lifecycle_adapter_input", return_value=mock.Mock(selection=mock.Mock(adapter=orchestrator.renderer_adapters.GENERIC_ADAPTER))), \
+             mock.patch.object(orchestrator, "execute_layout_attempt", return_value=completed) as execute, \
+             mock.patch.object(orchestrator, "write_workflow") as write:
+            selected = orchestrator._run_layout_intent_attempts(
+                Path("/tmp/run"), workflow, payload, intent, timeout=30,
+            )
+        self.assertEqual(selected["attempt_id"], "layout-intent-1")
+        self.assertEqual(workflow["layout_attempts"], [completed])
+        self.assertTrue(write.called)
+        self.assertEqual(execute.call_args.kwargs["mode"], "local_reflow")
+        self.assertEqual(execute.call_args.kwargs["baseline"], payload["baseline"]["diagram_spec"])
+
+    def test_layout_intent_worker_persists_real_backend_candidate_validation_and_patch(self):
+        root, workspace, _ = self.create_workspace()
+        cli = root / "layout-intent-gigacode.py"
+        edge = (
+            '{"stable_identity":{"page_id":"page-1","cell_id":"e-2"},'
+            '"label":"flow",'
+            '"source":{"page_id":"page-1","cell_id":"node-a"},'
+            '"target":{"page_id":"page-1","cell_id":"node-b"},'
+            '"relationship":"flow","style_hint":None}'
+        )
+        cli.write_text(
+            FAKE_GIGACODE.replace('"edges": [],', f'"edges": [{edge}],', 1),
+            encoding="utf-8",
+        )
+        cli.chmod(0o755)
+        target = workspace / "layout-intent-source.drawio"
+        created = orchestrator.start_run(
+            "create", target, "Create an edge for local improvement.",
+            workspace, cli, run_id="layout-intent-worker-run", max_iterations=1,
+        )
+        run_dir = Path(created["run_dir"])
+        workflow = orchestrator.load_workflow(run_dir)
+        baseline = Path(workflow["accepted_artifact"]["path"])
+        spec = orchestrator.supervisor.make_spec(baseline)
+        payload = {
+            "baseline": {"diagram_spec": spec},
+            "layout_scope": {
+                "page_id": "page-1", "target_edges": ["e-2"],
+                "movable_nodes": [], "locked_nodes": ["node-a", "node-b"],
+                "locked_edges": [], "expansion_count": 0,
+            },
+        }
+        intent = {
+            "action": "edge_reroute", "page_id": "page-1",
+            "target_edges": ["e-2"], "movable_nodes": [],
+            "locked_nodes": ["node-a", "node-b"], "locked_edges": [],
+            "reason": "route locally",
+        }
+        improvement = {
+            "accepted": True,
+            "reason": "lexicographic_improvement:crossings",
+            "baseline": {}, "candidate": {},
+        }
+        with mock.patch.object(
+            orchestrator.supervisor, "compare_reports", return_value=improvement,
+        ):
+            selected = orchestrator._run_layout_intent_attempts(
+                run_dir, workflow, payload, intent, timeout=30,
+            )
+        self.assertIsNotNone(selected)
+        self.assertTrue(Path(selected["layout_request"]["path"]).is_file())
+        self.assertTrue(Path(selected["layout_result"]["path"]).is_file())
+        self.assertTrue(Path(selected["layout_patch"]["path"]).is_file())
+        self.assertTrue(Path(selected["candidate"]["path"]).is_file())
+        self.assertTrue(Path(selected["validation"]["report"]).is_file())
+        self.assertTrue(Path(selected["validation"]["receipt_v2"]).is_file())
+        self.assertTrue(selected["preservation"]["valid"])
+        persisted = orchestrator.load_workflow(run_dir)
+        self.assertEqual(
+            persisted["layout_attempts"][-1]["attempt_id"],
+            selected["attempt_id"],
+        )
+        events = orchestrator.lifecycle_v2.replay(run_dir)["events"]
+        self.assertTrue(any(
+            record["event"]["event_type"] == "tool_attempt"
+            and record["event"]["payload"].get("tool") == "layout-engine"
+            and record["event"]["payload"].get("attempt_id") == selected["attempt_id"]
+            and record["event"]["payload"].get("status") == "completed"
+            for record in events
+        ))
+
+    def test_semantic_patch_ignores_stale_layout_scope_preservation_gate(self):
+        workflow = {
+            "layout_repair_scope": {
+                "page_id": "page-1", "locked_nodes": ["node-1"],
+                "locked_edges": ["edge-2"],
+            }
+        }
+        with mock.patch.object(orchestrator, "_verify_locked_cell_hashes") as verify:
+            result = orchestrator._verify_candidate_preservation(
+                workflow, Path("baseline.drawio"), Path("candidate.drawio"),
+                candidate_origin="semantic_patch",
+            )
+        self.assertTrue(result["valid"])
+        verify.assert_not_called()
+
     def test_layout_intent_is_host_scoped_and_locked_cells_are_canonically_preserved(self):
         scope = {
             "page_id": "page-1",
