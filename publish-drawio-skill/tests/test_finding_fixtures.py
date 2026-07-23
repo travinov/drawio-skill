@@ -245,11 +245,42 @@ class ArtifactFindingFixtureTests(unittest.TestCase):
                 self.assertTrue(expected.issubset(finding_codes(json.loads(proc.stdout))))
 
     def test_layout_geometry_exemptions_do_not_emit_shared_segment(self):
-        for filename in ("allowed-fanout.drawio", "intentional-bus.drawio"):
-            with self.subTest(fixture=filename):
-                proc = run_script("validate.py", LAYOUT / filename, "--strict", "--json")
-                self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
-                self.assertNotIn("artifact.readability.shared_segment", finding_codes(json.loads(proc.stdout)))
+        proc = run_script("validate.py", LAYOUT / "allowed-fanout.drawio", "--strict", "--json")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertNotIn("artifact.readability.shared_segment", finding_codes(json.loads(proc.stdout)))
+
+        raw = run_script("validate.py", LAYOUT / "intentional-bus.drawio", "--strict", "--json")
+        self.assertNotEqual(raw.returncode, 0, raw.stderr + raw.stdout)
+        self.assertIn("artifact.readability.shared_segment", finding_codes(json.loads(raw.stdout)))
+
+        validator = load_script("validate")
+        tree = ET.parse(LAYOUT / "intentional-bus.drawio")
+        trusted = validator.validate_tree(
+            tree,
+            strict=True,
+            trusted_layout_policy={"route_groups": {"bus": {"e1", "e2"}}},
+        )
+        self.assertEqual(trusted["summary"]["errors"], 0, trusted)
+
+    def test_layout_v2_metrics_are_complete_and_malformed_ids_do_not_crash(self):
+        validator = load_script("validate")
+        report = validator.validate_tree(ET.parse(LAYOUT / "shared-trunk.drawio"), strict=True)
+        metrics = report["layout_metrics_v2"][0]
+        self.assertTrue({
+            "shared_segment_count", "route_congestion_count", "edge_label_collision_count",
+            "port_congestion_count", "excessive_detour_count", "excessive_bends_count",
+            "feedback_intrusion_count", "aspect_ratio_count",
+        }.issubset(metrics), metrics)
+        malformed = ET.ElementTree(ET.fromstring("""
+            <mxfile><diagram><mxGraphModel><root>
+              <mxCell id="0"/><mxCell id="1" parent="0"/>
+              <mxCell parent="1" edge="1" source="missing" target="also-missing">
+                <mxGeometry relative="1" as="geometry"/>
+              </mxCell>
+            </root></mxGraphModel></diagram></mxfile>
+        """))
+        malformed_report = validator.validate_tree(malformed, strict=True)
+        self.assertIn("artifact.id.missing", finding_codes(malformed_report))
 
     def test_malformed_structural_and_readability_fixtures_cover_stable_codes(self):
         cases = {

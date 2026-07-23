@@ -37,6 +37,15 @@ class LayoutGeometryTests(unittest.TestCase):
             60.0,
         )
 
+    def test_shared_route_length_does_not_double_count_retraced_overlap(self):
+        self.assertEqual(
+            layout_geometry.shared_route_length(
+                [(0, 0), (100, 0), (0, 0)],
+                [(20, 0), (80, 0)],
+            ),
+            60.0,
+        )
+
     def test_canonical_segment_has_stable_grid_order(self):
         self.assertEqual(
             layout_geometry.canonical_segment((10.0, 5.0), (0.0, 5.0)),

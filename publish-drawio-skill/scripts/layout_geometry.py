@@ -45,12 +45,46 @@ def collinear_overlap(first: Segment, second: Segment, *, epsilon: float = 1e-6)
 
 
 def shared_route_length(first: list[Point], second: list[Point]) -> float:
-    """Return the total collinear segment length two explicit routes share."""
-    return sum(
-        collinear_overlap(left, right)
-        for left in route_segments(first)
-        for right in route_segments(second)
-    )
+    """Return the union length of collinear pieces two explicit routes share."""
+    groups = []
+    for left in route_segments(first):
+        for right in route_segments(second):
+            overlap = collinear_overlap(left, right)
+            if not overlap:
+                continue
+            (a, b), (c, d) = left, right
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            length = math.hypot(dx, dy)
+            ux, uy = dx / length, dy / length
+            if ux < -1e-6 or (abs(ux) <= 1e-6 and uy < 0):
+                ux, uy = -ux, -uy
+            offset = -uy * a[0] + ux * a[1]
+            first_a = a[0] * ux + a[1] * uy
+            first_b = b[0] * ux + b[1] * uy
+            second_a = c[0] * ux + c[1] * uy
+            second_b = d[0] * ux + d[1] * uy
+            interval = (max(min(first_a, first_b), min(second_a, second_b)),
+                        min(max(first_a, first_b), max(second_a, second_b)))
+            for group in groups:
+                if abs(group[0] - ux) <= 1e-6 and abs(group[1] - uy) <= 1e-6 and abs(group[2] - offset) <= 1e-6:
+                    group[3].append(interval)
+                    break
+            else:
+                groups.append([ux, uy, offset, [interval]])
+    total = 0.0
+    for _, _, _, intervals in groups:
+        end = None
+        for start, stop in sorted(intervals):
+            if end is None:
+                current_start, end = start, stop
+            elif start <= end + 1e-6:
+                end = max(end, stop)
+            else:
+                total += end - current_start
+                current_start, end = start, stop
+        if end is not None:
+            total += end - current_start
+    return total
 
 
 def rects_overlap(first: Rect, second: Rect, *, clearance: float = 0.0) -> bool:

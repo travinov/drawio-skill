@@ -1034,7 +1034,44 @@ def _route_metrics(page):
     return bend_count, route_length
 
 
-def _layout_v2_page(page):
+def _stable_id(value, fallback):
+    """Return a total stable identifier even for structurally invalid cells."""
+    return value if isinstance(value, str) and value else fallback
+
+
+def _trusted_edge_groups(policy):
+    """Normalize host-supplied route-group evidence; XML never supplies it."""
+    groups = (policy or {}).get("route_groups", {})
+    if not isinstance(groups, dict):
+        return []
+    return [frozenset(str(edge) for edge in edges) for edges in groups.values()
+            if isinstance(edges, (set, frozenset, list, tuple))]
+
+
+def _policy_edge_set(policy, name):
+    values = (policy or {}).get(name, ())
+    return {str(value) for value in values} if isinstance(values, (set, frozenset, list, tuple)) else set()
+
+
+def _parallel_endpoints(edge):
+    return tuple(sorted((edge.get("source") or "", edge.get("target") or "")))
+
+
+def _short_fanout_from_common_endpoint(first, second, common, maximum):
+    """True only when a short shared segment begins at the common endpoint."""
+    for first_segment in layout_geometry.route_segments(first):
+        if common not in first_segment:
+            continue
+        for second_segment in layout_geometry.route_segments(second):
+            if common not in second_segment:
+                continue
+            overlap = layout_geometry.collinear_overlap(first_segment, second_segment)
+            if overlap and overlap <= maximum:
+                return True
+    return False
+
+
+def _layout_v2_page(page, trusted_layout_policy=None):
     """Return deterministic v2 layout warnings and page-local metrics."""
     model = page.find("mxGraphModel")
     root = model.find("root") if model is not None else None
@@ -1043,16 +1080,16 @@ def _layout_v2_page(page):
     edges = [cell for cell in cells if cell.get("edge") == "1"]
     routes = []
     port_uses = {}
-    for edge in edges:
+    for edge_index, edge in enumerate(edges):
         route = edge_route(edge, by_id)
         if not route:
             continue
-        edge_id = edge.get("id")
+        edge_id = _stable_id(edge.get("id"), f"<missing-edge-{edge_index}>")
         routes.append((edge_id, edge, route))
         for end in ("source", "target"):
             point = endpoint(edge, end, by_id)
             if point is not None:
-                key = (edge.get(end), round(point[0], 6), round(point[1], 6))
+                key = (_stable_id(edge.get(end), f"<missing-{end}-{edge_index}>"), point[0], point[1])
                 port_uses.setdefault(key, []).append(edge_id)
 
     warns = []
@@ -1062,7 +1099,7 @@ def _layout_v2_page(page):
         for segment in layout_geometry.route_segments(route):
             exact_segments.setdefault(layout_geometry.canonical_segment(*segment), []).append(edge_id)
     for segment, edge_ids in sorted(exact_segments.items()):
-        unique = sorted(set(edge_ids))
+        unique = sorted(set(edge_ids), key=str)
         if len(unique) >= LAYOUT_THRESHOLDS_V2["route_congestion_count"]:
             joined = ", ".join(repr(edge_id) for edge_id in unique)
             warns.append(f"edges {joined} congest route segment {segment!r}")
@@ -1073,14 +1110,28 @@ def _layout_v2_page(page):
             right_ends = {right_edge.get("source"), right_edge.get("target")}
             if left_edge.get("source") == left_edge.get("target") or right_edge.get("source") == right_edge.get("target"):
                 continue
-            if (left_edge.get("source"), left_edge.get("target")) == (right_edge.get("source"), right_edge.get("target")):
+            if _parallel_endpoints(left_edge) == _parallel_endpoints(right_edge):
                 continue
-            if left_edge.get("data-route-group") == "bus" and right_edge.get("data-route-group") == "bus":
+            if any({left_id, right_id}.issubset(group) for group in _trusted_edge_groups(trusted_layout_policy)):
+                continue
+            transition_edges = _policy_edge_set(trusted_layout_policy, "container_transition_edges")
+            if left_id in transition_edges and right_id in transition_edges:
                 continue
             shared = layout_geometry.shared_route_length(left_route, right_route)
             if not shared:
                 continue
-            if left_ends & right_ends and shared <= LAYOUT_THRESHOLDS_V2["fanout_exemption_max"]:
+            common_ends = left_ends & right_ends
+            common_points = [
+                endpoint(left_edge, end, by_id)
+                for end in ("source", "target") if left_edge.get(end) in common_ends
+            ]
+            if (
+                common_points
+                and shared <= LAYOUT_THRESHOLDS_V2["fanout_exemption_max"]
+                and any(_short_fanout_from_common_endpoint(left_route, right_route, point,
+                                                           LAYOUT_THRESHOLDS_V2["fanout_exemption_max"])
+                        for point in common_points if point is not None)
+            ):
                 continue
             if shared >= LAYOUT_THRESHOLDS_V2["shared_segment_min"]:
                 shared_pairs += 1
@@ -1089,7 +1140,7 @@ def _layout_v2_page(page):
                 )
 
     for (vertex_id, x, y), edge_ids in sorted(port_uses.items()):
-        unique = sorted(set(edge_ids))
+        unique = sorted(set(edge_ids), key=str)
         if len(unique) >= LAYOUT_THRESHOLDS_V2["port_congestion_count"]:
             joined = ", ".join(repr(edge_id) for edge_id in unique)
             warns.append(f"vertex {vertex_id!r} port {x:g},{y:g} is used by edges {joined}")
@@ -1112,7 +1163,8 @@ def _layout_v2_page(page):
         cell for cell in cells
         if cell.get("vertex") == "1" and not is_edge_label(cell) and abs_rect(cell, by_id) is not None
     ]
-    label_boxes = [(cell.get("id"), abs_rect(cell, by_id)) for cell in labels if abs_rect(cell, by_id) is not None]
+    label_boxes = [(_stable_id(cell.get("id"), f"<missing-label-{index}>"), abs_rect(cell, by_id))
+                   for index, cell in enumerate(labels) if abs_rect(cell, by_id) is not None]
     label_collisions = 0
     for label_id, label_box in label_boxes:
         for vertex in vertices:
@@ -1120,7 +1172,7 @@ def _layout_v2_page(page):
                 label_collisions += 1
                 warns.append(f"edge label {label_id!r} collides with vertex {vertex.get('id')!r}")
         for other_id, other_box in label_boxes:
-            if label_id < other_id and layout_geometry.rects_overlap(label_box, other_box):
+            if str(label_id) < str(other_id) and layout_geometry.rects_overlap(label_box, other_box):
                 label_collisions += 1
                 warns.append(f"edge labels {label_id!r} and {other_id!r} collide")
 
@@ -1140,20 +1192,46 @@ def _layout_v2_page(page):
                 warns.append(f"page canvas has excessive aspect ratio {aspect_ratio:g}")
     return warns, {
         "shared_segment_pairs": shared_pairs,
+        "shared_segment_count": shared_pairs,
         "route_congested_segments": sum(
             1 for edge_ids in exact_segments.values()
             if len(set(edge_ids)) >= LAYOUT_THRESHOLDS_V2["route_congestion_count"]
         ),
+        "route_congestion_count": sum(
+            1 for edge_ids in exact_segments.values()
+            if len(set(edge_ids)) >= LAYOUT_THRESHOLDS_V2["route_congestion_count"]
+        ),
         "label_collisions": label_collisions,
+        "edge_label_collision_count": label_collisions,
         "port_congested_ports": sum(
             1 for edge_ids in port_uses.values()
             if len(set(edge_ids)) >= LAYOUT_THRESHOLDS_V2["port_congestion_count"]
         ),
+        "port_congestion_count": sum(
+            1 for edge_ids in port_uses.values()
+            if len(set(edge_ids)) >= LAYOUT_THRESHOLDS_V2["port_congestion_count"]
+        ),
+        "excessive_detour_count": sum(
+            1 for _, _, route in routes if layout_geometry.detour_ratio(route) > LAYOUT_THRESHOLDS_V2["detour_ratio"]
+        ),
+        "excessive_bends_count": sum(
+            1 for _, _, route in routes if layout_geometry.bend_count(route) > LAYOUT_THRESHOLDS_V2["bend_count"]
+        ),
+        "feedback_intrusion_count": sum(
+            1 for _, edge, route in routes
+            if (endpoint(edge, "source", by_id) and endpoint(edge, "target", by_id)
+                and endpoint(edge, "source", by_id)[0] > endpoint(edge, "target", by_id)[0]
+                and any(point[1] < min(endpoint(edge, "source", by_id)[1], endpoint(edge, "target", by_id)[1]) - 1e-6
+                        or point[1] > max(endpoint(edge, "source", by_id)[1], endpoint(edge, "target", by_id)[1]) + 1e-6
+                        for point in route[1:-1]))
+        ),
         "aspect_ratio": round(aspect_ratio, 6),
+        "aspect_ratio_count": int(aspect_ratio > LAYOUT_THRESHOLDS_V2["aspect_ratio"]),
     }
 
 
-def validate_tree(tree, strict=False, profile=None, source=None, artifact_sha256=None):
+def validate_tree(tree, strict=False, profile=None, source=None, artifact_sha256=None,
+                  trusted_layout_policy=None):
     report = ValidationReport(report_version=2)
     report.details["validator"] = {"name": "publish-drawio-validator", "version": VALIDATOR_VERSION}
     if artifact_sha256:
@@ -1170,7 +1248,7 @@ def validate_tree(tree, strict=False, profile=None, source=None, artifact_sha256
         total_bends += bends
         total_route_length += length
         errors, warnings = check_page(page)
-        v2_warnings, v2_metrics = _layout_v2_page(page)
+        v2_warnings, v2_metrics = _layout_v2_page(page, trusted_layout_policy)
         warnings += v2_warnings
         layout_metrics_v2.append(v2_metrics)
         for message in errors:
