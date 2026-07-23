@@ -239,6 +239,7 @@ def build_layout_request(
     semantic_plan: Mapping[str, Any], *, run_id: str, semantic_plan_sha256: str,
     mode: str, backend: str, strategy_id: str, quality_profile_version: int,
     baseline: Mapping[str, Any] | None = None, scope: Mapping[str, Any] | None = None,
+    strategy_options: Mapping[str, Any] | None = None,
 ) -> dict:
     """Create the sole immutable host input accepted by layout backends."""
     if quality_profile_version not in {1, 2} or isinstance(quality_profile_version, bool):
@@ -315,16 +316,27 @@ def build_layout_request(
                 value["element_sha256"] = _baseline_hash(baseline_cell)
             output_edges.append(value)
         output_pages.append({"page_id": page_id, "name": page["name"], "nodes": output_nodes, "edges": output_edges})
+    normalized_strategy_options = copy.deepcopy(dict(strategy_options or {}))
+    spacing = float(normalized_strategy_options.get("spacing", 1.0))
+    port_separation = float(
+        normalized_strategy_options.get("port_separation", 1.0)
+    )
     request_seed = {
         "run_id": run_id, "semantic_plan_sha256": semantic_plan_sha256, "diagram_type": diagram_type,
         "direction": direction, "mode": normalized_mode, "backend": backend, "strategy": strategy_id,
         "quality_profile_version": quality_profile_version, "pages": output_pages, "scope": request_scope,
     }
+    if strategy_options is not None:
+        request_seed["strategy_options"] = normalized_strategy_options
     request = {
         "schema_version": 1,
         "request_id": "layout-" + canonical_json_sha256(request_seed)[:16],
         **request_seed,
-        "constraints": {"grid_size": GRID, "node_separation": 40, "layer_separation": 80},
+        "constraints": {
+            "grid_size": GRID,
+            "node_separation": round(40 * spacing * port_separation, 6),
+            "layer_separation": round(80 * spacing, 6),
+        },
     }
     layout_contracts.require_layout_request(request)
     return request

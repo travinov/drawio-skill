@@ -15,6 +15,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import uuid
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -27,7 +28,10 @@ import command_ux
 import diagram_host
 import diagram_intake
 import diagram_supervisor as supervisor
+import layout_backend
 import layout_contracts
+import layout_model
+import layout_renderer
 import lifecycle_host_v2 as lifecycle_v2
 import renderer_adapters
 from diagram_model_v2 import (
@@ -61,6 +65,12 @@ WORKFLOW_FILE = "workflow.json"
 CHECKPOINT_FILE = "pending-checkpoint.json"
 DEFAULT_MAX_ITERATIONS = 4
 MAX_IDENTICAL_FAILURES = 2
+LAYOUT_STRATEGIES = (
+    ("elk-default", {"spacing": 1.0, "port_separation": 1.0, "shared_penalty": 1.0}),
+    ("elk-spacing", {"spacing": 1.35, "port_separation": 1.0, "shared_penalty": 1.0}),
+    ("elk-separated", {"spacing": 1.35, "port_separation": 1.4, "shared_penalty": 1.6}),
+    ("python-fallback", {}),
+)
 
 
 def utc_slug(prefix):
@@ -756,6 +766,28 @@ def _record_baseline_v2(run_dir, workflow, accepted, spec_v1, report_path, recei
     return spec_v2
 
 
+def _source_bundle_bound_to_plan(run_dir, semantic_plan_v2):
+    expected = semantic_plan_v2["source_bundle_sha256"]
+    replayed = lifecycle_v2.require_mutable(run_dir)
+    for record in reversed(replayed["events"]):
+        for descriptor in reversed(record["event"]["snapshots"]):
+            if (
+                descriptor.get("schema_kind") == "source-bundle"
+                and descriptor.get("canonical_sha256") == expected
+            ):
+                path = Path(run_dir) / descriptor["path"]
+                value = supervisor.load_json(path)
+                require_valid_contract(value, "source-bundle", 2)
+                if canonical_json_sha256(value) != expected:
+                    raise supervisor.SupervisorError(
+                        "historical source bundle changed after semantic planning"
+                    )
+                return value
+    raise supervisor.SupervisorError(
+        "semantic plan source bundle is absent from the lifecycle ledger"
+    )
+
+
 def _finish_checkpointed_create(
     run_dir, workflow, semantic_plan, semantic_plan_v2, cli, timeout,
 ):
@@ -771,39 +803,108 @@ def _finish_checkpointed_create(
         reason="approved pre-render semantic plan",
     )
     accepted.parent.mkdir(parents=True, exist_ok=True)
-    adapter_run = tool_step(
-        run_dir, "renderer-adapter",
-        renderer_adapters.render_with_adapter,
-        "generic", semantic_plan_v2, accepted,
-        mode="create", options={"backend": "legacy-generic-v2", "reflow": "full"},
-        generic_renderer=render_generic,
+    source_bundle = _source_bundle_bound_to_plan(run_dir, semantic_plan_v2)
+    adapter_input = renderer_adapters.select_lifecycle_adapter_input(
+        semantic_plan_v2,
+        source_bundle,
+        mode="create",
     )
-    workflow["renderer_adapter"] = {
-        **adapter_run.record(),
-        "requested_semantic_diagram_type": semantic_plan["result"]["diagram_type"],
-    }
-    supervisor.transition(run_dir, "validating")
     lifecycle_v2.transition(
-        run_dir, "analyzing",
-        payload={"phase": "rendering", "renderer_adapter": workflow["renderer_adapter"]},
+        run_dir,
+        "analyzing",
+        payload={"phase": "rendering", "renderer_adapter": adapter_input.record()},
     )
-    spec = supervisor.make_spec(
-        accepted, [source_ref_for_request(workflow["run_id"], workflow["request"])],
-    )
-    supervisor.write_json(Path(run_dir) / "diagram-spec.json", spec)
-    receipt = tool_step(
-        run_dir, "strict-validator", supervisor.run_validation,
-        accepted, run_dir, attempt_id="baseline",
-    )
-    report_path = Path(run_dir) / "attempts" / "baseline" / "validation-report.json"
-    receipt_path = Path(run_dir) / "attempts" / "baseline" / "validation-receipt.json"
-    state = supervisor.record_initial_candidate(
-        run_dir, accepted, report_path, receipt_path,
-    )
-    _set_workflow_accepted(workflow, state)
-    _record_baseline_v2(
-        run_dir, workflow, accepted, spec, report_path, receipt_path,
-    )
+    selected_adapter = adapter_input.selection.adapter
+    if selected_adapter is renderer_adapters.GENERIC_ADAPTER:
+        selected = _run_generic_create_layouts(
+            run_dir,
+            workflow,
+            semantic_plan_v2,
+            adapter_input,
+            timeout=timeout,
+        )
+        accepted, _ = _adopt_create_layout_attempt(
+            run_dir,
+            workflow,
+            selected,
+            request=workflow["request"],
+            max_iterations=workflow["max_iterations"],
+        )
+        workflow["renderer_adapter"] = {
+            **adapter_input.record(),
+            "options": {**dict(adapter_input.options), "reflow": "full"},
+            "output_path": str(accepted.resolve()),
+            "output_hash": supervisor.sha256_file(accepted),
+            "command": ["host:execute_layout_attempt"],
+            "layout_request_sha256": selected["request_sha256"],
+            "layout_result_sha256": selected["layout_result"]["sha256"],
+            "requested_semantic_diagram_type": semantic_plan["result"]["diagram_type"],
+        }
+    else:
+        renderer_source = semantic_plan_v2
+        if adapter_input.source_record is not None:
+            source_path = (
+                Path(run_dir) / "inputs" / "renderer-sources"
+                / f"{adapter_input.source_record['content_sha256']}.json"
+            )
+            atomic_write_bytes(
+                source_path,
+                canonical_json_bytes(adapter_input.source_content) + b"\n",
+            )
+            renderer_source = source_path
+        adapter_run = tool_step(
+            run_dir,
+            "renderer-adapter",
+            renderer_adapters.render_with_adapter,
+            selected_adapter.diagram_type,
+            renderer_source,
+            accepted,
+            mode="create",
+            options=dict(adapter_input.options),
+            generic_renderer=render_generic,
+            timeout=timeout,
+        )
+        workflow["renderer_adapter"] = {
+            **adapter_input.record(),
+            **adapter_run.record(),
+            "requested_semantic_diagram_type": semantic_plan["result"]["diagram_type"],
+        }
+        supervisor.transition(run_dir, "validating")
+        spec = supervisor.make_spec(
+            accepted,
+            [source_ref_for_request(workflow["run_id"], workflow["request"])],
+        )
+        supervisor.write_json(Path(run_dir) / "diagram-spec.json", spec)
+        validation_profile = selected_adapter.validation_profile
+        validation_source = (
+            adapter_run.source_path
+            if validation_profile in {"roadmap", "gitflow"}
+            else None
+        )
+        supervisor.run_validation(
+            accepted,
+            run_dir,
+            profile=None if validation_profile == "structural" else validation_profile,
+            source=validation_source,
+            attempt_id="baseline",
+        )
+        report_path = Path(run_dir) / "attempts" / "baseline" / "validation-report.json"
+        receipt_path = Path(run_dir) / "attempts" / "baseline" / "validation-receipt.json"
+        state = supervisor.record_initial_candidate(
+            run_dir,
+            accepted,
+            report_path,
+            receipt_path,
+        )
+        _set_workflow_accepted(workflow, state)
+        _record_baseline_v2(
+            run_dir,
+            workflow,
+            accepted,
+            spec,
+            report_path,
+            receipt_path,
+        )
     workflow.pop("pending_semantic_approval", None)
     write_workflow(run_dir, workflow)
     if not _working_validation(workflow).get("strict_passed"):
@@ -812,6 +913,19 @@ def _finish_checkpointed_create(
             _working_validation(workflow)["report"]
         ).get("findings", [])
         write_workflow(run_dir, workflow)
+        if workflow.get("layout_strategy_exhausted"):
+            best_effort = _finish_best_effort(
+                run_dir,
+                workflow,
+                cli,
+                timeout,
+                reason=(
+                    "Bounded deterministic layout strategies completed without "
+                    "a strict pass; the safest validated candidate was retained"
+                ),
+            )
+            if best_effort is not None:
+                return best_effort
         return repair_loop(run_dir, workflow, cli, timeout)
     try:
         verdict, _ = baseline_review(run_dir, workflow, cli, timeout)
@@ -1025,6 +1139,509 @@ def tool_step(run_dir, name, function, *args, evidence=None, **kwargs):
         actor={"kind": "tool", "id": name, "model": None},
     )
     return result
+
+
+def _workflow_file_descriptor(path):
+    path = Path(path).resolve()
+    return {
+        "path": str(path),
+        "sha256": supervisor.sha256_file(path),
+        "byte_length": path.stat().st_size,
+    }
+
+
+def _relocate_backend_evidence(run_dir, attempt_dir, evidence):
+    """Copy transient backend captures into the immutable run evidence tree."""
+    run_dir = Path(run_dir).resolve()
+    evidence_root = Path(attempt_dir).resolve() / "backend"
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    value = copy.deepcopy(dict(evidence))
+
+    def relocate(record, prefix):
+        if not isinstance(record, dict):
+            return
+        for field, filename in (
+            ("stdout_path", f"{prefix}runtime-output.json"),
+            ("stderr_path", f"{prefix}runtime-stderr.txt"),
+        ):
+            source_value = record.get(field)
+            if not source_value:
+                continue
+            source = Path(source_value).resolve()
+            if not source.is_file():
+                continue
+            destination = evidence_root / filename
+            atomic_copy(source, destination)
+            record[field] = str(destination)
+            record[field.replace("_path", "_sha256")] = supervisor.sha256_file(
+                destination
+            )
+
+    relocate(value, "")
+    relocate(value.get("elk_attempt"), "elk-")
+    path = Path(attempt_dir).resolve() / "backend-evidence.json"
+    atomic_write_bytes(path, canonical_json_bytes(value) + b"\n")
+    if not _inside(path, run_dir):
+        raise supervisor.SupervisorError("backend evidence escaped the run")
+    return value, path
+
+
+def execute_layout_attempt(
+    workflow,
+    semantic_plan,
+    *,
+    run_dir,
+    adapter_input,
+    mode,
+    scope,
+    strategy,
+    timeout,
+):
+    """Execute one immutable request through backend, renderer and validator."""
+    run_dir = Path(run_dir).resolve()
+    strategy_id, strategy_options = strategy
+    requested_backend = str(adapter_input.options.get("backend", "auto"))
+    backend = "python" if strategy_id == "python-fallback" else requested_backend
+    if backend == "legacy-generic-v2":
+        raise supervisor.SupervisorError(
+            "legacy-generic-v2 must use the explicit renderer adapter rollback path"
+        )
+    plan_descriptor = workflow.get("semantic_plan_v2") or {}
+    semantic_plan_sha256 = plan_descriptor.get("sha256")
+    if not semantic_plan_sha256:
+        raise supervisor.SupervisorError(
+            "layout attempt requires the persisted semantic-plan.v2 hash"
+        )
+    semantic_plan_path = Path(plan_descriptor.get("path", "")).resolve()
+    if (
+        not semantic_plan_path.is_file()
+        or supervisor.sha256_file(semantic_plan_path) != semantic_plan_sha256
+        or supervisor.load_json(semantic_plan_path) != semantic_plan
+    ):
+        raise supervisor.SupervisorError(
+            "layout attempt semantic plan differs from persisted evidence"
+        )
+    request = layout_model.build_layout_request(
+        semantic_plan,
+        run_id=workflow["run_id"],
+        semantic_plan_sha256=semantic_plan_sha256,
+        mode=mode,
+        backend=backend,
+        strategy_id=strategy_id,
+        strategy_options=strategy_options,
+        quality_profile_version=workflow.get("quality_profile_version", 2),
+        scope=scope,
+    )
+    layout_contracts.require_layout_request(request)
+    request_sha256 = canonical_json_sha256(request)
+    attempt_key = layout_backend.attempt_key(request)
+    serialized_key = "|".join(attempt_key)
+    if serialized_key in workflow.setdefault("layout_attempt_keys", []):
+        lifecycle_v2.record_tool_attempt(
+            run_dir,
+            tool="layout-engine",
+            attempt_id=request["request_id"],
+            status="skipped",
+            payload={
+                "reason": "duplicate_attempt_key",
+                "request_sha256": request_sha256,
+                "strategy": strategy_id,
+            },
+        )
+        return {
+            "status": "skipped",
+            "reason": "duplicate_attempt_key",
+            "attempt_key": serialized_key,
+        }
+
+    attempt_dir = run_dir / "layout-attempts" / request["request_id"]
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    request_path = attempt_dir / "layout-request.json"
+    atomic_write_bytes(request_path, canonical_json_bytes(request) + b"\n")
+    request_event_descriptor = _relative_file(run_dir, request_path)
+    started_artifacts = {"layout_request": request_event_descriptor}
+    intake_descriptor = workflow.get("diagram_intake") or {}
+    intake_relative = intake_descriptor.get("path")
+    if intake_relative:
+        intake_file = run_dir / intake_relative
+        if intake_file.is_file():
+            started_artifacts["diagram_intake"] = _relative_file(
+                run_dir, intake_file
+            )
+    schedule_descriptor = workflow.get("layout_schedule") or {}
+    schedule_path = Path(schedule_descriptor.get("path", ""))
+    if schedule_path.is_file():
+        started_artifacts["layout_schedule"] = _relative_file(
+            run_dir,
+            schedule_path,
+        )
+    lifecycle_v2.record_tool_attempt(
+        run_dir,
+        tool="layout-engine",
+        attempt_id=request["request_id"],
+        status="started",
+        artifact_snapshots=started_artifacts,
+        payload={
+            "request_sha256": request_sha256,
+            "semantic_plan_sha256": semantic_plan_sha256,
+            "strategy": strategy_id,
+            "attempt_key": list(attempt_key),
+        },
+    )
+    workflow["layout_attempt_keys"].append(serialized_key)
+    write_workflow(run_dir, workflow)
+
+    backend_config = {
+        "layout_backend": backend,
+        "layout_timeout_seconds": max(0.1, min(float(timeout), 30.0)),
+    }
+    try:
+        backend_attempt = layout_backend.run_layout(
+            request,
+            config=backend_config,
+            attempted_keys=frozenset(),
+        )
+    except Exception as exc:
+        error_value = {
+            "request_sha256": request_sha256,
+            "strategy": strategy_id,
+            "status": "failed",
+            "error": str(exc),
+        }
+        backend_error_evidence = copy.deepcopy(
+            getattr(exc, "evidence", None) or {}
+        )
+        backend_error_evidence.update(error_value)
+        _, error_path = _relocate_backend_evidence(
+            run_dir,
+            attempt_dir,
+            backend_error_evidence,
+        )
+        lifecycle_v2.record_tool_attempt(
+            run_dir,
+            tool="layout-engine",
+            attempt_id=request["request_id"],
+            status="failed",
+            artifact_snapshots={
+                **started_artifacts,
+                "backend_evidence": _relative_file(run_dir, error_path),
+            },
+            payload={
+                "request_sha256": request_sha256,
+                "strategy": strategy_id,
+                "error": str(exc)[-1000:],
+            },
+        )
+        raise
+
+    backend_evidence, backend_evidence_path = _relocate_backend_evidence(
+        run_dir,
+        attempt_dir,
+        backend_attempt.evidence,
+    )
+    if backend_evidence.get("request_sha256") != request_sha256:
+        raise supervisor.SupervisorError(
+            "backend evidence differs from the immutable layout request"
+        )
+    result = dict(backend_attempt.result)
+    layout_contracts.require_layout_result(
+        result,
+        expected_request_sha256=request_sha256,
+    )
+    result_path = attempt_dir / "layout-result.json"
+    atomic_write_bytes(result_path, canonical_json_bytes(result) + b"\n")
+    candidate = attempt_dir / "candidate.drawio"
+    layout_renderer.render_layout(semantic_plan, result, candidate)
+    receipt_value = supervisor.run_validation(
+        candidate,
+        run_dir,
+        attempt_id=request["request_id"],
+    )
+    report_path = (
+        run_dir / "attempts" / request["request_id"] / "validation-report.json"
+    )
+    receipt_path = (
+        run_dir / "attempts" / request["request_id"] / "validation-receipt.json"
+    )
+    _, receipt_v2_path = lifecycle_v2.mirror_validation_receipt(
+        run_dir,
+        legacy_receipt_path=receipt_path,
+    )
+    verification = lifecycle_v2.verify_v2_receipt(run_dir, receipt_v2_path)
+    if not verification["valid"]:
+        raise supervisor.SupervisorError(
+            f"layout validation receipt failed: {verification['diagnostics']}"
+        )
+    report = supervisor.load_json(report_path)
+    quality = supervisor.quality_vector(
+        report,
+        profile_version=workflow.get("quality_profile_version", 2),
+    )
+    artifacts = {
+        **started_artifacts,
+        "layout_result": _relative_file(run_dir, result_path),
+        "backend_evidence": _relative_file(run_dir, backend_evidence_path),
+        "candidate": _relative_file(run_dir, candidate),
+        "validation_report": _relative_file(run_dir, report_path),
+        "validation_receipt": _relative_file(run_dir, receipt_v2_path),
+    }
+    lifecycle_v2.record_tool_attempt(
+        run_dir,
+        tool="layout-engine",
+        attempt_id=request["request_id"],
+        status="completed",
+        artifact_snapshots=artifacts,
+        payload={
+            "request_sha256": request_sha256,
+            "result_sha256": canonical_json_sha256(result),
+            "semantic_plan_sha256": semantic_plan_sha256,
+            "strategy": strategy_id,
+            "strict_passed": verification["strict_passed"],
+            "quality_vector": quality,
+            "validation_result": receipt_value["result"],
+        },
+    )
+    lifecycle_v2.record_candidate_evidence(
+        run_dir,
+        attempt_id=request["request_id"],
+        accepted=verification["strict_passed"],
+        artifact_snapshots=artifacts,
+        payload={
+            "reason": (
+                "strict_validation_passed"
+                if verification["strict_passed"]
+                else "strict_validation_failed"
+            ),
+            "request_sha256": request_sha256,
+            "quality_vector": quality,
+        },
+    )
+    return {
+        "status": "completed",
+        "attempt_id": request["request_id"],
+        "strategy": strategy_id,
+        "strategy_options": copy.deepcopy(strategy_options),
+        "attempt_key": serialized_key,
+        "request_sha256": request_sha256,
+        "semantic_plan_sha256": semantic_plan_sha256,
+        "layout_request": _workflow_file_descriptor(request_path),
+        "layout_result": _workflow_file_descriptor(result_path),
+        "backend_evidence": _workflow_file_descriptor(backend_evidence_path),
+        "candidate": _workflow_file_descriptor(candidate),
+        "validation": {
+            "report": str(report_path.resolve()),
+            "report_sha256": supervisor.sha256_file(report_path),
+            "receipt": str(receipt_path.resolve()),
+            "receipt_sha256": supervisor.sha256_file(receipt_path),
+            "receipt_v2": str(receipt_v2_path.resolve()),
+            "receipt_v2_sha256": supervisor.sha256_file(receipt_v2_path),
+            "strict_passed": verification["strict_passed"],
+        },
+        "quality_vector": quality,
+        "backend": backend_evidence.get("backend_selected"),
+        "fallback_reason": backend_evidence.get("fallback_reason"),
+    }
+
+
+def _layout_deadline_epoch(workflow, timeout):
+    value = workflow.get("layout_deadline_epoch")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    deadline = time.time() + max(1.0, float(timeout))
+    workflow["layout_deadline_epoch"] = deadline
+    workflow["layout_deadline_at"] = datetime.fromtimestamp(
+        deadline,
+        tz=timezone.utc,
+    ).isoformat().replace("+00:00", "Z")
+    return deadline
+
+
+def _quality_sort_key(attempt):
+    vector = attempt["quality_vector"]
+    return tuple(vector.values()) + (attempt["request_sha256"],)
+
+
+def _run_generic_create_layouts(
+    run_dir,
+    workflow,
+    semantic_plan,
+    adapter_input,
+    *,
+    timeout,
+):
+    """Run the bounded strategy schedule over one immutable semantic plan."""
+    deadline = _layout_deadline_epoch(workflow, timeout)
+    schedule_path = Path(run_dir) / "layout-attempts" / "layout-schedule.json"
+    schedule_value = {
+        "schema_version": 1,
+        "run_id": workflow["run_id"],
+        "semantic_plan_sha256": workflow["semantic_plan_v2"]["sha256"],
+        "quality_profile_version": workflow.get("quality_profile_version", 2),
+        "deadline_epoch": deadline,
+        "deadline_at": workflow["layout_deadline_at"],
+        "strategies": [
+            {"strategy": name, "strategy_options": copy.deepcopy(options)}
+            for name, options in LAYOUT_STRATEGIES
+        ],
+    }
+    if schedule_path.is_file():
+        if supervisor.load_json(schedule_path) != schedule_value:
+            raise supervisor.SupervisorError(
+                "persisted layout schedule differs from the resumed request"
+            )
+    else:
+        atomic_write_bytes(
+            schedule_path,
+            canonical_json_bytes(schedule_value) + b"\n",
+        )
+    workflow["layout_schedule"] = _workflow_file_descriptor(schedule_path)
+    workflow.setdefault("layout_attempts", [])
+    workflow.setdefault("layout_attempt_keys", [])
+    write_workflow(run_dir, workflow)
+    lifecycle_v2.record_tool_attempt(
+        run_dir,
+        tool="layout-engine",
+        attempt_id="layout-schedule",
+        status="started",
+        artifact_snapshots={
+            "layout_schedule": _relative_file(run_dir, schedule_path),
+        },
+        payload={
+            "semantic_plan_sha256": workflow["semantic_plan_v2"]["sha256"],
+            "deadline_at": workflow["layout_deadline_at"],
+            "strategy_count": len(LAYOUT_STRATEGIES),
+        },
+    )
+    completed = []
+    for index, strategy in enumerate(LAYOUT_STRATEGIES):
+        if index >= 4 or time.time() >= deadline:
+            break
+        remaining = max(0.1, deadline - time.time())
+        try:
+            attempt = execute_layout_attempt(
+                workflow,
+                semantic_plan,
+                run_dir=run_dir,
+                adapter_input=adapter_input,
+                mode="create",
+                scope=None,
+                strategy=strategy,
+                timeout=remaining,
+            )
+        except Exception as exc:
+            workflow.setdefault("layout_failures", []).append(
+                {
+                    "strategy": strategy[0],
+                    "error": str(exc)[-1000:],
+                }
+            )
+            write_workflow(run_dir, workflow)
+            continue
+        if attempt.get("status") != "completed":
+            continue
+        workflow["layout_attempts"].append(attempt)
+        completed.append(attempt)
+        write_workflow(run_dir, workflow)
+        if attempt["validation"]["strict_passed"]:
+            break
+    if not completed:
+        raise supervisor.SupervisorError(
+            "all bounded deterministic layout strategies failed before rendering a candidate"
+        )
+    strict = [
+        attempt
+        for attempt in completed
+        if attempt["validation"]["strict_passed"]
+    ]
+    selected = min(strict or completed, key=_quality_sort_key)
+    workflow["selected_layout_attempt"] = copy.deepcopy(selected)
+    workflow["layout_strategy_exhausted"] = not bool(strict)
+    write_workflow(run_dir, workflow)
+    return selected
+
+
+def _adopt_create_layout_attempt(
+    run_dir,
+    workflow,
+    selected,
+    *,
+    request,
+    max_iterations,
+):
+    accepted = Path(run_dir) / "accepted" / "baseline.drawio"
+    atomic_copy(Path(selected["candidate"]["path"]), accepted)
+    spec = supervisor.make_spec(
+        accepted,
+        [source_ref_for_request(workflow["run_id"], request)],
+    )
+    supervisor.write_json(Path(run_dir) / "diagram-spec.json", spec)
+    current_state = supervisor.load_state(run_dir)
+    if current_state is None:
+        supervisor.transition(
+            run_dir,
+            "analyzed",
+            artifact=accepted,
+            max_attempts=max_iterations,
+        )
+    elif current_state["state"] == "patching":
+        supervisor.transition(run_dir, "validating")
+    elif current_state["state"] != "analyzed":
+        raise supervisor.SupervisorError(
+            "create layout adoption requires analyzed or patching state"
+        )
+    supervisor.run_validation(
+        accepted,
+        run_dir,
+        attempt_id="baseline",
+    )
+    report_path = Path(run_dir) / "attempts" / "baseline" / "validation-report.json"
+    receipt_path = Path(run_dir) / "attempts" / "baseline" / "validation-receipt.json"
+    _, receipt_v2_path = lifecycle_v2.mirror_validation_receipt(
+        run_dir,
+        legacy_receipt_path=receipt_path,
+    )
+    receipt_verification = lifecycle_v2.verify_v2_receipt(
+        run_dir,
+        receipt_v2_path,
+    )
+    if not receipt_verification["valid"]:
+        raise supervisor.SupervisorError(
+            "adopted create candidate receipt failed: "
+            f"{receipt_verification['diagnostics']}"
+        )
+    if current_state is not None and current_state["state"] == "patching":
+        state = supervisor.record_initial_candidate(
+            run_dir,
+            accepted,
+            report_path,
+            receipt_path,
+        )
+    else:
+        bind_accepted_validation(run_dir, report_path, receipt_path)
+        state = supervisor.load_state(run_dir)
+    _set_workflow_accepted(workflow, state)
+    baseline_spec_v2 = _record_baseline_v2(
+        run_dir,
+        workflow,
+        accepted,
+        spec,
+        report_path,
+        receipt_path,
+    )
+    workflow["validation_receipt_v2"] = {
+        "path": str(receipt_v2_path.resolve()),
+        "sha256": supervisor.sha256_file(receipt_v2_path),
+    }
+    selected["adopted_validation"] = {
+        "report": str(report_path.resolve()),
+        "report_sha256": supervisor.sha256_file(report_path),
+        "receipt": str(receipt_path.resolve()),
+        "receipt_sha256": supervisor.sha256_file(receipt_path),
+        "receipt_v2": str(receipt_v2_path.resolve()),
+        "receipt_v2_sha256": supervisor.sha256_file(receipt_v2_path),
+        "strict_passed": receipt_verification["strict_passed"],
+    }
+    return accepted, baseline_spec_v2
 
 
 def validate_plan(plan):
@@ -3431,64 +4048,101 @@ def _start_run_impl(
             semantic_plan_v2, source_bundle, mode="create",
         )
         selected_adapter = adapter_input.selection.adapter
-        renderer_source = semantic_plan_v2
-        if adapter_input.source_record is not None:
-            source_path = (
-                run_dir / "inputs" / "renderer-sources"
-                / f"{adapter_input.source_record['content_sha256']}.json"
-            )
-            atomic_write_bytes(
-                source_path,
-                canonical_json_bytes(adapter_input.source_content) + b"\n",
-            )
-            renderer_source = source_path
-        adapter_run = tool_step(
-            run_dir, "renderer-adapter",
-            renderer_adapters.render_with_adapter,
-            selected_adapter.diagram_type, renderer_source, accepted,
-            mode="create",
-            options=(
-                {"backend": "legacy-generic-v2", "reflow": "full"}
-                if selected_adapter is renderer_adapters.GENERIC_ADAPTER
-                else dict(adapter_input.options)
-            ),
-            generic_renderer=render_generic, timeout=timeout,
-        )
-        workflow["renderer_adapter"] = {
-            **adapter_input.record(),
-            # Selection evidence owns source binding/fallback provenance;
-            # the actual run owns invoked options, command and output.
-            **adapter_run.record(),
-            "requested_semantic_diagram_type": semantic_analysis["result"]["diagram_type"],
-        }
         lifecycle_v2.transition(
-            run_dir, "analyzing",
-            payload={"phase": "rendering", "renderer_adapter": workflow["renderer_adapter"]},
+            run_dir,
+            "analyzing",
+            payload={
+                "phase": "rendering",
+                "renderer_adapter": adapter_input.record(),
+            },
         )
-        spec = supervisor.make_spec(accepted, [source_ref_for_request(workflow["run_id"], request)])
-        supervisor.write_json(run_dir / "diagram-spec.json", spec)
-        supervisor.transition(run_dir, "analyzed", artifact=accepted, max_attempts=max_iterations)
-        validation_profile = selected_adapter.validation_profile
-        validation_source = (
-            adapter_run.source_path
-            if validation_profile in {"roadmap", "gitflow"}
-            else None
-        )
-        receipt = tool_step(
-            run_dir, "strict-validator", supervisor.run_validation,
-            accepted, run_dir,
-            profile=None if validation_profile == "structural" else validation_profile,
-            source=validation_source,
-            attempt_id="baseline",
-        )
-        report_path = run_dir / "attempts" / "baseline" / "validation-report.json"
-        receipt_path = run_dir / "attempts" / "baseline" / "validation-receipt.json"
-        bind_accepted_validation(run_dir, report_path, receipt_path)
-        state = supervisor.load_state(run_dir)
-        _set_workflow_accepted(workflow, state)
-        baseline_spec_v2 = _record_baseline_v2(
-            run_dir, workflow, accepted, spec, report_path, receipt_path,
-        )
+        if selected_adapter is renderer_adapters.GENERIC_ADAPTER:
+            selected = _run_generic_create_layouts(
+                run_dir,
+                workflow,
+                semantic_plan_v2,
+                adapter_input,
+                timeout=timeout,
+            )
+            accepted, baseline_spec_v2 = _adopt_create_layout_attempt(
+                run_dir,
+                workflow,
+                selected,
+                request=request,
+                max_iterations=max_iterations,
+            )
+            workflow["renderer_adapter"] = {
+                **adapter_input.record(),
+                "options": {
+                    **dict(adapter_input.options),
+                    "reflow": "full",
+                },
+                "output_path": str(accepted.resolve()),
+                "output_hash": supervisor.sha256_file(accepted),
+                "command": ["host:execute_layout_attempt"],
+                "layout_request_sha256": selected["request_sha256"],
+                "layout_result_sha256": selected["layout_result"]["sha256"],
+                "requested_semantic_diagram_type": semantic_analysis["result"]["diagram_type"],
+            }
+        else:
+            renderer_source = semantic_plan_v2
+            if adapter_input.source_record is not None:
+                source_path = (
+                    run_dir / "inputs" / "renderer-sources"
+                    / f"{adapter_input.source_record['content_sha256']}.json"
+                )
+                atomic_write_bytes(
+                    source_path,
+                    canonical_json_bytes(adapter_input.source_content) + b"\n",
+                )
+                renderer_source = source_path
+            adapter_run = tool_step(
+                run_dir, "renderer-adapter",
+                renderer_adapters.render_with_adapter,
+                selected_adapter.diagram_type, renderer_source, accepted,
+                mode="create",
+                options=dict(adapter_input.options),
+                generic_renderer=render_generic, timeout=timeout,
+            )
+            workflow["renderer_adapter"] = {
+                **adapter_input.record(),
+                # Selection evidence owns source binding/fallback provenance;
+                # the actual run owns invoked options, command and output.
+                **adapter_run.record(),
+                "requested_semantic_diagram_type": semantic_analysis["result"]["diagram_type"],
+            }
+            spec = supervisor.make_spec(
+                accepted,
+                [source_ref_for_request(workflow["run_id"], request)],
+            )
+            supervisor.write_json(run_dir / "diagram-spec.json", spec)
+            supervisor.transition(
+                run_dir,
+                "analyzed",
+                artifact=accepted,
+                max_attempts=max_iterations,
+            )
+            validation_profile = selected_adapter.validation_profile
+            validation_source = (
+                adapter_run.source_path
+                if validation_profile in {"roadmap", "gitflow"}
+                else None
+            )
+            receipt = tool_step(
+                run_dir, "strict-validator", supervisor.run_validation,
+                accepted, run_dir,
+                profile=None if validation_profile == "structural" else validation_profile,
+                source=validation_source,
+                attempt_id="baseline",
+            )
+            report_path = run_dir / "attempts" / "baseline" / "validation-report.json"
+            receipt_path = run_dir / "attempts" / "baseline" / "validation-receipt.json"
+            bind_accepted_validation(run_dir, report_path, receipt_path)
+            state = supervisor.load_state(run_dir)
+            _set_workflow_accepted(workflow, state)
+            baseline_spec_v2 = _record_baseline_v2(
+                run_dir, workflow, accepted, spec, report_path, receipt_path,
+            )
     write_workflow(run_dir, workflow)
     delta = semantic_plan_v2["result"]["semantic_delta"]
     changes = semantic_plan_v2["result"]["human_questions"]
@@ -3515,6 +4169,19 @@ def _start_run_impl(
             _working_validation(workflow)["report"]
         ).get("findings", [])
         write_workflow(run_dir, workflow)
+        if mode == "create" and workflow.get("layout_strategy_exhausted"):
+            best_effort = _finish_best_effort(
+                run_dir,
+                workflow,
+                cli,
+                timeout,
+                reason=(
+                    "Bounded deterministic layout strategies completed without "
+                    "a strict pass; the safest validated candidate was retained"
+                ),
+            )
+            if best_effort is not None:
+                return best_effort
         return repair_loop(run_dir, workflow, cli, timeout)
     try:
         verdict, _ = baseline_review(run_dir, workflow, cli, timeout)
@@ -3731,6 +4398,16 @@ def _best_effort_candidate(run_dir, workflow):
     }
 
 
+def _best_effort_publication_target(workflow):
+    target = Path(workflow["target"]).resolve()
+    if workflow.get("mode") != "create":
+        return target
+    run_id = str(workflow["run_id"])
+    return target.with_name(
+        f"{target.stem}.best-effort-{run_id}{target.suffix}"
+    )
+
+
 def _finish_best_effort(run_dir, workflow, cli, timeout, *, reason):
     """Return a safe usable artifact without weakening strict completion."""
     if not workflow.get("reviewer_verdict_v2"):
@@ -3783,7 +4460,9 @@ def _finish_best_effort(run_dir, workflow, cli, timeout, *, reason):
     )
     publication = {"disposition": "run_local", "reason": reason}
     v2_selection_recorded = False
-    target = Path(workflow["target"])
+    target = _best_effort_publication_target(workflow)
+    if workflow["mode"] == "create":
+        workflow["best_effort_target"] = str(target)
     published_descriptor = None
     final_descriptor = copy.deepcopy(candidate["artifact"])
     unchanged_improve = bool(
@@ -3817,6 +4496,11 @@ def _finish_best_effort(run_dir, workflow, cli, timeout, *, reason):
                 reviewer_verdict=(reviewer_path if reviewer_path.is_file() else None),
                 unresolved_findings=unresolved,
                 decision="best_effort",
+                target_override=(
+                    target
+                    if workflow["mode"] == "create"
+                    else None
+                ),
             )
             if transaction["status"] != "committed":
                 raise supervisor.SupervisorError(

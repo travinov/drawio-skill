@@ -230,6 +230,42 @@ class LayoutBuiltinTests(unittest.TestCase):
             ports["page-a/fan-out-3"]["source"]["point"],
         )
 
+    def test_strategy_port_separation_changes_python_pin_allocation(self):
+        fixture = json.loads((FIXTURES / "fan-in-out.json").read_text(encoding="utf-8"))
+        default = layout_request(nodes=fixture["nodes"], edges=fixture["edges"])
+        separated = copy.deepcopy(default)
+        default["strategy_options"] = {
+            "spacing": 1.0,
+            "port_separation": 1.0,
+            "shared_penalty": 1.0,
+        }
+        separated["strategy_options"] = {
+            "spacing": 1.0,
+            "port_separation": 1.4,
+            "shared_penalty": 1.0,
+        }
+        bounds = _fixture_bounds(default)
+
+        default_ports = layout_builtin.allocate_ports(default, bounds)
+        separated_ports = layout_builtin.allocate_ports(separated, bounds)
+        default_span = (
+            default_ports["page-a/fan-out-3"]["source"]["position"]
+            - default_ports["page-a/fan-out-1"]["source"]["position"]
+        )
+        separated_span = (
+            separated_ports["page-a/fan-out-3"]["source"]["position"]
+            - separated_ports["page-a/fan-out-1"]["source"]["position"]
+        )
+        self.assertGreater(separated_span, default_span)
+        self.assertEqual(
+            layout_builtin._spread_pins(3),
+            [0.1, 0.5, 0.9],
+        )
+
+    def test_strategy_shared_penalty_scales_python_reserved_channel_cost(self):
+        self.assertEqual(layout_builtin._shared_route_cost(12.0, 1.0), 600.0)
+        self.assertEqual(layout_builtin._shared_route_cost(12.0, 1.6), 960.0)
+
     def test_visibility_route_avoids_expanded_obstacle_and_is_manhattan(self):
         fixture = json.loads((FIXTURES / "routing-obstacles.json").read_text(encoding="utf-8"))
         request = layout_request(direction="LR", nodes=fixture["nodes"], edges=fixture["edges"])

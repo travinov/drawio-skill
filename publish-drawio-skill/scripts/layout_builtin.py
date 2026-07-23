@@ -568,17 +568,32 @@ def _pin_from_point(
     return pin
 
 
-def _spread_pins(count: int) -> list[float]:
+def _spread_pins(count: int, separation: float | None = None) -> list[float]:
     if count <= 0:
         return []
     if count == 1:
         return [0.5]
-    return [round(0.1 + (0.8 * index / (count - 1)), 9) for index in range(count)]
+    span = (
+        0.8
+        if separation is None
+        else min(0.8, 0.56 * max(float(separation), 0.01))
+    )
+    start = 0.5 - span / 2.0
+    return [
+        round(start + (span * index / (count - 1)), 9)
+        for index in range(count)
+    ]
 
 
 def allocate_ports(request: Mapping[str, Any], bounds: Mapping[str, Mapping[str, float]]) -> dict[str, dict]:
     """Allocate stable page-scoped sides, normalized pins, and absolute points."""
     direction = str(request.get("direction"))
+    strategy_options = request.get("strategy_options")
+    port_separation = (
+        float(strategy_options.get("port_separation", 1.0))
+        if isinstance(strategy_options, Mapping)
+        else None
+    )
     groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     fixed_pins: dict[tuple[str, str, str], list[float]] = defaultdict(list)
     output: dict[str, dict] = {}
@@ -647,7 +662,10 @@ def allocate_ports(request: Mapping[str, Any], bounds: Mapping[str, Mapping[str,
         fixed = fixed_pins.get((page_id, node_id, side), [])
         candidates = [
             pin
-            for pin in _spread_pins(len(ordered) + len(fixed))
+            for pin in _spread_pins(
+                len(ordered) + len(fixed),
+                port_separation,
+            )
             if all(abs(pin - occupied) > 1e-9 for occupied in fixed)
         ]
         if len(candidates) < len(ordered):
@@ -688,6 +706,10 @@ def _expanded_contains(point: layout_geometry.Point, rect: layout_geometry.Rect,
     )
 
 
+def _shared_route_cost(shared_length: float, shared_penalty: float) -> float:
+    return float(shared_length) * 50.0 * float(shared_penalty)
+
+
 def _visibility_route(
     start: layout_geometry.Point,
     target: layout_geometry.Point,
@@ -696,6 +718,7 @@ def _visibility_route(
     clearance: float,
     grid_size: float,
     reserved: Sequence[layout_geometry.Segment],
+    shared_penalty: float = 1.0,
     extra_x: Sequence[float] = (),
     extra_y: Sequence[float] = (),
 ) -> list[layout_geometry.Point]:
@@ -755,7 +778,12 @@ def _visibility_route(
             length = abs(point[0] - neighbour[0]) + abs(point[1] - neighbour[1])
             shared = sum(layout_geometry.collinear_overlap(segment, occupied) for occupied in reserved)
             bend = orientation is not None and orientation != next_orientation
-            next_cost = cost + length + shared * 50.0 + (grid_size * 2 if bend else 0.0)
+            next_cost = (
+                cost
+                + length
+                + _shared_route_cost(shared, shared_penalty)
+                + (grid_size * 2 if bend else 0.0)
+            )
             state = (neighbour, next_orientation)
             if next_cost + 1e-9 >= best.get(state, float("inf")):
                 continue
@@ -795,6 +823,10 @@ def route_edges(
         raise ValueError("layout request requires constraints")
     grid_size = float(constraints["grid_size"])
     clearance = max(grid_size, min(float(constraints["node_separation"]) / 2.0, grid_size * 2))
+    strategy_options = request.get("strategy_options")
+    if not isinstance(strategy_options, Mapping):
+        strategy_options = {}
+    shared_penalty = float(strategy_options.get("shared_penalty", 1.0))
     output: dict[str, dict] = {}
     pages = request.get("pages")
     if not isinstance(pages, list):
@@ -894,11 +926,15 @@ def route_edges(
                 outer_index += 1
                 first = _visibility_route(
                     source_stub, anchor_start, obstacles, clearance=clearance,
-                    grid_size=grid_size, reserved=reserved, extra_x=extra_x, extra_y=extra_y,
+                    grid_size=grid_size, reserved=reserved,
+                    shared_penalty=shared_penalty,
+                    extra_x=extra_x, extra_y=extra_y,
                 )
                 last = _visibility_route(
                     anchor_end, target_stub, obstacles, clearance=clearance,
-                    grid_size=grid_size, reserved=reserved, extra_x=extra_x, extra_y=extra_y,
+                    grid_size=grid_size, reserved=reserved,
+                    shared_penalty=shared_penalty,
+                    extra_x=extra_x, extra_y=extra_y,
                 )
                 middle = [anchor_start, anchor_end]
                 routed = layout_geometry.canonicalize_route([start, *first, *middle, *last, end])
@@ -906,6 +942,7 @@ def route_edges(
                 middle = _visibility_route(
                     source_stub, target_stub, obstacles, clearance=clearance,
                     grid_size=grid_size, reserved=reserved,
+                    shared_penalty=shared_penalty,
                 )
                 routed = layout_geometry.canonicalize_route([start, *middle, end])
             if not layout_geometry.is_manhattan(routed):

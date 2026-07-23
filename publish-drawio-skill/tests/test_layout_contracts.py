@@ -97,6 +97,25 @@ def valid_repair_intent():
 
 
 class LayoutContractTests(unittest.TestCase):
+    def test_layout_request_strategy_options_are_strict_and_finite(self):
+        value = valid_layout_request()
+        value["strategy_options"] = {
+            "spacing": 1.35,
+            "port_separation": 1.4,
+            "shared_penalty": 1.6,
+        }
+        self.assertEqual(layout_contracts.validate_layout_request(value), [])
+        value["strategy_options"]["unknown"] = 1
+        self.assertTrue(layout_contracts.validate_layout_request(value))
+        value["strategy_options"].pop("unknown")
+        value["strategy_options"]["spacing"] = float("inf")
+        self.assertTrue(
+            any(
+                diagnostic["code"] == "layout.number.non_finite"
+                for diagnostic in layout_contracts.validate_layout_request(value)
+            )
+        )
+
     def test_schemas_compile_and_accept_positive_documents(self):
         fixtures = {
             "diagram-intake": valid_intake(),

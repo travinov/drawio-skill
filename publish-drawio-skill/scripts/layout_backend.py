@@ -77,8 +77,9 @@ def effective_options(request: Mapping[str, Any]) -> dict[str, str]:
     constraints = request.get("constraints")
     if not isinstance(constraints, Mapping):
         constraints = {}
+    strategy_options = request.get("strategy_options")
     direction = "RIGHT" if request.get("direction") == "LR" else "DOWN"
-    return {
+    options = {
         "elk.algorithm": "layered",
         "elk.direction": direction,
         "elk.edgeRouting": "ORTHOGONAL",
@@ -89,6 +90,14 @@ def effective_options(request: Mapping[str, Any]) -> dict[str, str]:
             constraints.get("layer_separation", 80)
         ),
     }
+    if isinstance(strategy_options, Mapping):
+        options["elk.spacing.portPort"] = str(
+            10 * float(strategy_options.get("port_separation", 1.0))
+        )
+        options["elk.spacing.edgeEdge"] = str(
+            10 * float(strategy_options.get("shared_penalty", 1.0))
+        )
+    return options
 
 
 def attempt_key(request: Mapping[str, Any]) -> tuple[str, str, str]:

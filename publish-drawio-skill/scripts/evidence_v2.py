@@ -94,6 +94,75 @@ def _verify_file_descriptor(
     return diagnostics
 
 
+def _verify_tool_artifact_snapshots(
+    event: dict[str, Any],
+    *,
+    root: Path,
+    pointer: str,
+) -> list[dict[str, Any]]:
+    snapshots = event.get("payload", {}).get("artifact_snapshots", {})
+    if not isinstance(snapshots, dict):
+        return [
+            invalid(
+                "tool_attempt.artifacts_invalid",
+                f"{pointer}/payload/artifact_snapshots",
+                "tool attempt artifact_snapshots must be an object",
+            )
+        ]
+    diagnostics: list[dict[str, Any]] = []
+    for name, descriptor in sorted(snapshots.items()):
+        descriptor_pointer = f"{pointer}/payload/artifact_snapshots/{name}"
+        if not isinstance(descriptor, dict):
+            diagnostics.append(
+                invalid(
+                    "tool_attempt.artifact_invalid",
+                    descriptor_pointer,
+                    "tool attempt artifact descriptor must be an object",
+                )
+            )
+            continue
+        try:
+            path = contained_path(root, descriptor.get("path", ""))
+        except ContractError as exc:
+            diagnostics.append(
+                invalid(
+                    "tool_attempt.artifact_path_invalid",
+                    f"{descriptor_pointer}/path",
+                    str(exc),
+                )
+            )
+            continue
+        try:
+            byte_length = path.stat().st_size
+            digest = file_sha256(path)
+        except OSError as exc:
+            diagnostics.append(
+                invalid(
+                    "tool_attempt.artifact_missing",
+                    f"{descriptor_pointer}/path",
+                    str(exc),
+                )
+            )
+            continue
+        if byte_length != descriptor.get("byte_length"):
+            diagnostics.append(
+                invalid(
+                    "tool_attempt.artifact_length_mismatch",
+                    f"{descriptor_pointer}/byte_length",
+                    "tool attempt artifact byte length changed",
+                )
+            )
+        if digest != descriptor.get("sha256"):
+            diagnostics.append(
+                invalid(
+                    "tool_attempt.artifact_hash_mismatch",
+                    f"{descriptor_pointer}/sha256",
+                    "tool attempt artifact hash changed",
+                )
+            )
+    return diagnostics
+
+
 def verify_validation_receipt(
     receipt: dict[str, Any],
     *,
@@ -251,6 +320,18 @@ def verify_event_ledger(
             for item in verify_snapshot_descriptor(descriptor, trusted_root=run_dir):
                 diagnostics.append(invalid(item["code"], pointer + item.get("pointer", ""), item["message"], line=line))
             latest_snapshots[descriptor["schema_kind"]] = descriptor
+        if event["event_type"] in {
+            "tool_attempt",
+            "candidate_accepted",
+            "candidate_rejected",
+        } and "artifact_snapshots" in event.get("payload", {}):
+            diagnostics.extend(
+                _verify_tool_artifact_snapshots(
+                    event,
+                    root=Path(run_dir).resolve(),
+                    pointer=event_pointer,
+                )
+            )
         events.append({"line": line, "sha256": event_hash, "event": event})
     return {
         "valid": not diagnostics,

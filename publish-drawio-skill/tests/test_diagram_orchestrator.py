@@ -249,10 +249,131 @@ class DiagramOrchestratorTests(unittest.TestCase):
         workflow = json.loads(
             (Path(result["run_dir"]) / "workflow.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(
-            workflow["renderer_adapter"]["options"],
-            {"backend": "legacy-generic-v2", "reflow": "full"},
+        self.assertEqual(workflow["renderer_adapter"]["options"]["backend"], "auto")
+        self.assertEqual(workflow["renderer_adapter"]["options"]["reflow"], "full")
+        self.assertTrue(workflow["layout_attempts"])
+
+    def test_generic_create_persists_hash_bound_layout_attempt_evidence(self):
+        root, workspace, cli = self.create_workspace()
+        target = workspace / "layout-evidence.drawio"
+
+        result = orchestrator.start_run(
+            "create",
+            target,
+            "Create a deterministic two-step diagram.",
+            workspace,
+            cli,
+            run_id="layout-evidence-run",
+            max_iterations=1,
         )
+
+        run_dir = Path(result["run_dir"])
+        workflow = json.loads((run_dir / "workflow.json").read_text(encoding="utf-8"))
+        plan = workflow["semantic_plan_v2"]
+        attempts = workflow["layout_attempts"]
+        schedule_path = Path(workflow["layout_schedule"]["path"])
+        schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
+        self.assertEqual(schedule["deadline_at"], workflow["layout_deadline_at"])
+        self.assertEqual(len(schedule["strategies"]), len(orchestrator.LAYOUT_STRATEGIES))
+        self.assertGreaterEqual(len(attempts), 1)
+        self.assertLessEqual(len(attempts), len(orchestrator.LAYOUT_STRATEGIES))
+        self.assertEqual(len(workflow["layout_attempt_keys"]), len(set(workflow["layout_attempt_keys"])))
+        for attempt in attempts:
+            request_path = Path(attempt["layout_request"]["path"])
+            result_path = Path(attempt["layout_result"]["path"])
+            request = json.loads(request_path.read_text(encoding="utf-8"))
+            layout_result = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(request["semantic_plan_sha256"], plan["sha256"])
+            self.assertEqual(
+                layout_result["request_sha256"],
+                orchestrator.canonical_json_sha256(request),
+            )
+            self.assertTrue(Path(attempt["backend_evidence"]["path"]).is_file())
+            self.assertTrue(Path(attempt["candidate"]["path"]).is_file())
+            self.assertTrue(Path(attempt["validation"]["report"]).is_file())
+            self.assertTrue(Path(attempt["validation"]["receipt"]).is_file())
+        events = orchestrator.lifecycle_v2.replay(run_dir)["events"]
+        layout_events = [
+            item["event"]
+            for item in events
+            if item["event"]["event_type"] == "tool_attempt"
+            and item["event"]["payload"].get("tool") == "layout-engine"
+        ]
+        self.assertTrue(layout_events)
+        self.assertTrue(
+            any(
+                event["payload"].get("artifact_snapshots", {}).get("layout_request")
+                for event in layout_events
+            )
+        )
+
+    def test_layout_strategy_schedule_is_finite_and_has_one_python_fallback(self):
+        self.assertEqual(
+            orchestrator.LAYOUT_STRATEGIES,
+            (
+                ("elk-default", {"spacing": 1.0, "port_separation": 1.0, "shared_penalty": 1.0}),
+                ("elk-spacing", {"spacing": 1.35, "port_separation": 1.0, "shared_penalty": 1.0}),
+                ("elk-separated", {"spacing": 1.35, "port_separation": 1.4, "shared_penalty": 1.6}),
+                ("python-fallback", {}),
+            ),
+        )
+        self.assertEqual(
+            sum(name == "python-fallback" for name, _ in orchestrator.LAYOUT_STRATEGIES),
+            1,
+        )
+
+    def test_generic_create_falls_back_from_elk_to_python_on_the_same_request_digest(self):
+        root, workspace, cli = self.create_workspace()
+        target = workspace / "elk-fallback.drawio"
+        failure_evidence = {
+            "request_sha256": None,
+            "backend_requested": "elk",
+            "fallback_reason": "elk_nonzero_exit",
+        }
+        observed = {}
+
+        def fail_elk(request, **kwargs):
+            digest = orchestrator.canonical_json_sha256(request)
+            observed["elk"] = digest
+            evidence = dict(failure_evidence)
+            evidence["request_sha256"] = digest
+            raise orchestrator.layout_backend.BackendExecutionError(
+                "elk_nonzero_exit",
+                evidence,
+            )
+
+        with mock.patch.object(
+            orchestrator.layout_backend,
+            "resolve_node",
+            return_value=Path("/usr/bin/true"),
+        ), mock.patch.object(
+            orchestrator.layout_backend,
+            "run_elk",
+            side_effect=fail_elk,
+        ):
+            result = orchestrator.start_run(
+                "create",
+                target,
+                "Create an ELK fallback diagram.",
+                workspace,
+                cli,
+                run_id="elk-fallback-run",
+                max_iterations=1,
+            )
+
+        workflow = json.loads(
+            (Path(result["run_dir"]) / "workflow.json").read_text(encoding="utf-8")
+        )
+        first = workflow["layout_attempts"][0]
+        evidence = json.loads(
+            Path(first["backend_evidence"]["path"]).read_text(encoding="utf-8")
+        )
+        self.assertEqual(observed["elk"], evidence["request_sha256"])
+        self.assertEqual(
+            evidence["elk_attempt"]["request_sha256"],
+            evidence["request_sha256"],
+        )
+        self.assertEqual(evidence["backend_selected"], "python-layered")
 
     def test_ambiguous_intake_returns_native_selection_without_allocating_run(self):
         root, workspace, cli = self.create_workspace()
@@ -904,6 +1025,50 @@ Route approved payments to settlement.
                 ("semantic_analyst", "vllm/Qwen3.6-35B-262k", False),
                 ("reviewer", "vllm/DeepSeek-V4-Flash-262k", False),
             ],
+        )
+
+    def test_checkpointed_generic_create_resumes_through_layout_pipeline(self):
+        root, workspace, _ = self.create_workspace()
+        cli = root / "checkpointed-create-cli.py"
+        cli.write_text(
+            FAKE_GIGACODE.replace(
+                'requires_human = payload["mode"] == "improve"',
+                'requires_human = payload["mode"] == "improve" or "clarify-create" in payload["request"]',
+            ),
+            encoding="utf-8",
+        )
+        cli.chmod(0o755)
+        target = workspace / "checkpointed-create.drawio"
+
+        pending = orchestrator.start_run(
+            "create",
+            target,
+            "clarify-create before rendering",
+            workspace,
+            cli,
+            run_id="checkpointed-create-run",
+            max_iterations=1,
+        )
+        self.assertEqual(pending["checkpoint"]["kind"], "semantic_approval")
+        resumed = orchestrator.resume_run(
+            Path(pending["run_dir"]),
+            "continue",
+            "Approve the proposed create semantics.",
+            workspace,
+            cli,
+        )
+
+        workflow = json.loads(
+            (Path(resumed["run_dir"]) / "workflow.json").read_text(encoding="utf-8")
+        )
+        self.assertTrue(workflow["layout_attempts"])
+        self.assertEqual(
+            workflow["renderer_adapter"]["command"],
+            ["host:execute_layout_attempt"],
+        )
+        self.assertNotEqual(
+            workflow["renderer_adapter"]["options"]["backend"],
+            "legacy-generic-v2",
         )
 
     def test_create_with_explicit_roadmap_source_uses_roadmap_local_and_publishes(self):
@@ -1918,6 +2083,78 @@ Route approved payments to settlement.
         self.assertEqual(workflow["published_artifact"]["sha256"], original_hash)
         self.assertEqual(workflow["final_artifact"]["sha256"], original_hash)
         publish_transaction.assert_not_called()
+
+    def test_finish_best_effort_create_publishes_to_separate_no_clobber_target(self):
+        root, workspace, _ = self.create_workspace()
+        run_dir = workspace / ".diagram-runs" / "create-best-effort-run"
+        run_dir.mkdir(parents=True)
+        requested_target = workspace / "requested.drawio"
+        artifact = run_dir / "candidate.drawio"
+        artifact.write_text(clean_diagram(), encoding="utf-8")
+        artifact_hash = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        report = run_dir / "validation-report.json"
+        receipt = run_dir / "validation-receipt.json"
+        report.write_text(json.dumps({"schema_version": 1, "findings": [], "metrics": {}}), encoding="utf-8")
+        receipt.write_text(json.dumps({"strict_passed": False}), encoding="utf-8")
+        workflow = {
+            "run_id": "create-best-effort-run",
+            "mode": "create",
+            "target": str(requested_target),
+        }
+        candidate = {
+            "safe": True,
+            "artifact": {"path": str(artifact), "sha256": artifact_hash},
+            "validation": {"report": str(report), "receipt": str(receipt)},
+            "validation_receipt_v2": {"path": str(receipt)},
+            "reviewer_verdict_v2": None,
+            "classification": {
+                "strict_passed": False,
+                "findings": [],
+                "reviewer_findings": [],
+                "report_sha256": hashlib.sha256(report.read_bytes()).hexdigest(),
+                "receipt_sha256": hashlib.sha256(receipt.read_bytes()).hexdigest(),
+            },
+            "diagnostics": [],
+        }
+
+        def publish_side_effect(*args, **kwargs):
+            target = Path(kwargs["target_override"])
+            target.write_bytes(artifact.read_bytes())
+            return {
+                "status": "committed",
+                "publication_id": "publication-best-effort",
+                "target_path": str(target.relative_to(workspace.resolve())),
+            }
+
+        with mock.patch.object(orchestrator, "_best_effort_candidate", return_value=candidate), \
+            mock.patch.object(orchestrator, "baseline_review", side_effect=orchestrator.supervisor.SupervisorError("review unavailable")), \
+            mock.patch.object(orchestrator, "write_workflow"), \
+            mock.patch.object(orchestrator, "_complete_inflight_decision"), \
+            mock.patch.object(orchestrator, "host_result", side_effect=lambda run_dir, workflow, error=None: {"status": workflow["status"]}), \
+            mock.patch.object(orchestrator.supervisor, "transition"), \
+            mock.patch.object(orchestrator.supervisor, "append_event"), \
+            mock.patch.object(orchestrator.lifecycle_v2, "transition"), \
+            mock.patch.object(orchestrator.lifecycle_v2, "publish_transaction", side_effect=publish_side_effect) as publish_transaction:
+            result = orchestrator._finish_best_effort(
+                run_dir,
+                workflow,
+                cli=Path("/usr/bin/true"),
+                timeout=1,
+                reason="bounded layout exhausted",
+            )
+
+        self.assertEqual(result["status"], "best_effort_completed")
+        self.assertFalse(requested_target.exists())
+        published = Path(workflow["published_artifact"]["path"])
+        self.assertTrue(published.is_file())
+        self.assertEqual(
+            published.name,
+            "requested.best-effort-create-best-effort-run.drawio",
+        )
+        self.assertEqual(
+            publish_transaction.call_args.kwargs["target_override"],
+            published,
+        )
 
     def test_trace_detects_tampered_role_output(self):
         root, workspace, cli = self.create_workspace()

@@ -501,6 +501,82 @@ def mark_decision_processed(
     return True
 
 
+def record_tool_attempt(
+    run_dir: Path | str,
+    *,
+    tool: str,
+    attempt_id: str,
+    status: str,
+    artifact_snapshots: dict[str, dict[str, Any]] | None = None,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Append one hash-bound tool attempt without inventing a snapshot schema."""
+    if status not in {"started", "completed", "failed", "skipped"}:
+        raise ValueError(f"unsupported tool attempt status {status!r}")
+    replayed = require_mutable(run_dir)
+    workflow, _ = latest_document(run_dir, "workflow", replayed)
+    artifacts = copy.deepcopy(artifact_snapshots or {})
+    for name, descriptor in artifacts.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError("tool attempt artifact names must be non-empty strings")
+        path = contained_path(Path(run_dir).resolve(), descriptor.get("path", ""))
+        expected = make_file_descriptor(path, root=run_dir)
+        if descriptor != expected:
+            raise ContractError(
+                "tool_attempt.artifact_descriptor_invalid",
+                f"tool attempt artifact descriptor differs from {name!r}",
+            )
+    return _append_event(
+        run_dir,
+        run_id=workflow["run_id"],
+        event_type="tool_attempt",
+        transaction_id=str(uuid.uuid4()),
+        snapshots=[],
+        payload={
+            "tool": tool,
+            "attempt_id": attempt_id,
+            "status": status,
+            "artifact_snapshots": artifacts,
+            **copy.deepcopy(payload or {}),
+        },
+        actor={"kind": "tool", "id": tool},
+    )
+
+
+def record_candidate_evidence(
+    run_dir: Path | str,
+    *,
+    attempt_id: str,
+    accepted: bool,
+    artifact_snapshots: dict[str, dict[str, Any]],
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Append immutable accepted/rejected layout evidence to the v2 ledger."""
+    replayed = require_mutable(run_dir)
+    workflow, _ = latest_document(run_dir, "workflow", replayed)
+    artifacts = copy.deepcopy(artifact_snapshots)
+    for name, descriptor in artifacts.items():
+        path = contained_path(Path(run_dir).resolve(), descriptor.get("path", ""))
+        if descriptor != make_file_descriptor(path, root=run_dir):
+            raise ContractError(
+                "candidate.artifact_descriptor_invalid",
+                f"candidate artifact descriptor differs from {name!r}",
+            )
+    return _append_event(
+        run_dir,
+        run_id=workflow["run_id"],
+        event_type="candidate_accepted" if accepted else "candidate_rejected",
+        transaction_id=str(uuid.uuid4()),
+        snapshots=[],
+        payload={
+            "attempt_id": attempt_id,
+            "artifact_snapshots": artifacts,
+            **copy.deepcopy(payload or {}),
+        },
+        actor={"kind": "system", "id": "diagram-orchestrator"},
+    )
+
+
 def commit_decision(
     run_dir: Path | str,
     *,
@@ -1291,6 +1367,7 @@ def publish_transaction(
     reviewer_verdict: Path | str | None = None,
     unresolved_findings: Iterable[dict[str, Any]] = (),
     decision: str,
+    target_override: Path | str | None = None,
 ) -> dict[str, Any]:
     run_root = Path(run_dir).resolve()
     replayed = require_mutable(run_root)
@@ -1300,20 +1377,62 @@ def publish_transaction(
         raise ContractError("publication.mode_invalid", "read-only review runs cannot publish")
     if decision not in {"approve", "approve_with_findings", "best_effort"}:
         raise ContractError("publication.decision_invalid", f"unsupported publication decision {decision!r}")
+    if target_override is not None and decision != "best_effort":
+        raise ContractError(
+            "publication.target_override_forbidden",
+            "only best-effort publication may use a separate target",
+        )
+    if target_override is not None and workflow["mode"] != "create":
+        raise ContractError(
+            "publication.target_override_forbidden",
+            "a separate best-effort target is only valid for create",
+        )
     existing_descriptor = replayed["latest_snapshots"].get("publication-transaction")
     if existing_descriptor is not None:
         existing = _read_descriptor_document(run_root, existing_descriptor)
         supplied_sha = file_sha256(contained_path(run_root, accepted_artifact))
         if existing["decision"] != decision or existing["accepted_artifact"]["sha256"] != supplied_sha:
             raise ContractError("publication.replay_mismatch", "existing publication belongs to another decision or artifact")
+        if target_override is not None:
+            expected_target = contained_path(
+                Path(workflow["workspace"]).resolve(),
+                target_override,
+            )
+            if existing["target_path"] != expected_target.relative_to(
+                Path(workflow["workspace"]).resolve()
+            ).as_posix():
+                raise ContractError(
+                    "publication.replay_mismatch",
+                    "existing publication belongs to another target",
+                )
         return _continue_publication(run_root, existing)
 
     workspace = Path(workflow["workspace"]).resolve()
-    target = contained_path(workspace, workspace / workflow["target_path"])
+    target = contained_path(
+        workspace,
+        target_override
+        if target_override is not None
+        else workspace / workflow["target_path"],
+    )
+    original_target = contained_path(
+        workspace,
+        workspace / workflow["target_path"],
+    )
+    if target_override is not None and target == original_target:
+        raise ContractError(
+            "publication.target_override_forbidden",
+            "separate best-effort target must differ from the requested target",
+        )
+    target_path = target.relative_to(workspace).as_posix()
     target_before = file_sha256(target) if target.is_file() else None
-    if workflow["mode"] == "create" and target.exists():
+    if target_override is not None and target.exists():
+        raise ContractError(
+            "publication.conflict",
+            "separate best-effort target already exists",
+        )
+    if target_override is None and workflow["mode"] == "create" and target.exists():
         raise ContractError("publication.conflict", "create target appeared after the run started")
-    if workflow["mode"] == "improve" and target_before != workflow["target_initial_sha256"]:
+    if target_override is None and workflow["mode"] == "improve" and target_before != workflow["target_initial_sha256"]:
         raise ContractError("publication.conflict", "improve target changed after the run started")
     publication_id = str(uuid.uuid4())
     stage_name = f".{target.name}.{publication_id}.drawio-stage"
@@ -1329,7 +1448,7 @@ def publish_transaction(
         "mode": workflow["mode"],
         "decision": decision,
         "status": "prepared",
-        "target_path": workflow["target_path"],
+        "target_path": target_path,
         "target_before_sha256": target_before,
         "accepted_artifact": make_file_descriptor(accepted_artifact, root=run_root),
         "validation_report": make_file_descriptor(validation_report, root=run_root),
@@ -1354,7 +1473,7 @@ def publish_transaction(
     _validate_publication_evidence(run_root, value, require_current_source=False)
     value, _ = _advance_publication(
         run_root, value, status="prepared", event_type="publication_prepared",
-        payload={"decision": decision, "target_path": workflow["target_path"]},
+        payload={"decision": decision, "target_path": target_path},
     )
     return _continue_publication(run_root, value)
 

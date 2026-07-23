@@ -736,6 +736,92 @@ else:
 
 
 class LifecycleV2Tests(unittest.TestCase):
+    def test_tool_attempt_artifact_snapshots_are_hash_bound_during_replay(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            workspace.mkdir()
+            target = workspace / "diagram.drawio"
+            run_dir = workspace / "run"
+            lifecycle_host_v2.initialize(
+                run_dir=run_dir,
+                workspace=workspace,
+                target=target,
+                run_id="run-1",
+                mode="create",
+                request="Create a diagram.",
+                extension_root=ROOT,
+            )
+            request_path = run_dir / "layout-attempts" / "a" / "layout-request.json"
+            request_path.parent.mkdir(parents=True)
+            request_path.write_text('{"schema_version":1}\n', encoding="utf-8")
+
+            lifecycle_host_v2.record_tool_attempt(
+                run_dir,
+                tool="layout-engine",
+                attempt_id="a",
+                status="started",
+                artifact_snapshots={
+                    "layout_request": lifecycle_host_v2.make_file_descriptor(
+                        request_path,
+                        root=run_dir,
+                    ),
+                },
+            )
+            self.assertTrue(lifecycle_host_v2.replay(run_dir)["valid"])
+
+            request_path.write_text('{"schema_version":1,"changed":true}\n', encoding="utf-8")
+            replayed = lifecycle_host_v2.replay(run_dir)
+            self.assertFalse(replayed["valid"])
+            self.assertTrue(
+                any(
+                    diagnostic["code"] == "tool_attempt.artifact_hash_mismatch"
+                    for diagnostic in replayed["diagnostics"]
+                )
+            )
+
+    def test_separate_publication_target_is_reserved_for_create_best_effort(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp) / "workspace"
+            workspace.mkdir()
+            target = workspace / "diagram.drawio"
+            run_dir = workspace / "run"
+            lifecycle_host_v2.initialize(
+                run_dir=run_dir,
+                workspace=workspace,
+                target=target,
+                run_id="run-1",
+                mode="create",
+                request="Create a diagram.",
+                extension_root=ROOT,
+            )
+            common = {
+                "accepted_artifact": run_dir / "missing.drawio",
+                "validation_report": run_dir / "missing-report.json",
+                "validation_receipt": run_dir / "missing-receipt.json",
+            }
+            with self.assertRaises(lifecycle_host_v2.ContractError) as strict:
+                lifecycle_host_v2.publish_transaction(
+                    run_dir,
+                    decision="approve",
+                    target_override=workspace / "separate.drawio",
+                    **common,
+                )
+            self.assertEqual(
+                strict.exception.code,
+                "publication.target_override_forbidden",
+            )
+            with self.assertRaises(lifecycle_host_v2.ContractError) as same:
+                lifecycle_host_v2.publish_transaction(
+                    run_dir,
+                    decision="best_effort",
+                    target_override=target,
+                    **common,
+                )
+            self.assertEqual(
+                same.exception.code,
+                "publication.target_override_forbidden",
+            )
+
     def test_historical_workflow_without_quality_profile_replays_and_stays_legacy(self):
         with tempfile.TemporaryDirectory() as temp:
             workspace = Path(temp) / "workspace"

@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import layout_model
+import layout_backend
 from lifecycle_contracts import canonical_json_sha256
 
 
@@ -85,6 +86,46 @@ class LayoutModelTests(unittest.TestCase):
         self.assertEqual(edge["label_size"]["width"] % layout_model.GRID, 0)
         self.assertEqual(edge["label_size"]["height"] % layout_model.GRID, 0)
         self.assertEqual(first, second)
+
+    def test_strategy_options_create_distinct_immutable_requests_and_effective_options(self):
+        base = {
+            "run_id": "run-1",
+            "semantic_plan_sha256": SHA,
+            "mode": "create",
+            "backend": "auto",
+            "quality_profile_version": 2,
+        }
+        default = layout_model.build_layout_request(
+            semantic_plan(),
+            strategy_id="elk-default",
+            strategy_options={
+                "spacing": 1.0,
+                "port_separation": 1.0,
+                "shared_penalty": 1.0,
+            },
+            **base,
+        )
+        separated = layout_model.build_layout_request(
+            semantic_plan(),
+            strategy_id="elk-separated",
+            strategy_options={
+                "spacing": 1.35,
+                "port_separation": 1.4,
+                "shared_penalty": 1.6,
+            },
+            **base,
+        )
+
+        self.assertNotEqual(
+            canonical_json_sha256(default),
+            canonical_json_sha256(separated),
+        )
+        self.assertNotEqual(
+            layout_backend.effective_options(default),
+            layout_backend.effective_options(separated),
+        )
+        self.assertEqual(default["strategy_options"]["spacing"], 1.0)
+        self.assertEqual(separated["strategy_options"]["shared_penalty"], 1.6)
 
     def test_edge_classification_is_stable_for_feedback_and_self_loop(self):
         request = self.build_create()

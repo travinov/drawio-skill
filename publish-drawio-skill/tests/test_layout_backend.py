@@ -196,6 +196,29 @@ if mode == "stderr-whitespace":
 
 
 class LayoutBackendTests(unittest.TestCase):
+    def test_effective_options_bind_strategy_port_and_shared_spacing(self):
+        default = layout_request()
+        separated = layout_request(strategy="elk-separated")
+        default["strategy_options"] = {
+            "spacing": 1.0,
+            "port_separation": 1.0,
+            "shared_penalty": 1.0,
+        }
+        separated["strategy_options"] = {
+            "spacing": 1.35,
+            "port_separation": 1.4,
+            "shared_penalty": 1.6,
+        }
+        default_options = layout_backend.effective_options(default)
+        separated_options = layout_backend.effective_options(separated)
+        self.assertEqual(default_options["elk.spacing.portPort"], "10.0")
+        self.assertEqual(separated_options["elk.spacing.portPort"], "14.0")
+        self.assertEqual(separated_options["elk.spacing.edgeEdge"], "16.0")
+        self.assertNotEqual(
+            layout_backend.attempt_key(default),
+            layout_backend.attempt_key(separated),
+        )
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
