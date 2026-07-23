@@ -1,0 +1,28 @@
+{
+  "schema_version": 2,
+  "role": "semantic_analyst",
+  "status": "ok",
+  "result": {
+    "mode": "create",
+    "diagram_type": "flowchart",
+    "title": "Order process",
+    "direction": "LR",
+    "pages": [
+      {"page_id": "page-z", "name": "Z page", "nodes": [], "edges": []},
+      {
+        "page_id": "page-a",
+        "name": "A page",
+        "nodes": [
+          {"stable_identity": {"page_id": "page-a", "cell_id": "a-node"}, "label": "Receive order", "semantic_type": "process", "parent": null, "style_hint": null},
+          {"stable_identity": {"page_id": "page-a", "cell_id": "z-node"}, "label": "Check", "semantic_type": "decision", "parent": null, "style_hint": null}
+        ],
+        "edges": [
+          {"stable_identity": {"page_id": "page-a", "cell_id": "a-edge"}, "label": "No", "semantic_type": "flow", "source": {"page_id": "page-a", "cell_id": "a-node"}, "target": {"page_id": "page-a", "cell_id": "z-node"}, "relationship": "feedback", "style_hint": null},
+          {"stable_identity": {"page_id": "page-a", "cell_id": "z-edge"}, "label": "Retry", "semantic_type": "flow", "source": {"page_id": "page-a", "cell_id": "z-node"}, "target": {"page_id": "page-a", "cell_id": "z-node"}, "relationship": "flow", "style_hint": null}
+        ]
+      }
+    ],
+    "semantic_delta": {"schema_version": 2, "baseline_semantic_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "source_bundle_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "operations": []},
+    "assumptions": [], "requires_human": false, "human_questions": []
+  }
+}

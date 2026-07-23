@@ -45,7 +45,7 @@ def valid_layout_request(mode="create"):
         "schema_version": 1, "request_id": "request-1", "run_id": "run-1",
         "semantic_plan_sha256": SHA, "diagram_type": "flowchart", "direction": "LR",
         "mode": mode, "backend": "builtin", "strategy": "layered",
-        "quality_profile_version": "v1",
+        "quality_profile_version": 1,
         "pages": [{
             "page_id": "page-1", "name": "Page 1",
             "nodes": [
@@ -55,6 +55,7 @@ def valid_layout_request(mode="create"):
             "edges": [{
                 "edge_id": "edge-1", "source": "node-1", "target": "node-2", "edge_class": "main",
                 "source_port": "east", "target_port": "west",
+                "locked": False,
                 "waypoints": [{"x": 100, "y": 30}, {"x": 200, "y": 30}],
             }],
         }],
@@ -64,9 +65,13 @@ def valid_layout_request(mode="create"):
 
 
 def valid_layout_result():
+    pages = copy.deepcopy(valid_layout_request()["pages"])
+    for page in pages:
+        for edge in page["edges"]:
+            edge.pop("locked")
     return {
         "schema_version": 1, "result_id": "result-1", "request_sha256": SHA, "backend": "builtin",
-        "pages": valid_layout_request()["pages"],
+        "pages": pages,
         "metrics": {"crossings": 0, "overlaps": 0, "route_length": 100},
     }
 
@@ -97,6 +102,37 @@ class LayoutContractTests(unittest.TestCase):
     def test_all_contract_owned_objects_reject_unknown_fields(self):
         value = valid_layout_request()
         value["unknown"] = True
+        self.assertTrue(layout_contracts.validate_layout_request(value))
+
+    def test_layout_request_create_can_omit_model_generated_route(self):
+        value = valid_layout_request()
+        value["pages"][0]["edges"][0].pop("waypoints")
+        value["pages"][0]["edges"][0]["locked"] = False
+        self.assertEqual(layout_contracts.validate_layout_request(value), [])
+
+    def test_layout_request_locked_route_requires_waypoints(self):
+        value = valid_layout_request()
+        value["pages"][0]["edges"][0].pop("waypoints")
+        value["pages"][0]["edges"][0]["locked"] = True
+        diagnostics = layout_contracts.validate_layout_request(value)
+        self.assertTrue(diagnostics)
+
+    def test_layout_request_accepts_explicit_baseline_hashes_and_edge_lock(self):
+        value = valid_layout_request(mode="local_reflow")
+        value["pages"][0]["nodes"][0]["element_sha256"] = SHA
+        value["pages"][0]["edges"][0]["element_sha256"] = SHA
+        value["pages"][0]["edges"][0]["locked"] = True
+        self.assertEqual(layout_contracts.validate_layout_request(value), [])
+
+    def test_layout_request_accepts_explicit_edge_label_size(self):
+        value = valid_layout_request()
+        value["pages"][0]["edges"][0]["locked"] = False
+        value["pages"][0]["edges"][0]["label_size"] = {"width": 40, "height": 20}
+        self.assertEqual(layout_contracts.validate_layout_request(value), [])
+
+    def test_layout_request_rejects_unknown_quality_profile_version(self):
+        value = valid_layout_request()
+        value["quality_profile_version"] = 3
         self.assertTrue(layout_contracts.validate_layout_request(value))
 
     def test_layout_result_rejects_diagonal_route(self):

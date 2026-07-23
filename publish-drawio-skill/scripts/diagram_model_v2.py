@@ -38,6 +38,11 @@ def identity_key(identity: dict[str, str]) -> tuple[str, str]:
     return identity.get("page_id", ""), identity.get("cell_id", "")
 
 
+def page_scoped_element_key(page_id: str, cell_id: str) -> tuple[str, str]:
+    """Return the one stable ordering key shared by DiagramSpec and LayoutIR."""
+    return page_id, cell_id
+
+
 def is_technical_cell(cell: dict[str, Any]) -> bool:
     if cell.get("business_element") is True:
         return False
