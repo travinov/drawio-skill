@@ -1,3 +1,7 @@
 {
-  "drawio_bin": "C:\\Program Files\\draw.io\\draw.io.exe"
+  "drawio_bin": null,
+  "node_bin": null,
+  "layout_backend": "auto",
+  "layout_timeout_seconds": 30,
+  "layout_wall_clock_seconds": 180
 }
