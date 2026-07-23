@@ -13,6 +13,37 @@ def _diagnostic(code: str, pointer: str, message: str) -> dict[str, str]:
     return {"code": code, "pointer": pointer, "message": message}
 
 
+def _result_endpoint_matches(
+    bounds: dict[str, Any],
+    side: Any,
+    point: Any,
+    pin: Any,
+    *,
+    epsilon: float = 1e-6,
+) -> bool:
+    if side not in {"north", "east", "south", "west"} or not isinstance(point, dict):
+        return False
+    values = (
+        bounds.get("x"), bounds.get("y"), bounds.get("width"), bounds.get("height"),
+        point.get("x"), point.get("y"), pin,
+    )
+    if not all(_finite_number(value) for value in values):
+        return False
+    x, y, width, height, px, py, declared_pin = (float(value) for value in values)
+    if side == "north":
+        boundary_ok, coordinate, start, extent = abs(py - y) <= epsilon, px, x, width
+    elif side == "south":
+        boundary_ok, coordinate, start, extent = abs(py - (y + height)) <= epsilon, px, x, width
+    elif side == "west":
+        boundary_ok, coordinate, start, extent = abs(px - x) <= epsilon, py, y, height
+    else:
+        boundary_ok, coordinate, start, extent = abs(px - (x + width)) <= epsilon, py, y, height
+    if not boundary_ok or coordinate < start - epsilon or coordinate > start + extent + epsilon:
+        return False
+    actual_pin = (coordinate - start) / extent
+    return 0.1 - epsilon <= actual_pin <= 0.9 + epsilon and abs(actual_pin - float(declared_pin)) <= epsilon
+
+
 def _layout_diagnostics(value: Any, *, request: bool) -> list[dict[str, str]]:
     diagnostics = _non_finite_number_diagnostics(value)
     if not isinstance(value, dict):
@@ -35,6 +66,7 @@ def _layout_diagnostics(value: Any, *, request: bool) -> list[dict[str, str]]:
         if not isinstance(page_id, str):
             continue
         nodes = page.get("nodes")
+        page_node_bounds: dict[str, dict[str, Any]] = {}
         if isinstance(nodes, list):
             page_node_ids = {
                 node.get("node_id")
@@ -44,6 +76,8 @@ def _layout_diagnostics(value: Any, *, request: bool) -> list[dict[str, str]]:
             parents: dict[str, str] = {}
             for node_index, node in enumerate(nodes):
                 if isinstance(node, dict) and isinstance(node.get("node_id"), str):
+                    if not request:
+                        page_node_bounds[node["node_id"]] = node
                     ref = (page_id, node["node_id"])
                     known_nodes.add(ref)
                     if node.get("locked") is True:
@@ -114,6 +148,26 @@ def _layout_diagnostics(value: Any, *, request: bool) -> list[dict[str, str]]:
                         "consecutive route waypoints must share x or y",
                     ))
                 previous = current
+            if not request and len(points) >= 2:
+                source_id, target_id = edge.get("source"), edge.get("target")
+                source_bounds = page_node_bounds.get(source_id) if isinstance(source_id, str) else None
+                target_bounds = page_node_bounds.get(target_id) if isinstance(target_id, str) else None
+                if source_bounds is not None and not _result_endpoint_matches(
+                    source_bounds, edge.get("source_port"), points[0], edge.get("source_pin")
+                ):
+                    diagnostics.append(_diagnostic(
+                        "layout.route.source_endpoint_side",
+                        f"/pages/{page_index}/edges/{edge_index}/waypoints/0",
+                        "first waypoint and source pin must match the declared source boundary side",
+                    ))
+                if target_bounds is not None and not _result_endpoint_matches(
+                    target_bounds, edge.get("target_port"), points[-1], edge.get("target_pin")
+                ):
+                    diagnostics.append(_diagnostic(
+                        "layout.route.target_endpoint_side",
+                        f"/pages/{page_index}/edges/{edge_index}/waypoints/{len(points) - 1}",
+                        "last waypoint and target pin must match the declared target boundary side",
+                    ))
         if not request and isinstance(page.get("channel_reservations"), list):
             reservation_edge_ids: list[str] = []
             for reservation_index, reservation in enumerate(page["channel_reservations"]):

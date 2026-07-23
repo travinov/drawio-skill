@@ -210,6 +210,18 @@ class LayoutContractTests(unittest.TestCase):
         self.assertIn("layout.reservation.diagonal_segment", codes)
         self.assertIn("layout.reservation.edge_missing", codes)
 
+    def test_layout_result_rejects_endpoint_on_wrong_declared_side(self):
+        value = valid_layout_result()
+        value["pages"][0]["edges"][0]["source_port"] = "north"
+        codes = {item["code"] for item in layout_contracts.validate_layout_result(value)}
+        self.assertIn("layout.route.source_endpoint_side", codes)
+
+    def test_layout_result_rejects_endpoint_inside_source_instead_of_on_boundary(self):
+        value = valid_layout_result()
+        value["pages"][0]["edges"][0]["waypoints"][0] = {"x": 90, "y": 30}
+        codes = {item["code"] for item in layout_contracts.validate_layout_result(value)}
+        self.assertIn("layout.route.source_endpoint_side", codes)
+
     def test_layout_request_rejects_non_finite_contract_numbers(self):
         locations = (
             ("pages", 0, "nodes", 0, "x"),

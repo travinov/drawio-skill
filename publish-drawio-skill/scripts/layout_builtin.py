@@ -538,12 +538,34 @@ def _port_point(bounds: Mapping[str, float], side: str, position: float) -> tupl
     raise ValueError(f"unsupported port side {side!r}")
 
 
-def _pin_from_point(bounds: Mapping[str, float], side: str, point: Mapping[str, Any]) -> float:
+def _pin_from_point(
+    bounds: Mapping[str, float],
+    side: str,
+    point: Mapping[str, Any],
+    *,
+    role: str,
+) -> float:
+    px, py = float(point["x"]), float(point["y"])
+    epsilon = 1e-6
+    boundary = {
+        "north": bounds["y"],
+        "south": bounds["y"] + bounds["height"],
+        "west": bounds["x"],
+        "east": bounds["x"] + bounds["width"],
+    }[side]
+    boundary_value = py if side in {"north", "south"} else px
+    if abs(boundary_value - boundary) > epsilon:
+        raise ValueError(f"locked {role} endpoint must lie on the exact {side} boundary")
     if side in {"north", "south"}:
-        raw = (float(point["x"]) - bounds["x"]) / bounds["width"]
+        coordinate, start, extent = px, bounds["x"], bounds["width"]
     else:
-        raw = (float(point["y"]) - bounds["y"]) / bounds["height"]
-    return min(0.9, max(0.1, raw))
+        coordinate, start, extent = py, bounds["y"], bounds["height"]
+    if coordinate < start - epsilon or coordinate > start + extent + epsilon:
+        raise ValueError(f"locked {role} endpoint lies outside the node span on the {side} boundary")
+    pin = (coordinate - start) / extent
+    if pin < 0.1 - epsilon or pin > 0.9 + epsilon:
+        raise ValueError(f"locked {role} endpoint pin must be within [0.1, 0.9]")
+    return pin
 
 
 def _spread_pins(count: int) -> list[float]:
@@ -599,7 +621,7 @@ def allocate_ports(request: Mapping[str, Any], bounds: Mapping[str, Mapping[str,
                     ("target", target, target_side, route[-1]),
                 ):
                     node_bounds = bounds[f"{page_id}/{node_id}"]
-                    pin = _pin_from_point(node_bounds, side, point)
+                    pin = _pin_from_point(node_bounds, side, point, role=role)
                     output[edge_key][role] = {
                         "side": side,
                         "position": pin,
@@ -815,11 +837,27 @@ def route_edges(
                 route = edge.get("waypoints")
                 if not isinstance(route, list) or len(route) < 2:
                     raise ValueError(f"locked edge {edge_key} requires an explicit route")
+                route_points = [
+                    (float(point["x"]), float(point["y"]))
+                    for point in route
+                ]
+                common_ancestors = _ancestor_ids(nodes, source) & _ancestor_ids(nodes, target)
+                obstacle_ids = [
+                    node_id for node_id in sorted(nodes)
+                    if node_id not in {source, target} and node_id not in common_ancestors
+                ]
+                for obstacle_id in obstacle_ids:
+                    obstacle = _rect(bounds[f"{page_id}/{obstacle_id}"])
+                    if any(
+                        layout_geometry.segment_hits_rect(segment, obstacle, clearance=clearance)
+                        for segment in layout_geometry.route_segments(route_points)
+                    ):
+                        raise ValueError(
+                            f"locked edge {edge_key} crosses expanded obstacle {obstacle_id!r}"
+                        )
                 record["waypoints"] = [dict(point) for point in route]
                 output[edge_key] = record
-                reserved.extend(layout_geometry.route_segments([
-                    (float(point["x"]), float(point["y"])) for point in route
-                ]))
+                reserved.extend(layout_geometry.route_segments(route_points))
                 continue
 
             start = tuple(port["source"]["point"])

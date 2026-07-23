@@ -358,6 +358,95 @@ class LayoutBuiltinTests(unittest.TestCase):
         self.assertEqual(result["source_port"], "east")
         self.assertEqual(result["target_port"], "west")
 
+    def test_locked_route_crossing_third_node_fails_closed(self):
+        waypoints = [{"x": 100, "y": 30}, {"x": 300, "y": 30}]
+        request = layout_request(
+            direction="LR",
+            nodes=[
+                _node("source", x=0, y=0, locked=True),
+                _node("obstacle", x=140, y=0, width=100, height=60, locked=True),
+                _node("target", x=300, y=0, locked=True),
+            ],
+            edges=[_edge("manual", "source", "target", locked=True, waypoints=waypoints)],
+        )
+        bounds = _fixture_bounds(request)
+        ports = layout_builtin.allocate_ports(request, bounds)
+        with self.assertRaisesRegex(ValueError, "locked edge.*obstacle"):
+            layout_builtin.route_edges(request, bounds, ports)
+
+    def test_locked_route_crossing_unrelated_container_fails_closed(self):
+        waypoints = [{"x": 100, "y": 30}, {"x": 400, "y": 30}]
+        request = layout_request(
+            direction="LR",
+            nodes=[
+                _node("source", x=0, y=0, locked=True),
+                _node("unrelated-container", x=160, y=-20, width=140, height=120, locked=True),
+                _node("container-child", x=180, y=70, width=80, height=20,
+                      locked=True, parent_id="unrelated-container"),
+                _node("target", x=400, y=0, locked=True),
+            ],
+            edges=[_edge("manual", "source", "target", locked=True, waypoints=waypoints)],
+        )
+        bounds = _fixture_bounds(request)
+        ports = layout_builtin.allocate_ports(request, bounds)
+        with self.assertRaisesRegex(ValueError, "locked edge.*unrelated-container"):
+            layout_builtin.route_edges(request, bounds, ports)
+
+    def test_locked_route_inside_legitimate_shared_ancestor_is_preserved(self):
+        waypoints = [{"x": 150, "y": 110}, {"x": 350, "y": 110}]
+        request = layout_request(
+            direction="LR",
+            nodes=[
+                _node("shared", x=0, y=0, width=500, height=240, locked=True),
+                _node("source", x=50, y=80, locked=True, parent_id="shared"),
+                _node("target", x=350, y=80, locked=True, parent_id="shared"),
+            ],
+            edges=[_edge("manual", "source", "target", locked=True, waypoints=waypoints)],
+        )
+        bounds = _fixture_bounds(request)
+        ports = layout_builtin.allocate_ports(request, bounds)
+        result = layout_builtin.route_edges(request, bounds, ports)["page-a/manual"]
+        self.assertEqual(result["waypoints"], waypoints)
+
+    def test_locked_route_rejects_endpoint_on_wrong_declared_side(self):
+        waypoints = [
+            {"x": 50, "y": 0},
+            {"x": 50, "y": 30},
+            {"x": 300, "y": 30},
+        ]
+        request = layout_request(
+            direction="LR",
+            nodes=[
+                _node("source", x=0, y=0, locked=True),
+                _node("target", x=300, y=0, locked=True),
+            ],
+            edges=[_edge(
+                "manual", "source", "target", locked=True, waypoints=waypoints,
+                source_port="east", target_port="west",
+            )],
+        )
+        with self.assertRaisesRegex(ValueError, "source endpoint.*east"):
+            layout_builtin.allocate_ports(request, _fixture_bounds(request))
+
+    def test_locked_route_rejects_endpoint_not_on_node_boundary(self):
+        waypoints = [
+            {"x": 90, "y": 30},
+            {"x": 300, "y": 30},
+        ]
+        request = layout_request(
+            direction="LR",
+            nodes=[
+                _node("source", x=0, y=0, locked=True),
+                _node("target", x=300, y=0, locked=True),
+            ],
+            edges=[_edge(
+                "manual", "source", "target", locked=True, waypoints=waypoints,
+                source_port="east", target_port="west",
+            )],
+        )
+        with self.assertRaisesRegex(ValueError, "source endpoint.*boundary"):
+            layout_builtin.allocate_ports(request, _fixture_bounds(request))
+
     def test_unlocked_port_does_not_reuse_a_locked_pin_on_the_same_side(self):
         manual = [
             {"x": 100, "y": 30},
