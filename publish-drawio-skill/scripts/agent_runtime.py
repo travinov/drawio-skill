@@ -60,6 +60,14 @@ ROLE_EXCLUDED_TOOLS = (
     "mcp__*",
     "exit_plan_mode",
 )
+SUPERVISOR_LAYOUT_ACTIONS = (
+    "create_layout",
+    "reroute_edges",
+    "expand_local_scope",
+    "retry_layout_strategy",
+    "request_semantic_clarification",
+    "finish_best_effort",
+)
 
 
 class RoleOutputContractError(SupervisorError):
@@ -145,6 +153,38 @@ def role_schema_name(role, payload=None):
     raise SupervisorError(f"unknown role {role!r}")
 
 
+def _supervisor_layout_schema():
+    """Return the host-enforced, non-coordinating Supervisor output contract."""
+    return {
+        "type": "object",
+        "required": ["schema_version", "role", "status", "result"],
+        "additionalProperties": False,
+        "properties": {
+            "schema_version": {"const": 1},
+            "role": {"const": "supervisor"},
+            "status": {"enum": ["ok", "needs_human"]},
+            "result": {
+                "type": "object",
+                "required": ["action", "reason"],
+                "additionalProperties": False,
+                "properties": {
+                    "action": {"type": "string", "minLength": 1},
+                    "reason": {"type": "string", "minLength": 1},
+                    "max_iterations": {"type": "integer", "minimum": 1, "maximum": 12},
+                    "findings": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+    }
+
+
+def role_output_schema(role, payload):
+    """Return the exact output schema enforced by this isolated-role runtime."""
+    if role == "supervisor":
+        return _supervisor_layout_schema()
+    return load_json(ROOT / "data" / role_schema_name(role, payload))
+
+
 def role_input_schema_name(role, payload=None):
     if role == "reviewer" and contract_version(payload) == 2:
         return "reviewer-input.v2.schema.json"
@@ -179,11 +219,15 @@ def reviewer_evidence_bindings(payload):
 
 def role_output_contract(role, payload):
     schema_name = role_schema_name(role, payload)
-    schema = load_json(ROOT / "data" / schema_name)
+    schema = role_output_schema(role, payload)
+    schema_label = (
+        "the runtime-enforced supervisor layout schema"
+        if role == "supervisor" else schema_name
+    )
     sections = [
         "## Required output JSON Schema",
         (
-            f"Return exactly one JSON object that validates against {schema_name}. "
+            f"Return exactly one JSON object that validates against {schema_label}. "
             "Do not omit required properties."
         ),
         json.dumps(schema, ensure_ascii=False, sort_keys=True),
@@ -205,6 +249,24 @@ def role_output_contract(role, payload):
                 "are diagnostic only."
             )
         sections.extend(["## Host-owned reviewer evidence bindings", reviewer_binding])
+    if role == "supervisor":
+        sections.extend([
+            "## Host-owned layout strategy policy",
+            (
+                "Choose only one allowlisted layout strategy action. Do not declare "
+                "roles, coordinate siblings, or schedule execution; the deterministic "
+                "host owns all orchestration."
+            ),
+        ])
+    if role == "repair" and isinstance(payload, dict) and payload.get("repair_mode") == "layout_intent":
+        sections.extend([
+            "## Bounded layout-repair intent",
+            (
+                "Return the scoped layout-repair-intent only. It must name the exact "
+                "page, target edges, movable nodes, and locked nodes; never return "
+                "coordinates, waypoints, XML, or an unbounded reflow request."
+            ),
+        ])
     if (
         role == "semantic_analyst"
         and isinstance(payload, dict)
@@ -840,6 +902,17 @@ def _cross_field_contract_diagnostics(role, payload, parsed):
                 "message": f"role must equal {role!r}",
             }
         )
+    if role == "supervisor":
+        action = parsed.get("result", {}).get("action")
+        if action not in SUPERVISOR_LAYOUT_ACTIONS:
+            diagnostics.append(
+                {
+                    "code": "supervisor.action_not_allowlisted",
+                    "pointer": "/result/action",
+                    "rule": "host_layout_strategy_allowlist",
+                    "message": "supervisor action must be an allowlisted host layout strategy",
+                }
+            )
     if (
         role == "semantic_analyst"
         and payload.get("phase") != "intake"
@@ -887,6 +960,41 @@ def _cross_field_contract_diagnostics(role, payload, parsed):
                     "pointer": "/verdict",
                     "rule": "approve_requires_no_error_findings",
                     "message": "approve is invalid while any error-level finding remains",
+                }
+            )
+    if role == "reviewer" and parsed.get("verdict") == "approve":
+        candidate = payload.get("candidate") if isinstance(payload, dict) else None
+        report = candidate.get("report") if isinstance(candidate, dict) else None
+        content = report.get("content") if isinstance(report, dict) else None
+        findings = content.get("findings", []) if isinstance(content, dict) else []
+        for finding in findings:
+            if not isinstance(finding, dict) or finding.get("severity") != "error":
+                continue
+            code = str(finding.get("code", ""))
+            deterministic = (
+                finding.get("deterministic") is True
+                or finding.get("blocking") is True
+                or code.startswith(("artifact.", "semantic.", "security."))
+            )
+            if deterministic:
+                diagnostics.append(
+                    {
+                        "code": "reviewer.approve_with_blocking_deterministic_finding",
+                        "pointer": "/verdict",
+                        "rule": "deterministic_validator_authority",
+                        "message": "approve is invalid while a blocking deterministic validator finding remains",
+                    }
+                )
+                break
+    if role == "repair" and isinstance(payload, dict) and payload.get("repair_mode") == "layout_intent":
+        result = parsed.get("result", {})
+        if not all(key in result for key in ("target_edges", "movable_nodes", "locked_nodes")):
+            diagnostics.append(
+                {
+                    "code": "repair.layout_intent_not_bounded",
+                    "pointer": "/result",
+                    "rule": "bounded_layout_repair_intent",
+                    "message": "layout repair must return a bounded layout-repair-intent",
                 }
             )
     diagnostics.sort(
@@ -962,7 +1070,7 @@ def validate_role_output(role, parsed, payload=None):
             error.contract_failure_kind = "output_schema"
             raise error
         return parsed
-    schema = load_json(ROOT / "data" / role_schema_name(role, payload))
+    schema = role_output_schema(role, payload)
     diagnostics = _schema_contract_diagnostics(schema, parsed)
     failure_kind = "output_schema"
     if not diagnostics:
