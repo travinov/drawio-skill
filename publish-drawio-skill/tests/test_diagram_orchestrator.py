@@ -308,6 +308,204 @@ class DiagramOrchestratorTests(unittest.TestCase):
             for record in events
         ))
 
+    def _prepare_local_reflow_case(self, run_id):
+        root, workspace, _ = self.create_workspace()
+        cli = root / f"{run_id}-gigacode.py"
+        edge = (
+            '{"stable_identity":{"page_id":"page-1","cell_id":"e-2"},'
+            '"label":"flow",'
+            '"source":{"page_id":"page-1","cell_id":"node-a"},'
+            '"target":{"page_id":"page-1","cell_id":"node-b"},'
+            '"relationship":"flow","style_hint":None}'
+        )
+        cli.write_text(
+            FAKE_GIGACODE.replace('"edges": [],', f'"edges": [{edge}],', 1),
+            encoding="utf-8",
+        )
+        cli.chmod(0o755)
+        created = orchestrator.start_run(
+            "create",
+            workspace / f"{run_id}.drawio",
+            "Create an edge for local recovery testing.",
+            workspace,
+            cli,
+            run_id=run_id,
+            max_iterations=1,
+        )
+        run_dir = Path(created["run_dir"])
+        workflow = orchestrator.load_workflow(run_dir)
+        baseline = Path(workflow["accepted_artifact"]["path"])
+        layout_scope = {
+            "page_id": "page-1",
+            "target_edges": ["e-2"],
+            "movable_nodes": [],
+            "locked_nodes": ["node-a", "node-b"],
+            "locked_edges": [],
+            "expansion_count": 0,
+        }
+        workflow["iteration"] = 1
+        workflow["layout_attempts"] = []
+        workflow["layout_attempt_keys"] = []
+        workflow.pop("selected_layout_attempt", None)
+        workflow.pop("layout_strategy_exhausted", None)
+        workflow.pop("layout_deadline_epoch", None)
+        workflow.pop("layout_deadline_at", None)
+        workflow["layout_repair_scope"] = json.loads(json.dumps(layout_scope))
+        workflow["active_layout_repair_scope"] = json.loads(json.dumps(layout_scope))
+        orchestrator.write_workflow(run_dir, workflow)
+        semantic_plan = orchestrator.supervisor.load_json(
+            workflow["semantic_plan_v2"]["path"]
+        )
+        source_bundle = orchestrator._source_bundle_bound_to_plan(run_dir, semantic_plan)
+        adapter_input = orchestrator.renderer_adapters.select_lifecycle_adapter_input(
+            semantic_plan, source_bundle, mode="improve",
+        )
+        payload = {
+            "baseline": {"diagram_spec": orchestrator.supervisor.make_spec(baseline)},
+            "layout_scope": layout_scope,
+        }
+        return {
+            "run_dir": run_dir, "workflow": workflow, "baseline": baseline,
+            "semantic_plan": semantic_plan, "adapter_input": adapter_input,
+            "payload": payload,
+            "intent": {"action": "edge_reroute"},
+        }
+
+    def _complete_unindexed_local_attempt(self, run_id):
+        case = self._prepare_local_reflow_case(run_id)
+        with mock.patch.object(
+            orchestrator.supervisor,
+            "compare_reports",
+            return_value={
+                "accepted": True,
+                "reason": "lexicographic_improvement:crossings",
+            },
+        ):
+            attempt = orchestrator.execute_layout_attempt(
+                case["workflow"],
+                case["semantic_plan"],
+                run_dir=case["run_dir"],
+                adapter_input=case["adapter_input"],
+                mode="local_reflow",
+                scope=orchestrator._scope_refs_from_layout_state(
+                    case["payload"]["layout_scope"]
+                ),
+                strategy=orchestrator.LAYOUT_STRATEGIES[0],
+                timeout=30,
+                baseline=case["payload"]["baseline"]["diagram_spec"],
+                baseline_artifact=case["baseline"],
+            )
+        case["attempt"] = attempt
+        case["workflow"] = orchestrator.load_workflow(case["run_dir"])
+        return case
+
+    def test_completed_local_reflow_recovery_reuses_candidate_without_starting_new_strategy(self):
+        case = self._complete_unindexed_local_attempt(
+            "local-reflow-recovery-run"
+        )
+        event_count = len(orchestrator.lifecycle_v2.replay(case["run_dir"])["events"])
+        with mock.patch.object(
+            orchestrator,
+            "execute_layout_attempt",
+            side_effect=AssertionError("recovery started a new layout strategy"),
+        ), mock.patch.object(
+            orchestrator.supervisor, "compare_reports",
+            return_value=case["attempt"]["comparison"],
+        ):
+            recovered = orchestrator._run_layout_intent_attempts(
+                case["run_dir"], case["workflow"], case["payload"],
+                case["intent"], timeout=30,
+            )
+        self.assertEqual(recovered["attempt_id"], case["attempt"]["attempt_id"])
+        self.assertEqual(
+            len(orchestrator.lifecycle_v2.replay(case["run_dir"])["events"]),
+            event_count,
+        )
+
+    def test_tampered_completed_local_attempt_fails_closed_before_mutation(self):
+        case = self._complete_unindexed_local_attempt(
+            "tampered-local-attempt-run"
+        )
+        tampered = json.loads(json.dumps(case["attempt"]))
+        tampered["preservation"]["valid"] = False
+        case["workflow"]["layout_attempts"].append(tampered)
+        orchestrator.write_workflow(case["run_dir"], case["workflow"])
+        workflow_bytes = (case["run_dir"] / "workflow.json").read_bytes()
+        event_count = len(orchestrator.lifecycle_v2.replay(case["run_dir"])["events"])
+        with self.assertRaisesRegex(
+            orchestrator.supervisor.SupervisorError,
+            "preservation",
+        ):
+            orchestrator._run_layout_intent_attempts(
+                case["run_dir"], case["workflow"], case["payload"],
+                case["intent"], timeout=30,
+            )
+        self.assertEqual(
+            (case["run_dir"] / "workflow.json").read_bytes(), workflow_bytes
+        )
+        self.assertEqual(
+            len(orchestrator.lifecycle_v2.replay(case["run_dir"])["events"]),
+            event_count,
+        )
+
+    def _assert_local_stage_failure(
+        self, run_id, target_name, expected_stage, message,
+    ):
+        case = self._prepare_local_reflow_case(run_id)
+        original = getattr(orchestrator.supervisor, target_name)
+        calls = {"count": 0}
+
+        def fail_once(*args, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise orchestrator.supervisor.SupervisorError(message)
+            return original(*args, **kwargs)
+
+        with mock.patch.object(
+            orchestrator.supervisor, target_name, side_effect=fail_once,
+        ), mock.patch.object(
+            orchestrator.supervisor,
+            "compare_reports",
+            return_value={
+                "accepted": True,
+                "reason": "lexicographic_improvement:crossings",
+            },
+        ):
+            selected = orchestrator._run_layout_intent_attempts(
+                case["run_dir"], case["workflow"], case["payload"],
+                case["intent"], timeout=30,
+            )
+        failed = [
+            attempt for attempt in case["workflow"]["layout_attempts"]
+            if attempt["status"] == "failed"
+        ]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["failure_stage"], expected_stage)
+        self.assertTrue(Path(failed[0]["failure_evidence"]["path"]).is_file())
+        self.assertEqual(
+            selected["strategy"], orchestrator.LAYOUT_STRATEGIES[1][0]
+        )
+        statuses = [
+            record["event"]["payload"]["status"]
+            for record in orchestrator.lifecycle_v2.replay(case["run_dir"])["events"]
+            if record["event"]["event_type"] == "tool_attempt"
+            and record["event"]["payload"].get("attempt_id")
+            == failed[0]["attempt_id"]
+        ]
+        self.assertEqual(statuses, ["started", "failed"])
+
+    def test_validator_exception_records_failed_attempt_and_advances_to_next_strategy(self):
+        self._assert_local_stage_failure(
+            "validator-exception-run", "run_validation",
+            "strict_validation", "validator boom",
+        )
+
+    def test_patch_apply_failure_is_terminal_without_started_only_layout_event(self):
+        self._assert_local_stage_failure(
+            "patch-apply-failure-run", "apply_patch_file",
+            "patch_apply", "patch apply boom",
+        )
+
     def test_semantic_patch_ignores_stale_layout_scope_preservation_gate(self):
         workflow = {
             "layout_repair_scope": {

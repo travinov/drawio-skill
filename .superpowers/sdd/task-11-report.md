@@ -19,6 +19,14 @@
   retains the accepted baseline.
 - Scoped preservation to layout-intent candidates, so a later semantic patch
   is not rejected by stale layout-scope state.
+- Added crash recovery for completed `local_reflow` attempts. Recovery verifies
+  the current semantic plan, baseline, iteration, scope, deterministic patch
+  replay, candidate, receipts, preservation, comparison, and lifecycle
+  snapshots before selecting the finite-strategy candidate.
+- Made every post-start layout stage terminal: backend/result, patch
+  synthesis/application, strict validation/receipt, preservation, and
+  comparison failures persist produced artifacts, a failure descriptor, a
+  failed tool event, and a non-selectable workflow attempt.
 - Added the Repair prompt/schema contract and made bounded no-progress finish
   via safe best effort instead of another human `continue` checkpoint.
 
@@ -35,6 +43,13 @@ RED:
 - Independent-review regression:
   `test_semantic_patch_ignores_stale_layout_scope_preservation_gate` failed
   because preservation was not scoped to the current candidate origin.
+- Second-review recovery regression: a completed, unindexed local attempt
+  returned no candidate and tried the schedule again.
+- Second-review tamper regression: changing indexed preservation state did not
+  fail closed against its immutable evidence.
+- Second-review terminality regressions: validator and patch-application
+  exceptions advanced the schedule without persisting a terminal failed
+  attempt.
 
 GREEN:
 
@@ -48,6 +63,13 @@ GREEN:
 - Full `tests.test_diagram_orchestrator` invocation after the review fix —
   63 tests passed in 143.791s. This full file was invoked exactly once for the
   final fix.
+- Second-review focused recovery gate — 4 tests passed in 21.137s.
+- The first authorized 67-test full run exposed one legacy mocked workflow
+  without a working-artifact path; the production recovery path was guarded to
+  run only for a real file. The failing unit plus all four recovery tests then
+  passed (5 tests in 21.722s).
+- Final authorized `tests.test_diagram_orchestrator` run — 67 tests passed in
+  177.603s.
 
 ## Review cleanup
 
@@ -56,5 +78,7 @@ GREEN:
   second scope-state implementation.
 - Reduced the independent-review fix from +567 net lines to +462 net lines
   before the final test run.
-- No known Task 11 correctness concern remains after the focused and full
-  orchestrator passes.
+- Kept the second-review recovery commit at the agreed +550 net-line cap:
+  orchestrator +495/-143 and tests +198.
+- No known Task 11 correctness concern remains after the focused recovery and
+  final 67-test orchestrator passes.
