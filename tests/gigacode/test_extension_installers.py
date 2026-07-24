@@ -176,6 +176,37 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
             stderr=subprocess.STDOUT,
         )
 
+    def no_node_env(self) -> dict[str, str]:
+        env = self.env.copy()
+        node_free_bin = self.root / "no-node-bin"
+        node_free_bin.mkdir(exist_ok=True)
+        for command in (
+            "bash",
+            "cat",
+            "dirname",
+            "mktemp",
+            "basename",
+            "cp",
+            "rm",
+            "mkdir",
+            "readlink",
+            "grep",
+            "awk",
+            "tr",
+            "date",
+            "shasum",
+            "sha256sum",
+        ):
+            target = shutil.which(command)
+            if target is None:
+                continue
+            link = node_free_bin / command
+            if not link.exists():
+                link.symlink_to(target)
+        env["PATH"] = str(node_free_bin)
+        env["PYTHON_BIN"] = sys.executable
+        return env
+
     def test_install_backs_up_legacy_skill_and_verifies(self) -> None:
         legacy = self.home / "skills" / "drawio-skill"
         legacy.mkdir(parents=True)
@@ -183,7 +214,7 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
 
         result = self.install()
 
-        self.assertIn("Installed publish-drawio-skill 1.24.0-corporate.5", result.stdout)
+        self.assertIn(f"Installed publish-drawio-skill {EXPECTED_DRAWIO_VERSION}", result.stdout)
         self.assertIn("Self-check skipped by request", result.stdout)
         self.assertFalse(legacy.exists())
         installed = self.home / "extensions" / "publish-drawio-skill"
@@ -209,14 +240,14 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
     def test_verifier_accepts_canonical_markdown_command(self) -> None:
         result = self.install()
 
-        self.assertIn("Installed publish-drawio-skill 1.24.0-corporate.5", result.stdout)
+        self.assertIn(f"Installed publish-drawio-skill {EXPECTED_DRAWIO_VERSION}", result.stdout)
         active = self.home / "extensions" / "publish-drawio-skill"
         self.assertFalse((active / "commands" / "drawio" / "review.toml").exists())
         self.assertTrue((active / "commands" / "drawio" / "review.md").is_file())
         verify = self.run_script(
             "verify_drawio_agent_extension.sh", "--skip-self-check"
         )
-        self.assertIn("Verified publish-drawio-skill 1.24.0-corporate.5", verify.stdout)
+        self.assertIn(f"Verified publish-drawio-skill {EXPECTED_DRAWIO_VERSION}", verify.stdout)
 
     def test_verifier_rejects_missing_corporate_operator_guide(self) -> None:
         self.install()
@@ -267,13 +298,36 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
         self.assertIn(f"Verified publish-drawio-skill {EXPECTED_DRAWIO_VERSION}", verify.stdout)
 
     def test_verifier_rejects_missing_layout_runtime_inventory(self) -> None:
-        self.install()
-        result = self.run_script(
-            "verify_drawio_agent_extension.sh", "--skip-self-check", check=False
-        )
+        required_paths = [
+            "scripts/layout_backend.py",
+            "scripts/elk_runner.mjs",
+            "vendor/elkjs/elk.bundled.js",
+            "vendor/elkjs/LICENSE",
+            "vendor/elkjs/NOTICE.json",
+        ]
+        for relative in required_paths:
+            with self.subTest(relative=relative):
+                self.install()
+                active = self.home / "extensions" / "publish-drawio-skill"
+                target = active / relative
+                self.assertTrue(target.is_file(), f"expected new runtime file before deletion: {relative}")
+                target.unlink()
+                result = self.run_script(
+                    "verify_drawio_agent_extension.sh", "--skip-self-check", check=False
+                )
 
-        self.assertIn("inventory mismatch", result.stdout)
-        self.assertIn("scripts/layout_backend.py", result.stdout)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("inventory mismatch", result.stdout)
+                self.assertIn(relative, result.stdout)
+
+    def test_install_and_verify_pass_without_node_on_path(self) -> None:
+        self.env = self.no_node_env()
+
+        result = self.install()
+
+        self.assertIn(f"Installed publish-drawio-skill {EXPECTED_DRAWIO_VERSION}", result.stdout)
+        verify = self.run_script("verify_drawio_agent_extension.sh", "--skip-self-check")
+        self.assertIn(f"Verified publish-drawio-skill {EXPECTED_DRAWIO_VERSION}", verify.stdout)
 
     def test_verifier_rejects_command_without_safe_raw_argument_bridge(self) -> None:
         self.install()
@@ -389,7 +443,7 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
         self.assertIn("Installing pinned Python dependencies", result.stdout)
         self.assertIn("Running extension self-check", result.stdout)
         self.assertIn("fake self-check passed", result.stdout)
-        self.assertIn("Installed publish-drawio-skill 1.24.0-corporate.5", result.stdout)
+        self.assertIn(f"Installed publish-drawio-skill {EXPECTED_DRAWIO_VERSION}", result.stdout)
         self.assertNotIn("unbound variable", result.stdout)
         self.assertNotIn("restoring backup", result.stdout)
         self.assertEqual(
@@ -402,7 +456,7 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
         result = self.install()
 
         self.assertIn("Native 'extensions validate' is unavailable", result.stdout)
-        self.assertIn("Installed publish-drawio-skill 1.24.0-corporate.5", result.stdout)
+        self.assertIn(f"Installed publish-drawio-skill {EXPECTED_DRAWIO_VERSION}", result.stdout)
         self.assertTrue(
             (self.home / "extensions" / "publish-drawio-skill" / "gemini-extension.json").is_file()
         )
@@ -590,7 +644,7 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
             "verify_drawio_agent_extension.sh", "--skip-self-check"
         )
 
-        self.assertIn("Verified publish-drawio-skill 1.24.0-corporate.5", result.stdout)
+        self.assertIn(f"Verified publish-drawio-skill {EXPECTED_DRAWIO_VERSION}", result.stdout)
 
     def test_verifier_rejects_active_source_content_mismatch(self) -> None:
         self.install()
@@ -707,7 +761,7 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
             self.home
             / "extension-sources"
             / "publish-drawio-skill"
-            / "1.24.0-corporate.5"
+            / EXPECTED_DRAWIO_VERSION
         )
         self.assertFalse(version_dir.exists())
 
