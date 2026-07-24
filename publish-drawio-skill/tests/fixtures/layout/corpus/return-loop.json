@@ -1,0 +1,1 @@
+{"diagram_type":"flowchart","direction":"TB","nodes":[{"id":"start","label":"Start","type":"start"},{"id":"retry","label":"Retry?","type":"decision"}],"edges":[{"id":"start-retry","source":"start","target":"retry"},{"id":"retry-start","source":"retry","target":"start","relationship":"feedback"}]}

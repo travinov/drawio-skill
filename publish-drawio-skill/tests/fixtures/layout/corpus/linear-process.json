@@ -1,0 +1,1 @@
+{"diagram_type":"flowchart","direction":"LR","nodes":[{"id":"start","label":"Start","type":"start"},{"id":"work","label":"Work","type":"process"},{"id":"end","label":"End","type":"end"}],"edges":[{"id":"start-work","source":"start","target":"work"},{"id":"work-end","source":"work","target":"end"}]}

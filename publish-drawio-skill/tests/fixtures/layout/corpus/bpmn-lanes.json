@@ -1,0 +1,1 @@
+{"diagram_type":"bpmn","direction":"LR","nodes":[{"id":"sales","label":"Sales","type":"lane"},{"id":"receive","label":"Receive","type":"process","parent":"sales"},{"id":"ops","label":"Operations","type":"lane"},{"id":"fulfil","label":"Fulfil","type":"process","parent":"ops"}],"edges":[{"id":"receive-fulfil","source":"receive","target":"fulfil"}]}

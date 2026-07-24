@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile><diagram id="page-1" name="shared-x-350"><mxGraphModel><root>
+<mxCell id="0"/><mxCell id="1" parent="0"/>
+<mxCell id="source" parent="1" vertex="1"><mxGeometry x="0" y="140" width="20" height="20" as="geometry"/></mxCell>
+<mxCell id="target-a" parent="1" vertex="1"><mxGeometry x="420" y="0" width="20" height="20" as="geometry"/></mxCell>
+<mxCell id="target-b" parent="1" vertex="1"><mxGeometry x="420" y="90" width="20" height="20" as="geometry"/></mxCell>
+<mxCell id="target-c" parent="1" vertex="1"><mxGeometry x="420" y="180" width="20" height="20" as="geometry"/></mxCell>
+<mxCell id="e-a" edge="1" source="source" target="target-a" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="40" y="150"/><mxPoint x="390" y="150"/><mxPoint x="390" y="10"/></Array></mxGeometry></mxCell>
+<mxCell id="e-b" edge="1" source="source" target="target-b" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="40" y="150"/><mxPoint x="390" y="150"/><mxPoint x="390" y="100"/></Array></mxGeometry></mxCell>
+<mxCell id="e-c" edge="1" source="source" target="target-c" parent="1"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="40" y="150"/><mxPoint x="390" y="150"/><mxPoint x="390" y="190"/></Array></mxGeometry></mxCell>
+</root></mxGraphModel></diagram></mxfile>

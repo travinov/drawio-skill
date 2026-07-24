@@ -1,0 +1,1 @@
+{"diagram_type":"flowchart","direction":"LR","nodes":[{"id":"left","label":"Left","type":"process"},{"id":"right","label":"Right","type":"process"}],"edges":[{"id":"left-right","source":"left","target":"right"}],"best_effort":"artifact-required-after-strict-failure"}

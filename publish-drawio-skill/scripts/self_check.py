@@ -266,6 +266,156 @@ def minimal_pipeline_checks():
     return records
 
 
+def layout_pipeline_checks():
+    """Exercise the deterministic layout contract without relying on test files.
+
+    Node/ELK is optional for installation, but it is never an omitted pipeline:
+    an unavailable verified Node is a successful Python-fallback observation.
+    """
+    import stat
+    import xml.etree.ElementTree as ET
+
+    import diagram_orchestrator
+    import diagram_supervisor
+    import layout_backend
+    import layout_model
+    import validate
+    from layout_renderer import render_layout
+    from lifecycle_contracts import canonical_json_sha256
+
+    sha = "a" * 64
+    def plan(title, *, direction="LR"):
+        page_id = "self-check-layout"
+        nodes = [
+            {"stable_identity": {"page_id": page_id, "cell_id": "source"}, "label": "Source", "semantic_type": "process", "parent": None, "style_hint": None},
+            {"stable_identity": {"page_id": page_id, "cell_id": "middle"}, "label": "Middle", "semantic_type": "process", "parent": None, "style_hint": None},
+            {"stable_identity": {"page_id": page_id, "cell_id": "target"}, "label": "Target", "semantic_type": "process", "parent": None, "style_hint": None},
+        ]
+        edges = [
+            {"stable_identity": {"page_id": page_id, "cell_id": "source-middle"}, "source": {"page_id": page_id, "cell_id": "source"}, "target": {"page_id": page_id, "cell_id": "middle"}, "label": "", "relationship": "flow", "parent": None, "style_hint": None},
+            {"stable_identity": {"page_id": page_id, "cell_id": "middle-target"}, "source": {"page_id": page_id, "cell_id": "middle"}, "target": {"page_id": page_id, "cell_id": "target"}, "label": "", "relationship": "flow", "parent": None, "style_hint": None},
+        ]
+        return {
+            "schema_version": 2, "role": "semantic_analyst", "status": "ok",
+            "run_id": "self-check-layout", "source_bundle_sha256": sha,
+            "baseline_semantic_digest": sha,
+            "result": {
+                "mode": "create", "diagram_type": "flowchart", "title": title,
+                "direction": direction, "pages": [{"page_id": page_id, "name": title, "nodes": nodes, "edges": edges}],
+                "semantic_delta": {"schema_version": 2, "baseline_semantic_digest": sha, "source_bundle_sha256": sha, "operations": []},
+                "assumptions": [], "requires_human": False, "human_questions": [],
+            },
+        }
+
+    def request(value, *, backend="python", baseline=None, mode="create", scope=None):
+        return layout_model.build_layout_request(
+            value, run_id="self-check-layout", semantic_plan_sha256=canonical_json_sha256(value),
+            mode=mode, backend=backend, strategy_id="layered", quality_profile_version=2,
+            baseline=baseline, scope=scope,
+        )
+
+    def render_and_report(value, attempt, path):
+        render_layout(value, attempt.result, path)
+        return validate.validate_tree(ET.parse(path))
+
+    records = []
+    value = plan("Self-check layout")
+    with tempfile.TemporaryDirectory(prefix="drawio-layout-self-check-") as temporary:
+        temp = Path(temporary)
+        try:
+            python_attempt = layout_backend.run_layout(request(value), config={"layout_backend": "python"})
+            python_artifact = temp / "python.drawio"
+            python_report = render_and_report(value, python_attempt, python_artifact)
+            if python_report["summary"]["errors"]:
+                raise RuntimeError(f"validator errors: {python_report['findings']}")
+            records.append(check_record("layout:python-create", "passed", "selfcheck.layout.python_create.passed", "Python fallback created and validated an artifact", backend=python_attempt.result["backend"]))
+        except Exception as exc:
+            records.append(check_record("layout:python-create", "failed", "selfcheck.layout.python_create.failed", str(exc)))
+            return records
+
+        try:
+            node = layout_backend.resolve_node({}, environ=os.environ)
+            automatic = layout_backend.run_layout(request(value, backend="auto"), config={"layout_backend": "auto"})
+            if node is None:
+                if automatic.result["backend"] != "python-layered" or automatic.evidence.get("fallback_reason") != "verified_node_unavailable":
+                    raise RuntimeError("Node absence did not take the verified Python fallback")
+                records.append(check_record("layout:elk-create", "passed", "selfcheck.layout.elk_unavailable_fallback.passed", "Node/ELK unavailable; verified Python fallback completed", backend=automatic.result["backend"]))
+            else:
+                elk_artifact = temp / "elk.drawio"
+                elk_report = render_and_report(value, automatic, elk_artifact)
+                if not automatic.result["backend"].startswith("elk-") or elk_report["summary"]["errors"]:
+                    raise RuntimeError("verified Node did not complete a valid ELK layout")
+                records.append(check_record("layout:elk-create", "passed", "selfcheck.layout.elk_create.passed", "ELK created and validated an artifact", backend=automatic.result["backend"]))
+        except Exception as exc:
+            records.append(check_record("layout:elk-create", "failed", "selfcheck.layout.elk_create.failed", str(exc)))
+
+        try:
+            fake_node = temp / "failing-node"
+            fake_node.write_text(
+                "#!" + sys.executable + "\nimport sys\n"
+                "if sys.argv[-1:] == ['--version']: print('v22.16.0')\n"
+                "elif sys.argv[-1:] == ['--probe']: print('{\\\"bridge\\\":\\\"drawio-elk-runner\\\",\\\"elkjs_version\\\":\\\"0.11.1\\\"}')\n"
+                "else: raise SystemExit(2)\n",
+                encoding="utf-8",
+            )
+            fake_node.chmod(fake_node.stat().st_mode | stat.S_IXUSR)
+            fallback = layout_backend.run_layout(request(value, backend="auto"), config={"layout_backend": "auto", "node_bin": str(fake_node)})
+            if fallback.result["backend"] != "python-layered" or fallback.evidence.get("fallback_reason") != "elk_nonzero_exit":
+                raise RuntimeError("forced ELK failure did not select Python fallback")
+            records.append(check_record("layout:elk-failure-fallback", "passed", "selfcheck.layout.elk_failure_fallback.passed", "Forced ELK failure selected Python fallback"))
+        except Exception as exc:
+            records.append(check_record("layout:elk-failure-fallback", "failed", "selfcheck.layout.elk_failure_fallback.failed", str(exc)))
+
+        try:
+            baseline = diagram_supervisor.make_spec(python_artifact)
+            page_id = "self-check-layout"
+            scope = {
+                "edge_refs": [{"page_id": page_id, "cell_id": "middle-target"}],
+                "reroutable_edge_refs": [{"page_id": page_id, "cell_id": "middle-target"}],
+            }
+            local_attempt = layout_backend.run_layout(
+                request(value, baseline=baseline, mode="local_reflow", scope=scope),
+                config={"layout_backend": "python"},
+            )
+            local_artifact = temp / "local.drawio"
+            render_layout(value, local_attempt.result, local_artifact)
+            before_digest, _ = diagram_supervisor.artifact_invariants(python_artifact)
+            after_digest, _ = diagram_supervisor.artifact_invariants(local_artifact)
+            preservation = diagram_orchestrator._verify_locked_cell_hashes(
+                python_artifact, local_artifact,
+                {page_id: ["source", "middle", "target", "source-middle"]},
+            )
+            if before_digest != after_digest or not preservation["valid"]:
+                raise RuntimeError("local improve changed semantic content or an untouched cell")
+            records.append(check_record("layout:local-improve", "passed", "selfcheck.layout.local_improve.passed", "Local improve preserved semantic digest and untouched hashes"))
+        except Exception as exc:
+            records.append(check_record("layout:local-improve", "failed", "selfcheck.layout.local_improve.failed", str(exc)))
+
+        try:
+            old = temp / "strict-failure.drawio"
+            old.write_text(
+                "<mxfile><diagram id='p' name='shared'><mxGraphModel><root>"
+                "<mxCell id='0'/><mxCell id='1' parent='0'/>"
+                "<mxCell id='source' parent='1' vertex='1'><mxGeometry x='0' y='0' width='20' height='20' as='geometry'/></mxCell>"
+                "<mxCell id='left' parent='1' vertex='1'><mxGeometry x='420' y='0' width='20' height='20' as='geometry'/></mxCell>"
+                "<mxCell id='right' parent='1' vertex='1'><mxGeometry x='420' y='80' width='20' height='20' as='geometry'/></mxCell>"
+                "<mxCell id='a' parent='1' source='source' target='left' edge='1'><mxGeometry relative='1' as='geometry'><Array as='points'><mxPoint x='30' y='10'/><mxPoint x='380' y='10'/></Array></mxGeometry></mxCell>"
+                "<mxCell id='b' parent='1' source='source' target='right' edge='1'><mxGeometry relative='1' as='geometry'><Array as='points'><mxPoint x='30' y='10'/><mxPoint x='380' y='10'/></Array></mxGeometry></mxCell>"
+                "</root></mxGraphModel></diagram></mxfile>", encoding="utf-8",
+            )
+            strict = validate.validate_tree(ET.parse(old), strict=True)
+            if strict["summary"]["errors"] == 0:
+                raise RuntimeError("shared-trunk source unexpectedly passes strict validation")
+            best_effort = temp / "best-effort.drawio"
+            render_layout(value, python_attempt.result, best_effort)
+            if not best_effort.is_file() or render_and_report(value, python_attempt, temp / "second-best-effort.drawio")["summary"]["errors"]:
+                raise RuntimeError("best-effort artifact was not available after strict failure")
+            records.append(check_record("layout:strict-best-effort", "passed", "selfcheck.layout.strict_best_effort.passed", "Strict failure retained a structurally valid best-effort artifact"))
+        except Exception as exc:
+            records.append(check_record("layout:strict-best-effort", "failed", "selfcheck.layout.strict_best_effort.failed", str(exc)))
+    return records
+
+
 def build_report(check_registry: bool):
     checks = []
     if check_registry:
@@ -283,6 +433,7 @@ def build_report(check_registry: bool):
         checks.extend(schema_checks())
         if not any(item["status"] == "failed" for item in checks):
             checks.extend(minimal_pipeline_checks())
+            checks.extend(layout_pipeline_checks())
     errors = sum(item["status"] == "failed" for item in checks)
     return {
         "report_version": 1,
