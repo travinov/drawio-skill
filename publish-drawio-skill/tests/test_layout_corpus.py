@@ -132,33 +132,245 @@ def pipeline_summary(request, attempt, report):
     }
 
 
-def _normalized_durable_event(event):
-    """Keep stable ledger evidence while removing lifecycle-generated identity."""
-    payload = copy.deepcopy(event["payload"])
-    artifact_snapshots = payload.get("artifact_snapshots", {})
-    for receipt_name in ("validation_receipt", "validation_receipt_legacy"):
-        receipt = artifact_snapshots.get(receipt_name)
-        if isinstance(receipt, dict):
-            # Receipts embed validator start/finish timestamps, so only their
-            # content hash changes between otherwise identical executions.
-            receipt.pop("sha256", None)
-    return {
-        "schema_version": event["schema_version"],
-        "run_id": event["run_id"],
-        "sequence": event["sequence"],
-        "event_type": event["event_type"],
-        "actor": copy.deepcopy(event["actor"]),
-        "snapshots": [
-            {
-                "schema_kind": snapshot["schema_kind"],
-                "schema_version": snapshot["schema_version"],
-                "path": snapshot["path"],
-                "byte_length": snapshot["byte_length"],
-            }
-            for snapshot in event["snapshots"]
-        ],
-        "payload": payload,
+VOLATILE_TIMESTAMP_FIELDS = frozenset({
+    "captured_at",
+    "created_at",
+    "finished_at",
+    "started_at",
+    "timestamp",
+    "updated_at",
+})
+VOLATILE_IDENTIFIER_FIELDS = frozenset({
+    "bundle_id",
+    "event_id",
+    "receipt_id",
+    "snapshot_id",
+    "transaction_id",
+})
+VOLATILE_PREDECESSOR_FIELDS = frozenset({
+    "previous_event_sha256",
+    "previous_snapshot_sha256",
+})
+RECEIPT_ARTIFACT_NAMES = (
+    "validation_receipt",
+    "validation_receipt_legacy",
+)
+
+
+def _walk_volatile_identifiers(value, aliases, counters):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in VOLATILE_IDENTIFIER_FIELDS and isinstance(item, str):
+                if item not in aliases:
+                    counters[key] = counters.get(key, 0) + 1
+                    aliases[item] = f"<{key}:{counters[key]}>"
+            else:
+                _walk_volatile_identifiers(item, aliases, counters)
+    elif isinstance(value, list):
+        for item in value:
+            _walk_volatile_identifiers(item, aliases, counters)
+
+
+def _volatile_identifier_aliases(trace):
+    aliases, counters = {}, {}
+    _walk_volatile_identifiers(trace["events"], aliases, counters)
+    for path in sorted(trace["snapshot_payloads"]):
+        _walk_volatile_identifiers(
+            trace["snapshot_payloads"][path]["document"], aliases, counters,
+        )
+    for name in sorted(trace["receipt_payloads"]):
+        _walk_volatile_identifiers(
+            trace["receipt_payloads"][name]["document"], aliases, counters,
+        )
+    return aliases
+
+
+def _normalize_durable_value(
+    value, *, workspace, identifier_aliases, content_hash_replacements,
+):
+    if isinstance(value, dict):
+        normalized = {}
+        for key, item in value.items():
+            if key in VOLATILE_TIMESTAMP_FIELDS:
+                normalized[key] = f"<volatile:{key}>"
+            elif key in VOLATILE_IDENTIFIER_FIELDS:
+                normalized[key] = (
+                    identifier_aliases.get(item, f"<volatile:{key}>")
+                    if isinstance(item, str) else item
+                )
+            elif key in VOLATILE_PREDECESSOR_FIELDS:
+                normalized[key] = f"<volatile:{key}>"
+            else:
+                normalized[key] = _normalize_durable_value(
+                    item,
+                    workspace=workspace,
+                    identifier_aliases=identifier_aliases,
+                    content_hash_replacements=content_hash_replacements,
+                )
+        return normalized
+    if isinstance(value, list):
+        return [
+            _normalize_durable_value(
+                item,
+                workspace=workspace,
+                identifier_aliases=identifier_aliases,
+                content_hash_replacements=content_hash_replacements,
+            )
+            for item in value
+        ]
+    if isinstance(value, str):
+        if value in content_hash_replacements:
+            return content_hash_replacements[value]
+        if value == workspace:
+            return "<workspace>"
+        if value.startswith(workspace + "/"):
+            return "<workspace>/" + value[len(workspace) + 1:]
+    return value
+
+
+def _snapshot_hash_targets(trace):
+    targets = {}
+    for event in trace["events"]:
+        for descriptor in event["snapshots"]:
+            path = descriptor["path"]
+            for field in ("canonical_sha256", "sha256"):
+                targets[descriptor[field]] = path
+    return targets
+
+
+def _snapshot_dependencies(value, snapshot_targets):
+    dependencies = set()
+    if isinstance(value, dict):
+        for item in value.values():
+            dependencies.update(_snapshot_dependencies(item, snapshot_targets))
+    elif isinstance(value, list):
+        for item in value:
+            dependencies.update(_snapshot_dependencies(item, snapshot_targets))
+    elif isinstance(value, str) and value in snapshot_targets:
+        dependencies.add(snapshot_targets[value])
+    return dependencies
+
+
+def normalize_durable_layout_trace(trace):
+    """Normalize actual ledger, snapshot, and receipt payloads for comparison."""
+    workspace = trace["workspace"]
+    identifier_aliases = _volatile_identifier_aliases(trace)
+    snapshot_targets = _snapshot_hash_targets(trace)
+    snapshot_dependencies = {
+        path: _snapshot_dependencies(payload["document"], snapshot_targets)
+        for path, payload in trace["snapshot_payloads"].items()
     }
+    snapshot_fingerprints = {}
+    pending = set(trace["snapshot_payloads"])
+    while pending:
+        ready = sorted(
+            path for path in pending
+            if snapshot_dependencies[path] <= snapshot_fingerprints.keys()
+        )
+        if not ready:
+            raise AssertionError(
+                f"cyclic normalized snapshot references: {sorted(pending)}",
+            )
+        for path in ready:
+            known_hash_replacements = {
+                digest: snapshot_fingerprints[target]
+                for digest, target in snapshot_targets.items()
+                if target in snapshot_fingerprints
+            }
+            document = _normalize_durable_value(
+                trace["snapshot_payloads"][path]["document"],
+                workspace=workspace,
+                identifier_aliases=identifier_aliases,
+                content_hash_replacements=known_hash_replacements,
+            )
+            snapshot_fingerprints[path] = canonical_json_sha256(document)
+            pending.remove(path)
+    snapshot_hash_replacements = {
+        digest: snapshot_fingerprints[path]
+        for digest, path in snapshot_targets.items()
+    }
+
+    normalized_receipt_documents = {}
+    receipt_fingerprints = {}
+    for name, payload in trace["receipt_payloads"].items():
+        document = _normalize_durable_value(
+            payload["document"],
+            workspace=workspace,
+            identifier_aliases=identifier_aliases,
+            content_hash_replacements=snapshot_hash_replacements,
+        )
+        normalized_receipt_documents[name] = document
+        receipt_fingerprints[name] = canonical_json_sha256(document)
+    receipt_hash_replacements = {
+        payload["descriptor"]["sha256"]: receipt_fingerprints[name]
+        for name, payload in trace["receipt_payloads"].items()
+    }
+    all_content_hash_replacements = {
+        **snapshot_hash_replacements,
+        **receipt_hash_replacements,
+    }
+
+    normalized_snapshot_payloads = {}
+    for path, payload in trace["snapshot_payloads"].items():
+        normalized_snapshot_payloads[path] = {
+            "document": _normalize_durable_value(
+                payload["document"],
+                workspace=workspace,
+                identifier_aliases=identifier_aliases,
+                content_hash_replacements=all_content_hash_replacements,
+            ),
+            "normalized_content_sha256": snapshot_fingerprints[path],
+        }
+
+    normalized_receipt_payloads = {}
+    for name, payload in trace["receipt_payloads"].items():
+        normalized_receipt_payloads[name] = {
+            "descriptor": _normalize_durable_value(
+                payload["descriptor"],
+                workspace=workspace,
+                identifier_aliases=identifier_aliases,
+                content_hash_replacements=all_content_hash_replacements,
+            ),
+            "document": normalized_receipt_documents[name],
+            "normalized_content_sha256": receipt_fingerprints[name],
+        }
+
+    events = _normalize_durable_value(
+        trace["events"],
+        workspace=workspace,
+        identifier_aliases=identifier_aliases,
+        content_hash_replacements=all_content_hash_replacements,
+    )
+    for event in events:
+        for descriptor in event["snapshots"]:
+            path = descriptor["path"]
+            descriptor["document"] = copy.deepcopy(
+                normalized_snapshot_payloads[path]["document"],
+            )
+            descriptor["normalized_content_sha256"] = snapshot_fingerprints[path]
+    return {
+        "events": events,
+        "event_order": [event["event_type"] for event in events],
+        "snapshot_order": [
+            [snapshot["schema_kind"] for snapshot in event["snapshots"]]
+            for event in events
+        ],
+        "snapshot_payloads": normalized_snapshot_payloads,
+        "receipt_payloads": normalized_receipt_payloads,
+        "layout_evidence": _normalize_durable_value(
+            trace["layout_evidence"],
+            workspace=workspace,
+            identifier_aliases=identifier_aliases,
+            content_hash_replacements=all_content_hash_replacements,
+        ),
+    }
+
+
+def durable_layout_traces_equal(first, second):
+    return (
+        normalize_durable_layout_trace(first)
+        == normalize_durable_layout_trace(second)
+    )
 
 
 def run_durable_layout_trace(name):
@@ -208,19 +420,41 @@ def run_durable_layout_trace(name):
         orchestrator.write_workflow(run_dir, workflow)
         replayed = lifecycle_v2.replay(run_dir)
         events = [
-            _normalized_durable_event(record["event"])
+            copy.deepcopy(record["event"])
             for record in replayed["events"]
         ]
+        snapshot_payloads = {}
+        receipt_payloads = {}
+        for event in events:
+            for descriptor in event["snapshots"]:
+                path = descriptor["path"]
+                snapshot_payloads[path] = {
+                    "document": json.loads(
+                        (run_dir / path).read_text(encoding="utf-8"),
+                    ),
+                }
+            artifact_snapshots = (
+                event.get("payload", {}).get("artifact_snapshots", {})
+            )
+            for name in RECEIPT_ARTIFACT_NAMES:
+                descriptor = artifact_snapshots.get(name)
+                if descriptor is None:
+                    continue
+                path = descriptor["path"]
+                receipt_payloads[name] = {
+                    "descriptor": copy.deepcopy(descriptor),
+                    "document": json.loads(
+                        (run_dir / path).read_text(encoding="utf-8"),
+                    ),
+                }
         return {
             "events": events,
-            "event_order": [event["event_type"] for event in events],
-            "snapshot_order": [
-                [snapshot["schema_kind"] for snapshot in event["snapshots"]]
-                for event in events
-            ],
+            "snapshot_payloads": snapshot_payloads,
+            "receipt_payloads": receipt_payloads,
             "layout_evidence": orchestrator._trace_layout_evidence(
                 run_dir, workflow, replayed,
             ),
+            "workspace": str(workspace.resolve()),
         }
 
 
@@ -446,16 +680,51 @@ class LayoutCorpusTests(unittest.TestCase):
     def test_real_durable_trace_snapshots_and_order_are_deterministic(self):
         first = run_durable_layout_trace("linear-process")
         second = run_durable_layout_trace("linear-process")
-        self.assertEqual(first, second)
+        self.assertTrue(durable_layout_traces_equal(first, second))
+        normalized = normalize_durable_layout_trace(first)
         self.assertEqual(
-            first["event_order"],
+            normalized["event_order"],
             ["run_created", "tool_attempt", "tool_attempt", "candidate_accepted"],
         )
         self.assertEqual(
-            first["snapshot_order"][0],
+            normalized["snapshot_order"][0],
             ["source-bundle", "implementation-snapshot", "run-state", "workflow"],
         )
-        self.assertTrue(first["layout_evidence"]["valid"])
+        self.assertEqual(
+            set(normalized["receipt_payloads"]),
+            {"validation_receipt", "validation_receipt_legacy"},
+        )
+        for receipt in normalized["receipt_payloads"].values():
+            self.assertEqual(
+                receipt["descriptor"]["sha256"],
+                receipt["normalized_content_sha256"],
+            )
+            self.assertEqual(
+                canonical_json_sha256(receipt["document"]),
+                receipt["normalized_content_sha256"],
+            )
+            self.assertEqual(receipt["document"]["result"], "passed")
+        for descriptor in normalized["events"][0]["snapshots"]:
+            self.assertEqual(
+                descriptor["canonical_sha256"],
+                descriptor["normalized_content_sha256"],
+            )
+            self.assertEqual(
+                canonical_json_sha256(descriptor["document"]),
+                descriptor["normalized_content_sha256"],
+            )
+        self.assertTrue(normalized["layout_evidence"]["valid"])
+
+    def test_durable_trace_detects_same_length_stable_receipt_change(self):
+        original = run_durable_layout_trace("linear-process")
+        changed = copy.deepcopy(original)
+        receipt = changed["receipt_payloads"]["validation_receipt"]["document"]
+        before = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
+        self.assertEqual(receipt["result"], "passed")
+        receipt["result"] = "failed"
+        after = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
+        self.assertEqual(len(before), len(after))
+        self.assertFalse(durable_layout_traces_equal(original, changed))
 
     def test_bpmn_lanes_bind_children_to_containing_lane_geometry(self):
         lane_geometry = render_bpmn_lane_geometry()

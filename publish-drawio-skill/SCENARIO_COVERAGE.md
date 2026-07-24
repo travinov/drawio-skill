@@ -27,15 +27,29 @@ and rejects validator errors. The two improve cases additionally compare the
 semantic digest and every declared untouched cell hash.
 
 The `linear-process` case also runs twice through the actual orchestrator and
-v2 lifecycle host. Its comparison retains each durable event's schema, run,
-sequence, type, actor, ordered snapshot kind/path/version/byte length, and full
-stable payload, including stable artifact hashes. Normalization removes only
-lifecycle-generated event identity/time/transaction/previous-event hashes,
-snapshot content/transaction/predecessor hashes whose documents embed those
-volatile values, and the two validation-receipt artifact hashes because the
-receipts embed validator start/finish timestamps. Receipt paths and byte
-lengths remain compared. The test separately asserts the expected event and
-snapshot order and validates the persisted layout evidence.
+v2 lifecycle host. Its comparison reads every event-bound lifecycle snapshot
+JSON and both validation-receipt JSON payloads, then retains all stable
+semantic, status, binding, backend, quality, descriptor, path, and byte-length
+fields.
+
+The recursive volatile-field allowlist is exact:
+
+- timestamps: `captured_at`, `created_at`, `finished_at`, `started_at`,
+  `timestamp`, and `updated_at`;
+- generated identifiers: `bundle_id`, `event_id`, `receipt_id`, `snapshot_id`,
+  and `transaction_id`;
+- generated predecessor hashes: `previous_event_sha256` and
+  `previous_snapshot_sha256`;
+- the captured absolute temporary workspace prefix.
+
+`run_id` and every other identifier remain compared. Raw snapshot
+`canonical_sha256`/`sha256` values and raw receipt artifact hashes are not
+dropped: each is replaced by a SHA256 fingerprint of the recursively normalized
+JSON content it identifies. Unrelated stable hashes are unchanged. The test
+separately asserts event/snapshot order, receipt payload status, fingerprint
+bindings, and persisted layout evidence. A negative regression changes stable
+receipt `result` from `passed` to same-length `failed` and proves the same
+comparison helper rejects it.
 
 `tests/fixtures/layout/shared-x-350.drawio` is deliberately bad legacy input:
 the validator must report its 350px shared route trunk. The generated

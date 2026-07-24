@@ -25,6 +25,7 @@
 - `08619b2 test(drawio): cover deterministic layout corpus`
 - `13343e8 test(drawio): align supervisor fallback fixture`
 - `9e9085c fix(drawio): keep gitflow layout within strict aspect ratio`
+- `4d638fd test(drawio): prove durable layout acceptance`
 
 ## Independent-review fixes
 
@@ -40,18 +41,28 @@ The initial independent review requested three Important corrections:
 3. The BPMN scenario named lane semantics without a lane-specific assertion.
    The follow-up now verifies lane parents, swimlane style, and child bounds.
 
-Durable-event normalization preserves schema version, run id, sequence, event
-type, actor, ordered snapshot kind/path/version/byte length, and the full stable
-payload including stable artifact hashes. It removes only:
+The second independent review found that the first follow-up compared snapshot
+descriptors but did not read the snapshot and receipt JSON payloads. The final
+comparison reads all four event-bound lifecycle snapshots and both v1/v2
+validation receipts, recursively normalizes them, and retains all stable
+semantic, status, binding, backend, quality, descriptor, path, and byte-length
+fields.
 
-- lifecycle-generated event id, timestamp, transaction id, and
-  previous-event hash;
-- snapshot content/transaction/predecessor hashes, because the snapshot
-  documents embed the generated ids and timestamps above;
-- the v1/v2 validation-receipt artifact hashes, because receipt bytes embed
-  validator start/finish timestamps.
+The exact volatile-field allowlist is:
 
-Receipt paths and byte lengths remain compared.
+- timestamp fields: `captured_at`, `created_at`, `finished_at`, `started_at`,
+  `timestamp`, and `updated_at`;
+- generated identifier fields: `bundle_id`, `event_id`, `receipt_id`,
+  `snapshot_id`, and `transaction_id`;
+- generated predecessor fields: `previous_event_sha256` and
+  `previous_snapshot_sha256`;
+- strings equal to or beneath the captured absolute temporary workspace.
+
+`run_id` and every identifier not named above remain compared. Snapshot
+`canonical_sha256`/`sha256` and validation-receipt artifact hashes are not
+discarded. Raw values derived from volatile payload bytes are replaced with
+SHA256 fingerprints of the normalized JSON content they identify; unrelated
+stable hashes remain byte-for-byte compared.
 
 ## TDD evidence
 
@@ -103,6 +114,34 @@ OK
 git diff --check
 ```
 
+Second-review RED:
+
+```text
+../.venv/bin/python -m unittest tests.test_layout_corpus
+Ran 9 tests in 5.639s
+FAILED (errors=2)
+```
+
+The two errors proved the missing common comparator and missing actual receipt
+payload capture. The added negative regression changes the stable receipt
+`result` from `passed` to same-length `failed` and exercises the same comparator
+as the positive two-run test.
+
+Second-review GREEN:
+
+```text
+../.venv/bin/python -m unittest tests.test_layout_corpus
+Ran 9 tests in 5.281s
+OK
+
+../.venv/bin/python scripts/self_check.py --json
+54 passed, 1 registry check skipped, 0 errors
+
+../.venv/bin/python -m py_compile \
+  scripts/self_check.py tests/test_layout_corpus.py
+git diff --check
+```
+
 ## Full-package evidence
 
 The pre-review Task 14 package run is retained at
@@ -128,12 +167,15 @@ user 227.80
 sys 15.53
 ```
 
+No third full suite was run for the second-review test/report-only
+normalization change; Task 16 owns the final package gate.
+
 ## Remaining risks
 
 - The deterministic durable-trace run uses the bundled Python backend so CI
   does not depend on an installed Node/ELK runtime. ELK selection and forced
   failure remain covered separately.
-- Receipt hashes are intentionally not compared across runs because receipt
-  timestamps make their bytes volatile; the receipt path/length and every
-  candidate/report binding are still verified, and the causal best-effort test
-  independently proves receipt-to-candidate SHA equality.
+- Timestamp-bearing raw snapshot/receipt hashes cannot be equal across runs;
+  normalized-content SHA256 fingerprints are compared instead. Stable
+  candidate/report/validator hashes and every lifecycle binding remain
+  unmodified and compared.
