@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -17,6 +18,7 @@ sys.path.insert(0, str(SCRIPTS))
 import diagram_orchestrator as orchestrator
 import diagram_supervisor as supervisor
 import layout_backend
+import lifecycle_host_v2 as lifecycle_v2
 import layout_model
 import validate
 from layout_renderer import render_layout
@@ -117,7 +119,7 @@ def report_for(path, *, strict=False):
     return validate.validate_tree(ET.parse(path), strict=strict)
 
 
-def normalized_trace(request, attempt, report):
+def pipeline_summary(request, attempt, report):
     return {
         "request_sha256": canonical_json_sha256(request),
         "result_sha256": canonical_json_sha256(attempt.result),
@@ -128,6 +130,207 @@ def normalized_trace(request, attempt, report):
             for finding in report["findings"]
         ],
     }
+
+
+def _normalized_durable_event(event):
+    """Keep stable ledger evidence while removing lifecycle-generated identity."""
+    payload = copy.deepcopy(event["payload"])
+    artifact_snapshots = payload.get("artifact_snapshots", {})
+    for receipt_name in ("validation_receipt", "validation_receipt_legacy"):
+        receipt = artifact_snapshots.get(receipt_name)
+        if isinstance(receipt, dict):
+            # Receipts embed validator start/finish timestamps, so only their
+            # content hash changes between otherwise identical executions.
+            receipt.pop("sha256", None)
+    return {
+        "schema_version": event["schema_version"],
+        "run_id": event["run_id"],
+        "sequence": event["sequence"],
+        "event_type": event["event_type"],
+        "actor": copy.deepcopy(event["actor"]),
+        "snapshots": [
+            {
+                "schema_kind": snapshot["schema_kind"],
+                "schema_version": snapshot["schema_version"],
+                "path": snapshot["path"],
+                "byte_length": snapshot["byte_length"],
+            }
+            for snapshot in event["snapshots"]
+        ],
+        "payload": payload,
+    }
+
+
+def run_durable_layout_trace(name):
+    fixture = load_fixture(name)
+    plan = semantic_plan(name, fixture)
+    run_id = "corpus-" + name
+    with tempfile.TemporaryDirectory(prefix="layout-corpus-trace-") as temporary:
+        workspace = Path(temporary) / "workspace"
+        run_dir = workspace / ".diagram-runs" / run_id
+        target = workspace / "requested.drawio"
+        workspace.mkdir()
+        lifecycle_v2.initialize(
+            run_dir=run_dir,
+            workspace=workspace,
+            target=target,
+            run_id=run_id,
+            mode="create",
+            request=f"deterministic corpus {name}",
+            extension_root=ROOT,
+        )
+        (run_dir / ".run-id").write_text(run_id + "\n", encoding="utf-8")
+        plan_path = run_dir / "semantic-plan.v2.json"
+        supervisor.write_json(plan_path, plan)
+        workflow, _ = lifecycle_v2.latest_document(run_dir, "workflow")
+        workflow.update({
+            "target": str(target),
+            "semantic_plan_v2": {
+                "path": str(plan_path),
+                "sha256": supervisor.sha256_file(plan_path),
+            },
+            "layout_attempt_keys": [],
+            "layout_attempts": [],
+            "iteration": 0,
+        })
+        orchestrator.write_workflow(run_dir, workflow)
+        attempt = orchestrator.execute_layout_attempt(
+            workflow,
+            plan,
+            run_dir=run_dir,
+            adapter_input=SimpleNamespace(options={"backend": "python"}),
+            mode="create",
+            scope=None,
+            strategy=("python-fallback", {}),
+            timeout=10,
+        )
+        workflow["layout_attempts"].append(attempt)
+        orchestrator.write_workflow(run_dir, workflow)
+        replayed = lifecycle_v2.replay(run_dir)
+        events = [
+            _normalized_durable_event(record["event"])
+            for record in replayed["events"]
+        ]
+        return {
+            "events": events,
+            "event_order": [event["event_type"] for event in events],
+            "snapshot_order": [
+                [snapshot["schema_kind"] for snapshot in event["snapshots"]]
+                for event in events
+            ],
+            "layout_evidence": orchestrator._trace_layout_evidence(
+                run_dir, workflow, replayed,
+            ),
+        }
+
+
+def render_bpmn_lane_geometry():
+    fixture = load_fixture("bpmn-lanes")
+    plan, request = create_request("bpmn-lanes", fixture)
+    attempt = layout_backend.run_layout(
+        request, config={"layout_backend": "python"},
+    )
+    with tempfile.TemporaryDirectory(prefix="layout-corpus-bpmn-") as temporary:
+        artifact = Path(temporary) / "bpmn.drawio"
+        render_layout(plan, attempt.result, artifact)
+        cells = ET.parse(artifact).getroot().findall(".//mxCell")
+        geometry = {}
+        for cell in cells:
+            cell_id = cell.get("id")
+            if cell_id not in {"sales", "ops", "receive", "fulfil"}:
+                continue
+            value = cell.find("mxGeometry")
+            geometry[cell_id] = {
+                "parent": cell.get("parent"),
+                "style": cell.get("style", ""),
+                "x": float(value.get("x", 0)),
+                "y": float(value.get("y", 0)),
+                "width": float(value.get("width", 0)),
+                "height": float(value.get("height", 0)),
+            }
+        return geometry
+
+
+def publish_strict_failed_candidate_best_effort():
+    run_id = "corpus-strict-failure-best-effort"
+    with tempfile.TemporaryDirectory(prefix="layout-corpus-best-effort-") as temporary:
+        workspace = Path(temporary) / "workspace"
+        run_dir = workspace / ".diagram-runs" / run_id
+        requested = workspace / "requested.drawio"
+        published = workspace / "requested.best-effort.drawio"
+        workspace.mkdir()
+        lifecycle_v2.initialize(
+            run_dir=run_dir,
+            workspace=workspace,
+            target=requested,
+            run_id=run_id,
+            mode="create",
+            request="retain the strict-failing candidate as safe best effort",
+            extension_root=ROOT,
+        )
+        (run_dir / ".run-id").write_text(run_id + "\n", encoding="utf-8")
+        candidate = run_dir / "candidate.drawio"
+        candidate.write_bytes(
+            (ROOT / "tests" / "fixtures" / "artifact" / "readability_routes.drawio")
+            .read_bytes()
+        )
+        legacy = supervisor.run_validation(
+            candidate, run_dir, attempt_id="strict-candidate",
+        )
+        report_path = (
+            run_dir / "attempts" / "strict-candidate" / "validation-report.json"
+        )
+        legacy_receipt_path = (
+            run_dir / "attempts" / "strict-candidate" / "validation-receipt.json"
+        )
+        receipt, receipt_path = lifecycle_v2.mirror_validation_receipt(
+            run_dir, legacy_receipt_path=legacy_receipt_path,
+        )
+        lifecycle_v2.transition(
+            run_dir,
+            "final_review",
+            accepted_artifact=lifecycle_v2.make_file_descriptor(
+                candidate, root=run_dir,
+            ),
+            validation_report=lifecycle_v2.make_file_descriptor(
+                report_path, root=run_dir,
+            ),
+            validation_receipt=lifecycle_v2.make_file_descriptor(
+                receipt_path, root=run_dir,
+            ),
+        )
+        classification = lifecycle_v2.verify_best_effort_candidate(
+            run_dir,
+            artifact=candidate,
+            report=report_path,
+            receipt=receipt_path,
+            require_accepted_binding=True,
+        )
+        unresolved = [
+            {"source": "validator", "finding": finding}
+            for finding in classification["findings"]
+        ]
+        publication = lifecycle_v2.publish_transaction(
+            run_dir,
+            accepted_artifact=candidate,
+            validation_report=report_path,
+            validation_receipt=receipt_path,
+            unresolved_findings=unresolved,
+            decision="best_effort",
+            target_override=published,
+        )
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        return {
+            "strict_passed": classification["strict_passed"],
+            "safe": classification["safe"],
+            "publication_status": publication["status"],
+            "candidate_sha256": supervisor.sha256_file(candidate),
+            "report_artifact_sha256": report["artifact_sha256"],
+            "receipt_candidate_sha256": receipt["bindings"]["candidate_sha256"],
+            "published_sha256": supervisor.sha256_file(published),
+            "requested_target_exists": requested.exists(),
+            "validation_result": legacy["result"],
+        }
 
 
 class LayoutCorpusTests(unittest.TestCase):
@@ -157,7 +360,7 @@ class LayoutCorpusTests(unittest.TestCase):
                 supervisor.quality_vector(second_report, profile_version=2),
                 name,
             )
-            self.assertEqual(normalized_trace(request_one, first, first_report), normalized_trace(request_two, second, second_report), name)
+            self.assertEqual(pipeline_summary(request_one, first, first_report), pipeline_summary(request_two, second, second_report), name)
             self.assertEqual(first_report["summary"]["errors"], 0, first_report["findings"])
 
     def test_graph_create_corpus_is_deterministic_and_has_no_blocking_findings(self):
@@ -240,17 +443,43 @@ class LayoutCorpusTests(unittest.TestCase):
         self.assertEqual(attempt.result["backend"], "python-layered")
         self.assertEqual(attempt.evidence["fallback_reason"], fixture["expected_fallback"])
 
+    def test_real_durable_trace_snapshots_and_order_are_deterministic(self):
+        first = run_durable_layout_trace("linear-process")
+        second = run_durable_layout_trace("linear-process")
+        self.assertEqual(first, second)
+        self.assertEqual(
+            first["event_order"],
+            ["run_created", "tool_attempt", "tool_attempt", "candidate_accepted"],
+        )
+        self.assertEqual(
+            first["snapshot_order"][0],
+            ["source-bundle", "implementation-snapshot", "run-state", "workflow"],
+        )
+        self.assertTrue(first["layout_evidence"]["valid"])
+
+    def test_bpmn_lanes_bind_children_to_containing_lane_geometry(self):
+        lane_geometry = render_bpmn_lane_geometry()
+        self.assertEqual(lane_geometry["receive"]["parent"], "sales")
+        self.assertEqual(lane_geometry["fulfil"]["parent"], "ops")
+        for child_id in ("receive", "fulfil"):
+            child = lane_geometry[child_id]
+            lane = lane_geometry[child["parent"]]
+            self.assertIn("swimlane", lane["style"])
+            self.assertGreaterEqual(child["x"], 0)
+            self.assertGreaterEqual(child["y"], 0)
+            self.assertLessEqual(child["x"] + child["width"], lane["width"])
+            self.assertLessEqual(child["y"] + child["height"], lane["height"])
+
     def test_strict_failure_keeps_a_best_effort_artifact(self):
-        strict_report = report_for(FIXTURES / "shared-x-350.drawio", strict=True)
-        self.assertGreater(strict_report["summary"]["errors"], 0)
-        fixture = load_fixture("strict-failure-best-effort")
-        plan, request = create_request("strict-failure-best-effort", fixture)
-        attempt = layout_backend.run_layout(request, config={"layout_backend": "python"})
-        with tempfile.TemporaryDirectory(prefix="layout-corpus-best-effort-") as temporary:
-            artifact = Path(temporary) / "best-effort.drawio"
-            render_layout(plan, attempt.result, artifact)
-            self.assertTrue(artifact.is_file())
-            self.assertEqual(report_for(artifact)["summary"]["errors"], 0)
+        proof = publish_strict_failed_candidate_best_effort()
+        self.assertFalse(proof["strict_passed"])
+        self.assertTrue(proof["safe"])
+        self.assertEqual(proof["publication_status"], "committed")
+        self.assertEqual(proof["candidate_sha256"], proof["report_artifact_sha256"])
+        self.assertEqual(proof["candidate_sha256"], proof["receipt_candidate_sha256"])
+        self.assertEqual(proof["candidate_sha256"], proof["published_sha256"])
+        self.assertFalse(proof["requested_target_exists"])
+        self.assertEqual(proof["validation_result"], "failed")
 
 
 if __name__ == "__main__":

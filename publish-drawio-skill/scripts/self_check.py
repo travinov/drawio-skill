@@ -278,6 +278,7 @@ def layout_pipeline_checks():
     import diagram_orchestrator
     import diagram_supervisor
     import layout_backend
+    import lifecycle_host_v2
     import layout_model
     import validate
     from layout_renderer import render_layout
@@ -392,25 +393,110 @@ def layout_pipeline_checks():
             records.append(check_record("layout:local-improve", "failed", "selfcheck.layout.local_improve.failed", str(exc)))
 
         try:
-            old = temp / "strict-failure.drawio"
-            old.write_text(
-                "<mxfile><diagram id='p' name='shared'><mxGraphModel><root>"
+            workspace = temp / "best-effort-workspace"
+            run_id = "self-check-strict-best-effort"
+            run_dir = workspace / ".diagram-runs" / run_id
+            requested = workspace / "requested.drawio"
+            published = workspace / "requested.best-effort.drawio"
+            workspace.mkdir()
+            lifecycle_host_v2.initialize(
+                run_dir=run_dir,
+                workspace=workspace,
+                target=requested,
+                run_id=run_id,
+                mode="create",
+                request="retain this strict-failing candidate as safe best effort",
+                extension_root=ROOT,
+            )
+            (run_dir / ".run-id").write_text(run_id + "\n", encoding="utf-8")
+            candidate = run_dir / "strict-failure.drawio"
+            candidate.write_text(
+                "<mxfile><diagram id='p' name='routes'><mxGraphModel><root>"
                 "<mxCell id='0'/><mxCell id='1' parent='0'/>"
-                "<mxCell id='source' parent='1' vertex='1'><mxGeometry x='0' y='0' width='20' height='20' as='geometry'/></mxCell>"
-                "<mxCell id='left' parent='1' vertex='1'><mxGeometry x='420' y='0' width='20' height='20' as='geometry'/></mxCell>"
-                "<mxCell id='right' parent='1' vertex='1'><mxGeometry x='420' y='80' width='20' height='20' as='geometry'/></mxCell>"
-                "<mxCell id='a' parent='1' source='source' target='left' edge='1'><mxGeometry relative='1' as='geometry'><Array as='points'><mxPoint x='30' y='10'/><mxPoint x='380' y='10'/></Array></mxGeometry></mxCell>"
-                "<mxCell id='b' parent='1' source='source' target='right' edge='1'><mxGeometry relative='1' as='geometry'><Array as='points'><mxPoint x='30' y='10'/><mxPoint x='380' y='10'/></Array></mxGeometry></mxCell>"
+                "<mxCell id='left' parent='1' vertex='1'><mxGeometry x='0' y='100' width='20' height='20' as='geometry'/></mxCell>"
+                "<mxCell id='right' parent='1' vertex='1'><mxGeometry x='200' y='100' width='20' height='20' as='geometry'/></mxCell>"
+                "<mxCell id='top' parent='1' vertex='1'><mxGeometry x='100' y='0' width='20' height='20' as='geometry'/></mxCell>"
+                "<mxCell id='bottom' parent='1' vertex='1'><mxGeometry x='100' y='200' width='20' height='20' as='geometry'/></mxCell>"
+                "<mxCell id='middle' parent='1' vertex='1'><mxGeometry x='95' y='90' width='30' height='40' as='geometry'/></mxCell>"
+                "<mxCell id='horizontal' parent='1' source='left' target='right' edge='1'><mxGeometry relative='1' as='geometry'><Array as='points'><mxPoint x='100' y='110'/></Array></mxGeometry></mxCell>"
+                "<mxCell id='vertical' parent='1' source='top' target='bottom' edge='1'><mxGeometry relative='1' as='geometry'><Array as='points'><mxPoint x='110' y='120'/></Array></mxGeometry></mxCell>"
                 "</root></mxGraphModel></diagram></mxfile>", encoding="utf-8",
             )
-            strict = validate.validate_tree(ET.parse(old), strict=True)
-            if strict["summary"]["errors"] == 0:
-                raise RuntimeError("shared-trunk source unexpectedly passes strict validation")
-            best_effort = temp / "best-effort.drawio"
-            render_layout(value, python_attempt.result, best_effort)
-            if not best_effort.is_file() or render_and_report(value, python_attempt, temp / "second-best-effort.drawio")["summary"]["errors"]:
-                raise RuntimeError("best-effort artifact was not available after strict failure")
-            records.append(check_record("layout:strict-best-effort", "passed", "selfcheck.layout.strict_best_effort.passed", "Strict failure retained a structurally valid best-effort artifact"))
+            legacy = diagram_supervisor.run_validation(
+                candidate, run_dir, attempt_id="strict-candidate",
+            )
+            report_path = (
+                run_dir / "attempts" / "strict-candidate"
+                / "validation-report.json"
+            )
+            legacy_receipt_path = (
+                run_dir / "attempts" / "strict-candidate"
+                / "validation-receipt.json"
+            )
+            receipt, receipt_path = lifecycle_host_v2.mirror_validation_receipt(
+                run_dir, legacy_receipt_path=legacy_receipt_path,
+            )
+            lifecycle_host_v2.transition(
+                run_dir,
+                "final_review",
+                accepted_artifact=lifecycle_host_v2.make_file_descriptor(
+                    candidate, root=run_dir,
+                ),
+                validation_report=lifecycle_host_v2.make_file_descriptor(
+                    report_path, root=run_dir,
+                ),
+                validation_receipt=lifecycle_host_v2.make_file_descriptor(
+                    receipt_path, root=run_dir,
+                ),
+            )
+            classification = lifecycle_host_v2.verify_best_effort_candidate(
+                run_dir,
+                artifact=candidate,
+                report=report_path,
+                receipt=receipt_path,
+                require_accepted_binding=True,
+            )
+            publication = lifecycle_host_v2.publish_transaction(
+                run_dir,
+                accepted_artifact=candidate,
+                validation_report=report_path,
+                validation_receipt=receipt_path,
+                unresolved_findings=[
+                    {"source": "validator", "finding": finding}
+                    for finding in classification["findings"]
+                ],
+                decision="best_effort",
+                target_override=published,
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            candidate_sha256 = diagram_supervisor.sha256_file(candidate)
+            bound_hashes = {
+                candidate_sha256,
+                report["artifact_sha256"],
+                receipt["bindings"]["candidate_sha256"],
+                diagram_supervisor.sha256_file(published),
+            }
+            if (
+                legacy["result"] != "failed"
+                or classification["strict_passed"]
+                or not classification["safe"]
+                or publication["status"] != "committed"
+                or len(bound_hashes) != 1
+                or requested.exists()
+            ):
+                raise RuntimeError(
+                    "strict-failed candidate was not safely hash-bound to "
+                    "its separate best-effort publication"
+                )
+            records.append(check_record(
+                "layout:strict-best-effort",
+                "passed",
+                "selfcheck.layout.strict_best_effort.passed",
+                "The same strict-failed candidate was safely published as hash-bound best effort",
+                candidate_sha256=candidate_sha256,
+                publication_status=publication["status"],
+                strict_passed=False,
+            ))
         except Exception as exc:
             records.append(check_record("layout:strict-best-effort", "failed", "selfcheck.layout.strict_best_effort.failed", str(exc)))
     return records
