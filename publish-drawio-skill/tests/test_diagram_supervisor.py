@@ -2646,7 +2646,7 @@ class AgentRuntimeTests(unittest.TestCase):
                 "    raise SystemExit(0)\n"
                 "model = sys.argv[sys.argv.index('--model') + 1]\n"
                 "payload = json.loads(sys.stdin.read())\n"
-                "decision = {'schema_version': 1, 'role': 'supervisor', 'status': 'ok', 'result': {'action': 'create', 'reason': 'fallback approval', 'required_roles': ['supervisor', 'semantic_analyst', 'reviewer'], 'max_iterations': 1}}\n"
+                "decision = {'schema_version': 1, 'role': 'supervisor', 'status': 'ok', 'result': {'action': 'create_layout', 'reason': 'fallback approval', 'max_iterations': 1}}\n"
                 "encoded = json.dumps(decision)\n"
                 "if model == 'GigaChat-3-Ultra':\n"
                 "    print('\\n'.join([\n"
