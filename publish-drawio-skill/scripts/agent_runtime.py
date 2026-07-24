@@ -1374,9 +1374,10 @@ def invoke_role(
     if config is None:
         raise SupervisorError(f"unknown role {role!r}")
     input_path = Path(input_path)
+    input_bytes = input_path.read_bytes()
+    input_sha256 = hashlib.sha256(input_bytes).hexdigest()
     payload = load_json(input_path)
     stdin_text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-    input_sha256 = hashlib.sha256(stdin_text.encode("utf-8")).hexdigest()
     try:
         validate_role_input(role, payload)
     except SupervisorError as exc:
