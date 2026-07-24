@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 
@@ -40,6 +41,18 @@ class AgentRoleContractTests(unittest.TestCase):
         text = self.read("agents/diagram-semantic-analyst.md")
         self.assertIn("Do not return ordinary routes, coordinates, or geometry.", text)
         self.assertIn("intake/type/semantic completeness", text)
+
+    def test_semantic_v2_contract_stays_topology_only_in_docs_and_schema(self):
+        analysis_schema = json.loads(self.read("data/semantic-analysis.v2.schema.json"))
+        plan_schema = json.loads(self.read("data/semantic-plan.v2.schema.json"))
+
+        self.assertNotIn("route", analysis_schema["$defs"]["edge"]["properties"])
+        self.assertIn("route", plan_schema["$defs"]["edge"]["properties"])
+
+        for relative in ("README.md", "SKILL.md", "agents/diagram-semantic-analyst.md"):
+            with self.subTest(document=relative):
+                text = self.read(relative).lower()
+                self.assertIn("do not return ordinary routes, coordinates, or geometry", text)
 
     def test_layout_repair_returns_bounded_intent_only(self):
         text = self.read("agents/diagram-repair.md")

@@ -522,6 +522,46 @@ else:
             self.assertEqual(len(call_log), 2)
             self.assertEqual(call_log[0], call_log[1])
 
+    def test_v2_semantic_analysis_empty_result_triggers_one_bounded_correction_retry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            cli = write_role_cli(
+                temp / "semantic-cli",
+                f"""first = {semantic_analysis_v2()!r}
+valid = {semantic_analysis_v2()!r}
+if call_no == 1:
+    first["result"] = []
+    emit(first)
+else:
+    emit(valid)
+""",
+            )
+            input_path = write_json(temp / "input.json", semantic_input_v2())
+            output_path = temp / "output.json"
+            result = agent_runtime.invoke_role(
+                "semantic_analyst",
+                input_path,
+                output_path,
+                cli=str(cli),
+                run_dir=temp / "run",
+            )
+
+            self.assertTrue(result["contract_correction"]["attempted"])
+            self.assertEqual(result["contract_correction"]["first_attempt_id"], "contract-attempt-1")
+            self.assertEqual(result["contract_correction"]["correction_attempt_id"], "contract-correction-1")
+            self.assertEqual(
+                json.loads(output_path.read_text(encoding="utf-8")),
+                semantic_analysis_v2(),
+            )
+
+            call_log = cli.with_suffix(".calls.log").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(call_log), 2)
+            first_model, first_input_hash = call_log[0].split()
+            second_model, second_input_hash = call_log[1].split()
+            self.assertEqual(first_model, second_model)
+            self.assertEqual(first_input_hash, second_input_hash)
+            self.assertEqual(result["contract_correction"]["original_input_sha256"], first_input_hash)
+
     def test_v2_failure_paths_do_not_retry_after_proof_isolation_timeout_or_integrity_errors(self):
         cases = (
             (

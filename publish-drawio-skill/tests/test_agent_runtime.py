@@ -161,6 +161,24 @@ class AgentRuntimeIntakeTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "coordinate/bounds"):
             agent_runtime.validate_role_output("semantic_analyst", output, payload)
 
+    def test_semantic_v2_rejects_non_mapping_result_with_structured_diagnostics(self):
+        payload = {"schema_version": 2, "mode": "create"}
+        for bad_result in ([], None, "table"):
+            with self.subTest(bad_result=bad_result):
+                output = semantic_analysis_v2()
+                output["result"] = bad_result
+                with self.assertRaises(agent_runtime.SupervisorError) as ctx:
+                    agent_runtime.validate_role_output(
+                        "semantic_analyst", output, payload
+                    )
+                self.assertEqual(ctx.exception.contract_failure_kind, "output_schema")
+                self.assertTrue(ctx.exception.contract_diagnostics)
+                self.assertEqual(ctx.exception.contract_diagnostics[0]["pointer"], "/result")
+                self.assertIn(
+                    "schema",
+                    ctx.exception.contract_diagnostics[0]["code"],
+                )
+
     def test_layout_repair_rejects_legacy_unbounded_intent(self):
         payload = {
             "schema_version": 1,
