@@ -320,6 +320,24 @@ exec "${FAKE_PYTHON_REAL:?}" "$@"
                 self.assertIn("inventory mismatch", result.stdout)
                 self.assertIn(relative, result.stdout)
 
+    def test_verifier_rejects_tampered_layout_runtime_checksum(self) -> None:
+        self.install()
+        relative = "vendor/elkjs/elk.bundled.js"
+        target = self.home / "extensions" / "publish-drawio-skill" / relative
+        self.assertTrue(target.is_file())
+        target.write_bytes(target.read_bytes() + b"\n// checksum mismatch regression\n")
+
+        result = self.run_script(
+            "verify_drawio_agent_extension.sh", "--skip-self-check", check=False
+        )
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(
+            f"inventory mismatch: {relative} "
+            "(manifest checksum mismatch in active)",
+            result.stdout,
+        )
+
     def test_install_and_verify_pass_without_node_on_path(self) -> None:
         self.env = self.no_node_env()
 
