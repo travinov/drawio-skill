@@ -103,6 +103,18 @@ class GitflowGeneratorTests(unittest.TestCase):
             out = os.path.join(tmp, "openspec.drawio")
             proc = run_cmd("scripts/gitflow.py", os.path.join(FIXTURES, "openspec_custom.json"), "-o", out, "--route", "builtin")
             self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            tree = ET.parse(out)
+            lanes = [
+                cell.find("mxGeometry")
+                for cell in tree.findall(".//mxCell")
+                if (cell.get("id") or "").startswith("lane_")
+            ]
+            left = min(float(item.get("x")) for item in lanes)
+            top = min(float(item.get("y")) for item in lanes)
+            right = max(float(item.get("x")) + float(item.get("width")) for item in lanes)
+            bottom = max(float(item.get("y")) + float(item.get("height")) for item in lanes)
+            rendered_aspect = (right - left + 160) / (bottom - top + 160)
+            self.assertLessEqual(rendered_aspect, 4.0)
             validate = run_cmd("scripts/validate.py", out, "--strict")
             self.assertEqual(validate.returncode, 0, validate.stderr + validate.stdout)
 

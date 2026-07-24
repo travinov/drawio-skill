@@ -7,6 +7,7 @@ Usage:
 import argparse
 import importlib.util
 import json
+import math
 import os
 import shutil
 import shlex
@@ -81,10 +82,19 @@ def event_slot_key(event, index, mode):
     return int(event.get("order", index))
 
 
+def lane_gap_for_width(width, branch_count):
+    """Keep wide multi-lane timelines inside the validator's 4:1 canvas bound."""
+    if branch_count <= 1:
+        return LANE_GAP
+    lane_canvas_width = width + 100  # lane width - 60, plus 160px validator margin
+    fixed_lane_canvas_height = LANE_H + 160
+    required = (lane_canvas_width / 4 - fixed_lane_canvas_height) / (branch_count - 1)
+    return max(LANE_GAP, int(math.ceil(required / GRID)) * GRID)
+
+
 def layout(spec):
     branches = sorted_branches(spec["branches"])
     by_branch = {b["id"]: b for b in branches}
-    lane_y = {b["id"]: TOP + i * LANE_GAP for i, b in enumerate(branches)}
 
     mode = spec.get("timeMode", "date")
     events = gitflow_validate.normalize_events(spec)
@@ -94,6 +104,9 @@ def layout(spec):
         if key not in unique:
             unique.append(key)
     slot_x = {key: LEFT + i * SLOT_GAP for i, key in enumerate(unique)}
+    width = snap(max(slot_x.values() or [LEFT]) + PAGE_PAD + 260)
+    lane_gap = lane_gap_for_width(width, len(branches))
+    lane_y = {b["id"]: TOP + i * lane_gap for i, b in enumerate(branches)}
     per_slot = defaultdict(int)
     last_on_branch = {}
     event_pos = {}
@@ -115,9 +128,8 @@ def layout(spec):
         if branch:
             last_on_branch[branch] = event["id"]
 
-    width = max(slot_x.values() or [LEFT]) + PAGE_PAD + 260
-    height = TOP + max(len(branches), 1) * LANE_GAP + PAGE_PAD
-    return by_branch, lane_y, event_pos, snap(width), snap(height)
+    height = TOP + max(len(branches), 1) * lane_gap + PAGE_PAD
+    return by_branch, lane_y, event_pos, width, snap(height)
 
 
 def route_builtin(src, dst):
