@@ -42,6 +42,17 @@ class ReadmeDocumentationTests(unittest.TestCase):
         ):
             self.assertIn(token, text)
 
+    def test_readme_documents_deterministic_resume_selection(self):
+        text = " ".join(readme().split())
+        for token in (
+            "`/drawio:resume` без `--run` выбирает последний pending run "
+            "по детерминированной host policy",
+            "`/drawio:resume --run <run-id>` выбирает указанный run",
+            "Если pending run отсутствует, команда возвращает ошибку",
+            "не повторяет уже пройденные intake-вопросы",
+        ):
+            self.assertIn(token, text)
+
 
 if __name__ == "__main__":
     unittest.main()
